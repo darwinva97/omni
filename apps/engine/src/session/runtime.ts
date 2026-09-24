@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   OmniError, parseAddress, resolveContent, advanceState,
   type ChannelKind, type EventEnvelope, type LineId, type MessageKind, type SendMessageInput,
@@ -150,6 +150,38 @@ export class EngineRuntime {
       .update(lineTable)
       .set({ status: state, statusAt: new Date(this.#now()) })
       .where(eq(lineTable.id, lineId));
+  }
+
+  /**
+   * Reanuda todas las líneas habilitadas que tengan credenciales guardadas.
+   *
+   * Sin esto, las credenciales cifradas no sirven de nada: sobreviven al
+   * redespliegue pero nadie las usa, y cada arranque deja todas las líneas
+   * muertas hasta que alguien las reconecta a mano. Es la otra mitad de la
+   * promesa de "un redespliegue reconecta en vez de pedir otro QR".
+   *
+   * Los fallos se informan en vez de propagarse: una línea con credenciales
+   * caducadas no puede impedir que arranquen las demás.
+   */
+  async resumeAll(): Promise<{ resumed: string[]; failed: { lineId: string; reason: string }[] }> {
+    const rows = await this.#deps.db
+      .select({ id: lineTable.id })
+      .from(lineTable)
+      .innerJoin(authStateTable, eq(authStateTable.lineId, lineTable.id))
+      .where(and(eq(lineTable.enabled, true), isNull(lineTable.deletedAt)));
+
+    const resumed: string[] = [];
+    const failed: { lineId: string; reason: string }[] = [];
+    for (const { id } of rows) {
+      try {
+        const status = await this.connect(id);
+        if (status.state === "connected") resumed.push(id);
+        else failed.push({ lineId: id, reason: `quedó en "${status.state}"` });
+      } catch (err) {
+        failed.push({ lineId: id, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { resumed, failed };
   }
 
   // ------------------------------------------------------------------ envío

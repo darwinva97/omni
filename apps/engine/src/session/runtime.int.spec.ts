@@ -116,6 +116,33 @@ run("runtime del motor, de punta a punta", () => {
     await runtime2.stop();
   });
 
+  it("reanuda al arrancar las líneas que tienen credenciales", async () => {
+    // Sin esto las credenciales cifradas no sirven de nada: sobreviven al
+    // redespliegue pero nadie las usa, y cada arranque deja las líneas muertas.
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    await settle(100);
+
+    const fresh = new SandboxDriver();
+    const runtime2 = new EngineRuntime({
+      db: h.db, queue: H.queue, kv: new MemoryKv(), bus: new MemoryBus(),
+      box: new SecretBox(MASTER),
+      dispatcher: new WebhookDispatcher(H.queue, {
+        endpointsFor: async () => [], recordDelivery: async () => {},
+      }),
+    });
+    runtime2.registerDriver(fresh);
+
+    const { resumed, failed } = await runtime2.resumeAll();
+    expect(resumed).toContain(LINE);
+    // Otras líneas de la base pueden fallar (otra clave maestra, por ejemplo) y
+    // eso es correcto: lo que no vale es que una línea rota impida arrancar las
+    // demás, así que se informan en vez de propagarse.
+    expect(failed.find((f) => f.lineId === LINE)).toBeUndefined();
+    expect(fresh.status(asLineId(LINE)).state).toBe("connected");
+    await runtime2.stop();
+  });
+
   it("un mensaje entrante se persiste y dispara el webhook firmado", async () => {
     await H.runtime.connect(LINE);
     await H.driver.scan(asLineId(LINE), "51999888777");

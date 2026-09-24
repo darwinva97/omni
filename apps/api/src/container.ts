@@ -31,6 +31,8 @@ export interface BuildOptions {
   readonly runMigrations?: boolean;
   /** Fuerza los drivers en memoria, aunque haya Postgres. Solo para pruebas. */
   readonly inMemoryPlatform?: boolean;
+  /** Reanudar las líneas con credenciales al arrancar. Por defecto, sí. */
+  readonly resumeLines?: boolean;
 }
 
 export async function buildContainer(config: Config, opts: BuildOptions = {}): Promise<Container> {
@@ -92,6 +94,14 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
 
   runtime.start();
   const workers: Subscription[] = [dispatcher.startWorker()];
+
+  // Reanudar las líneas ANTES de aceptar tráfico: si no, los primeros envíos
+  // tras un despliegue fallan porque su línea todavía no está conectada.
+  if (opts.resumeLines !== false) {
+    const { resumed, failed } = await runtime.resumeAll();
+    if (resumed.length > 0) console.log(`líneas reanudadas: ${resumed.length}`);
+    for (const f of failed) console.warn(`no se pudo reanudar "${f.lineId}": ${f.reason}`);
+  }
 
   return {
     config, dbh, queue, kv, bus, runtime, dispatcher, sandbox,
