@@ -6,3 +6,6 @@ dist/
 .env.local
 coverage/
 .data/
+
+# datos locales de desarrollo (incluye claves de demostración)
+.data/
