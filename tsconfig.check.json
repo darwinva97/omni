@@ -23,12 +23,16 @@
       ],
       "@omni/engine": [
         "./apps/engine/src/index.ts"
+      ],
+      "@omni/sdk": [
+        "./sdks/ts/src/index.ts"
       ]
     }
   },
   "include": [
     "packages/*/src/**/*.ts",
     "apps/*/src/**/*.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "sdks/*/src/**/*.ts"
   ]
 }

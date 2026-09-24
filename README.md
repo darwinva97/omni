@@ -46,7 +46,8 @@ por línea reducen el riesgo. No lo eliminan.
 | **Identidad**: alta, sesión en cookie httpOnly, equipo e invitaciones | ✅ |
 | Driver **Cloud API**: transporte OFICIAL, sin riesgo de baneo | ✅ |
 | Driver whatsapp-web.js | ⏳ |
-| SDKs y capas `/compat` | ⏳ |
+| **SDK de TypeScript**, sin dependencias, probado contra la API real | ✅ |
+| SDKs de Python y Go, capas `/compat` | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 
 155 pruebas: unitarias, de contrato y de integración contra Postgres real.
@@ -98,6 +99,26 @@ curl -X POST $API/v1/lines/$L/messages -H "Authorization: Bearer $KEY" \
 
 Responde **202**: aceptado y encolado, todavía no entregado. Repetir el mismo
 `clientMessageId` **no duplica** el mensaje.
+
+## SDK de TypeScript
+
+```ts
+import { OmniClient, parseWebhook } from "@omni/sdk";
+
+const omni = new OmniClient({ baseUrl: "https://tu-servidor", apiKey: process.env.OMNI_API_KEY! });
+
+// Consulta antes de intentar algo poco común
+if (await omni.supports("whatsapp.cloud", "send.poll")) { /* … */ }
+
+await omni.send(lineId, { to: "51988777666", text: "hola", clientMessageId: "pedido-42" });
+
+// Recorre meses de conversación sin cargarlos en memoria
+for await (const m of omni.iterateMessages(lineId, chat)) { /* … */ }
+```
+
+Sin dependencias en tiempo de ejecución. Reintenta lo pasajero —un 429, un
+502— y nunca lo que no lo es: repetir un 403 no lo arregla. Los errores llegan
+desmenuzados (`err.missingCapability`, `err.code`), no como texto.
 
 ## Webhooks
 

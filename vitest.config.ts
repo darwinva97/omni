@@ -21,6 +21,7 @@ const alias = {
   "@omni/engine": app("engine"),
   "@omni/cli": app("cli"),
   "@omni/worker": app("worker"),
+  "@omni/sdk": fileURLToPath(new URL("./sdks/ts/src/index.ts", import.meta.url)),
 };
 
 const base = { environment: "node" as const };
@@ -34,7 +35,7 @@ export default defineConfig({
         test: {
           ...base,
           name: "unit",
-          include: ["packages/*/src/**/*.spec.ts", "apps/*/src/**/*.spec.ts"],
+          include: ["packages/*/src/**/*.spec.ts", "apps/*/src/**/*.spec.ts", "sdks/*/src/**/*.spec.ts"],
           exclude: ["**/*.int.spec.ts", "**/*.contract.spec.ts"],
         },
       },
@@ -43,7 +44,7 @@ export default defineConfig({
         test: {
           ...base,
           name: "integration",
-          include: ["packages/*/src/**/*.int.spec.ts", "apps/*/src/**/*.int.spec.ts"],
+          include: ["packages/*/src/**/*.int.spec.ts", "apps/*/src/**/*.int.spec.ts", "sdks/*/src/**/*.int.spec.ts"],
           testTimeout: 30000,
           hookTimeout: 30000,
           fileParallelism: false,
