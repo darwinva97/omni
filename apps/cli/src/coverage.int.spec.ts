@@ -65,6 +65,10 @@ const SIN_COMANDO = new Map<string, string>([
   ["POST /v1/auth/logout", "sesión por cookie; la CLI usa claves de API"],
   ["GET /v1/auth/me", "describe una sesión de persona, no una clave"],
   ["POST /v1/invitations/accept", "se acepta desde el enlace, en el navegador"],
+  // Las llama META, no una persona: la URL se pega en el panel de Meta y se
+  // autentica con la firma del cuerpo, no con una credencial nuestra.
+  ["GET /v1/channels/cloud/{lineId}/webhook", "la llama Meta para verificar la URL"],
+  ["POST /v1/channels/cloud/{lineId}/webhook", "la llama Meta para empujar eventos"],
 ]);
 
 run("cobertura de la CLI sobre la API", () => {

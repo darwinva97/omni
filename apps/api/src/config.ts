@@ -59,6 +59,8 @@ export const Config = z.object({
   RUN_WORKERS_IN_API: envBoolean(true),
   /** Transporte Baileys. Cliente NO oficial: ver el aviso del README. */
   WHATSAPP_BAILEYS_ENABLED: envBoolean(true),
+  /** Transporte oficial de Meta. Sin riesgo de baneo y sin coste por línea. */
+  WHATSAPP_CLOUD_ENABLED: envBoolean(true),
   MCP_ENABLED: envBoolean(false),
   /** Con `true` (el defecto) solo se ofrecen herramientas de lectura. */
   MCP_READONLY: envBoolean(true),

@@ -1,4 +1,4 @@
-import { BaileysDriver, SandboxDriver, type ChannelDriver } from "@omni/channels";
+import { BaileysDriver, CloudDriver, SandboxDriver, type ChannelDriver } from "@omni/channels";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
   MemoryBus, MemoryJobQueue, MemoryKv,
@@ -117,6 +117,13 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    * aparece al arrancar y en el panel antes de enlazar cualquier número.
    */
   if (config.WHATSAPP_BAILEYS_ENABLED) drivers.push(new BaileysDriver());
+
+  /*
+   * El transporte OFICIAL de Meta. Va encendido siempre: no mantiene sockets
+   * ni consume memoria por línea, y es el único apto para entornos regulados.
+   * Una línea solo lo usa si su configuración trae las credenciales.
+   */
+  if (config.WHATSAPP_CLOUD_ENABLED) drivers.push(new CloudDriver());
 
   drivers.push(...(opts.drivers ?? []));
   for (const d of drivers) runtime.registerDriver(d);

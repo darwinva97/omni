@@ -5,3 +5,6 @@ export { BaileysDriver, BAILEYS_DESCRIPTOR, ackToState, extractText, messageKind
 export { BlobAuthStore } from "./baileys/auth-store.js";
 export { toBaileysContent } from "./baileys/content.js";
 export { createFakeSocket, type FakeSocketControl } from "./baileys/fake-socket.js";
+export { CloudDriver, CLOUD_DESCRIPTOR, cloudKind, cloudText, statusToState } from "./cloud/driver.js";
+export { createFakeMeta, type FakeMeta } from "./cloud/fake-meta.js";
+export type { CloudWebhookPayload, CloudInboundMessage, CloudStatus } from "./cloud/types.js";

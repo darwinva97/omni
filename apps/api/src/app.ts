@@ -13,6 +13,7 @@ import { registerMessagingRoutes } from "./routes/messaging.js";
 import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
+import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
 
 type Env = { Variables: { principal: Principal; container: Container } };
 
@@ -120,6 +121,9 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     path === "/v1/auth/login" ||
     path === "/v1/auth/logout" ||
     path === "/v1/invitations/accept" ||
+    // Meta no tiene credencial nuestra: esta ruta se autentica con la firma
+    // del cuerpo, comprobada dentro del propio manejador.
+    /^\/v1\/channels\/cloud\/[^/]+\/webhook$/.test(path) ||
     (method === "GET" && path.startsWith("/v1/media/"));
 
   app.use("/v1/*", async (c, next) => {
@@ -337,6 +341,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
   );
 
   registerIdentityRoutes(app, container);
+  registerCloudWebhookRoutes(app, container);
   registerMessagingRoutes(app, container);
   registerLineAdminRoutes(app, container);
   registerGroupRoutes(app, container);
