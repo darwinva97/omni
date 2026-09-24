@@ -8,6 +8,9 @@ import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
 import { authenticateApiKey, checkCidr } from "./middleware/auth.js";
 import { problem } from "./http.js";
+import { registerMessagingRoutes } from "./routes/messaging.js";
+import { registerLineAdminRoutes } from "./routes/lines.js";
+import { registerGroupRoutes } from "./routes/groups.js";
 
 type Env = { Variables: { principal: Principal; container: Container } };
 
@@ -308,6 +311,9 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     },
   );
 
+  registerMessagingRoutes(app, container);
+  registerLineAdminRoutes(app, container);
+  registerGroupRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);
   registerWebhookRoutes(app, container);
