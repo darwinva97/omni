@@ -121,15 +121,20 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
   drivers.push(...(opts.drivers ?? []));
   for (const d of drivers) runtime.registerDriver(d);
 
+  /*
+   * El motor SIEMPRE consume su cola de salida.
+   *
+   * Es quien tiene los sockets vivos, así que nadie más puede enviar por él.
+   * Apagarlo aquí dejaba los mensajes en `queued` para siempre en cuanto se
+   * repartían los procesos: el trabajador de webhooks no puede sustituirlo.
+   *
+   * `RUN_WORKERS_IN_API` decide sólo lo que SÍ puede vivir en otro proceso:
+   * la entrega de webhooks y el mantenimiento.
+   */
+  runtime.start();
+
   const workers: Subscription[] = [];
-  if (config.RUN_WORKERS_IN_API) {
-    runtime.start();
-    workers.push(dispatcher.startWorker());
-  } else {
-    // El motor arranca igualmente —mantiene las conexiones— pero no consume la
-    // cola de salida ni entrega webhooks: de eso se ocupa `@omni/worker`.
-    runtime.start(0);
-  }
+  if (config.RUN_WORKERS_IN_API) workers.push(dispatcher.startWorker());
 
   // Reanudar las líneas ANTES de aceptar tráfico: si no, los primeros envíos
   // tras un despliegue fallan porque su línea todavía no está conectada.

@@ -206,6 +206,44 @@ run("API HTTP de punta a punta", () => {
     expect(res.status).toBe(401);
   });
 
+  it("con los trabajadores fuera, el motor SIGUE enviando", async () => {
+    // Repartir los procesos no puede dejar los mensajes en la cola para
+    // siempre: el motor es el único que tiene los sockets.
+    const aparte = await buildContainer(
+      loadConfig({
+        ...process.env, DATABASE_URL: URL!, OMNI_MASTER_KEY: "e".repeat(64),
+        SANDBOX_ENABLED: "true", RUN_WORKERS_IN_API: "false",
+      } as NodeJS.ProcessEnv),
+      { runMigrations: false, fetchImpl: (async () => new Response("ok")) as unknown as typeof fetch },
+    );
+    const appAparte = createApp(aparte);
+    const llamar = (p: string, init: RequestInit = {}) =>
+      appAparte.request(p, {
+        ...init,
+        headers: { authorization: `Bearer ${adminKey}`, "content-type": "application/json", ...init.headers },
+      });
+
+    await llamar(`/v1/lines/${LINE}/connect`, { method: "POST" });
+    await llamar(`/v1/sandbox/lines/${LINE}/scan`, {
+      method: "POST", body: JSON.stringify({ phone: "51999888777" }),
+    });
+    await llamar(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ to: "51988777666", text: "sin trabajadores", clientMessageId: "sin-worker-1" }),
+    });
+
+    const limite = Date.now() + 6000;
+    let estado = "queued";
+    while (Date.now() < limite && estado === "queued") {
+      await settle(100);
+      const filas = await dbh.sql`
+        SELECT state FROM message WHERE line_id = ${LINE} AND client_message_id = 'sin-worker-1'`;
+      estado = String(filas[0]?.["state"] ?? "queued");
+    }
+    await aparte.shutdown();
+    expect(estado, "el mensaje se quedó encolado sin nadie que lo enviara").not.toBe("queued");
+  });
+
   it("los intentos de entrega quedan consultables", async () => {
     const res = await call("/v1/dispatches");
     const body = await json<{ data: { status: string; durationMs: number }[] }>(res);

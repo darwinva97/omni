@@ -47,12 +47,14 @@ export const Config = z.object({
    * quiere una decisión explícita.
    */
   /**
-   * Ejecutar los trabajadores dentro de la API.
+   * Entregar webhooks dentro de la API.
    *
-   * Cómodo para un despliegue de un solo proceso. En cuanto hay tráfico
-   * conviene apagarlo y levantar `@omni/worker` aparte: si la API entrega
-   * webhooks, una ráfaga de reintentos compite por el mismo bucle de eventos
-   * que los usuarios.
+   * Cómodo para un despliegue de un solo proceso. Con tráfico conviene
+   * apagarlo y levantar `@omni/worker` aparte: una ráfaga de reintentos
+   * competiría por el mismo bucle de eventos que los usuarios.
+   *
+   * NO afecta al envío de mensajes: esa cola la consume siempre el motor, que
+   * es quien tiene los sockets, y ningún otro proceso puede sustituirlo.
    */
   RUN_WORKERS_IN_API: envBoolean(true),
   /** Transporte Baileys. Cliente NO oficial: ver el aviso del README. */
