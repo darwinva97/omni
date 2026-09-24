@@ -39,8 +39,12 @@ por línea reducen el riesgo. No lo eliminan.
 | Webhooks firmados (HMAC-SHA256 con marca de tiempo), con reintentos y registro | ✅ |
 | Motor: credenciales cifradas en BD, ritmo por línea, ingesta, acuses | ✅ |
 | API HTTP `/v1` con OpenAPI 3.1 y documentación navegable | ✅ |
-| Drivers Baileys · Cloud API · whatsapp-web.js | ⏳ |
-| MCP, SDKs, CLI, capas `/compat` | ⏳ |
+| Driver **Baileys**: WhatsApp real, contrastado contra sus servidores | ✅ |
+| Medios: subida, descarga por URL firmada y envío de adjuntos | ✅ |
+| Servidor **MCP** para agentes, con permisos por llamada | ✅ |
+| **CLI** con guard de cobertura sobre la API | ✅ |
+| Drivers Cloud API y whatsapp-web.js | ⏳ |
+| SDKs y capas `/compat` | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 
 155 pruebas: unitarias, de contrato y de integración contra Postgres real.
@@ -61,6 +65,24 @@ curl -X POST $API/v1/sandbox/lines/$L/inbound  -H "Authorization: Bearer $KEY" \
 Ese último comando hace que **tu manejador de webhooks reciba una entrega
 firmada de verdad**. Es lo que permite correr una prueba de integración de
 WhatsApp en CI, en cada push, sin teléfono y sin riesgo de baneo.
+
+## La CLI
+
+```bash
+export OMNI_URL=http://127.0.0.1:4000
+export OMNI_API_KEY=omni_...
+
+omni ayuda
+omni capacidades
+omni enviar <linea> 51988777666 "hola" --id pedido-42
+omni mensajes <linea> "51988777666@s.whatsapp.net"
+omni linea:borrar <linea> --yes     # los destructivos exigen confirmación
+```
+
+`--json` en todo, para encadenar con `jq`. Códigos de salida con significado:
+**0** correcto · **1** error de uso · **2** error del servicio · **3** falta
+configuración. Una prueba rompe CI si una operación de la API se queda sin
+comando, o si un comando apunta a una operación que ya no existe.
 
 ## Enviar
 

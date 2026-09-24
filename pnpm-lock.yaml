@@ -69,6 +69,12 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  apps/cli:
+    dependencies:
+      '@omni/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+
   apps/engine:
     dependencies:
       '@omni/channels':

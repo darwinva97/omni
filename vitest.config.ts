@@ -19,6 +19,7 @@ const alias = {
   "@omni/db": pkg("db"),
   "@omni/storage": pkg("storage"),
   "@omni/engine": app("engine"),
+  "@omni/cli": app("cli"),
 };
 
 const base = { environment: "node" as const };

@@ -642,6 +642,34 @@ function registerMediaRoutes(app: OpenAPIHono<Env>, container: Container): void 
    * framework sin comprobar nada: quien tuviera la URL leía los adjuntos de
    * cualquier inquilino, para siempre.
    */
+  /*
+   * La ruta lleva un comodín, que `createRoute` no sabe describir, así que su
+   * documentación se registra a mano. Si no, quedaría FUERA del contrato: los
+   * SDK y la CLI se generan desde ahí y no verían que existe.
+   */
+  app.openAPIRegistry.registerPath({
+    method: "get",
+    path: "/v1/media/{key}",
+    tags: ["medios"],
+    summary: "Descargar un medio con su URL firmada",
+    description:
+      "No lleva credencial: la firma y su caducidad SON la credencial, que es lo " +
+      "que permite pegar el enlace en un `<img>` o pasárselo a un tercero sin " +
+      "repartir claves de API.",
+    request: {
+      params: z.object({ key: z.string() }),
+      query: z.object({
+        expires: z.string().describe("Epoch en segundos"),
+        signature: z.string().describe("HMAC de la clave y la caducidad"),
+      }),
+    },
+    responses: {
+      200: { description: "el contenido del medio" },
+      403: { description: "firma inválida o caducada" },
+      404: { description: "el medio ya no está disponible" },
+    },
+  });
+
   app.get("/v1/media/:key{.+}", async (c) => {
     if (container.storage.kind !== "local") {
       throw new OmniError("not_found", "con almacén S3 los medios se sirven por su URL firmada");
