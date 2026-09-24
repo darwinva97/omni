@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: omni
+          POSTGRES_PASSWORD: omni
+          POSTGRES_DB: omni_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+
+    env:
+      OMNI_TEST_DATABASE_URL: postgres://omni:omni@127.0.0.1:5432/omni_test
+      DATABASE_URL: postgres://omni:omni@127.0.0.1:5432/omni_test
+      OMNI_MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+
+      - name: Unitarias
+        run: pnpm test
+
+      - name: Contrato
+        run: pnpm test:contract
+
+      # Incluye el recorrido completo de WhatsApp contra el sandbox: enlazar,
+      # recibir un mensaje fabricado, verificar la firma del webhook y
+      # responder. Sin teléfono, desatendido, en cada push.
+      - name: Integración
+        run: pnpm test:int
