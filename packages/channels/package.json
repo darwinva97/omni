@@ -16,6 +16,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@omni/shared": "workspace:*"
+    "@hapi/boom": "^10.0.1",
+    "@omni/shared": "workspace:*",
+    "baileys": "7.0.0-rc14"
   }
 }

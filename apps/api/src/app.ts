@@ -91,9 +91,8 @@ export function createApp(container: Container): OpenAPIHono<Env> {
       })) }), "ok") },
     }),
     async (c) => {
-      const kinds = container.sandbox ? [container.sandbox] : [];
       return c.json({
-        data: kinds.map((d) => ({
+        data: container.drivers.map((d) => ({
           kind: d.descriptor.kind, network: d.descriptor.network, risk: d.descriptor.risk,
           linkMethod: d.descriptor.linkMethod,
           approxMemoryMbPerLine: d.descriptor.approxMemoryMbPerLine,

@@ -60,8 +60,7 @@ export const TOOLS: readonly ToolDef[] = [
     schema: {},
     readOnly: true,
     async run({ container }) {
-      const drivers = container.sandbox ? [container.sandbox] : [];
-      return drivers.map((d) => ({
+      return container.drivers.map((d) => ({
         transporte: d.descriptor.kind,
         riesgo: d.descriptor.risk,
         capacidades: [...d.descriptor.capabilities].sort(),

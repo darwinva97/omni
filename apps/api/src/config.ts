@@ -46,6 +46,8 @@ export const Config = z.object({
    * Servidor MCP. Apagado por defecto: expone el gateway a agentes, y eso
    * quiere una decisión explícita.
    */
+  /** Transporte Baileys. Cliente NO oficial: ver el aviso del README. */
+  WHATSAPP_BAILEYS_ENABLED: envBoolean(true),
   MCP_ENABLED: envBoolean(false),
   /** Con `true` (el defecto) solo se ofrecen herramientas de lectura. */
   MCP_READONLY: envBoolean(true),

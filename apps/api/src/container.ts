@@ -1,4 +1,4 @@
-import { SandboxDriver, type ChannelDriver } from "@omni/channels";
+import { BaileysDriver, SandboxDriver, type ChannelDriver } from "@omni/channels";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
   MemoryBus, MemoryJobQueue, MemoryKv,
@@ -22,6 +22,7 @@ export interface Container {
   readonly runtime: EngineRuntime;
   readonly dispatcher: WebhookDispatcher;
   readonly sandbox: SandboxDriver | null;
+  readonly drivers: readonly ChannelDriver[];
   shutdown(): Promise<void>;
 }
 
@@ -105,9 +106,20 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
     dispatcher,
   });
 
+  const drivers: ChannelDriver[] = [];
+
   const sandbox = config.SANDBOX_ENABLED ? new SandboxDriver() : null;
-  if (sandbox) runtime.registerDriver(sandbox);
-  for (const d of opts.drivers ?? []) runtime.registerDriver(d);
+  if (sandbox) drivers.push(sandbox);
+
+  /*
+   * Baileys conduce un cliente NO OFICIAL de WhatsApp. Va encendido por
+   * defecto porque es la razón de ser del producto, pero el aviso de riesgo
+   * aparece al arrancar y en el panel antes de enlazar cualquier número.
+   */
+  if (config.WHATSAPP_BAILEYS_ENABLED) drivers.push(new BaileysDriver());
+
+  drivers.push(...(opts.drivers ?? []));
+  for (const d of drivers) runtime.registerDriver(d);
 
   runtime.start();
   const workers: Subscription[] = [dispatcher.startWorker()];
@@ -121,7 +133,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
   }
 
   return {
-    config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage,
+    config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage, drivers,
     shutdown: async () => {
       await Promise.all(workers.map((w) => w.stop().catch(() => {})));
       await runtime.stop();
