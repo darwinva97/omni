@@ -30,7 +30,14 @@ importers:
         specifier: workspace:*
         version: link:../shared
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      '@omni/platform':
+        specifier: workspace:*
+        version: link:../platform
+      '@omni/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/db:
     dependencies:

@@ -1,38 +1,55 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+
+const pkg = (name: string): string =>
+  fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
 
 /**
- * Tres proyectos con propósitos distintos:
- *  - unit:        sin red, sin base de datos. Rápido, corre en cada guardado.
- *  - integration: contra Postgres real. Requiere OMNI_TEST_DATABASE_URL.
- *  - contract:    la MISMA batería contra cada driver de canal, para que los
- *                 nueve drivers no diverjan. Es lo que sostiene la abstracción.
+ * Los paquetes del workspace se resuelven a su FUENTE durante las pruebas, no
+ * a `dist`. Así no hace falta compilar para probar y un fallo se ve en la línea
+ * de TypeScript donde está, no en el JavaScript generado.
  */
+const alias = {
+  "@omni/shared": pkg("shared"),
+  "@omni/core": pkg("core"),
+  "@omni/channels": pkg("channels"),
+  "@omni/platform": pkg("platform"),
+  "@omni/db": pkg("db"),
+  "@omni/storage": pkg("storage"),
+};
+
+const base = { environment: "node" as const };
+
 export default defineConfig({
+  resolve: { alias },
   test: {
     projects: [
       {
+        resolve: { alias },
         test: {
+          ...base,
           name: "unit",
           include: ["packages/*/src/**/*.spec.ts", "apps/*/src/**/*.spec.ts"],
           exclude: ["**/*.int.spec.ts", "**/*.contract.spec.ts"],
-          environment: "node",
         },
       },
       {
+        resolve: { alias },
         test: {
+          ...base,
           name: "integration",
           include: ["packages/*/src/**/*.int.spec.ts", "apps/*/src/**/*.int.spec.ts"],
-          environment: "node",
           testTimeout: 30000,
           hookTimeout: 30000,
           fileParallelism: false,
         },
       },
       {
+        resolve: { alias },
         test: {
+          ...base,
           name: "contract",
           include: ["packages/*/src/**/*.contract.spec.ts", "apps/*/src/**/*.contract.spec.ts"],
-          environment: "node",
           testTimeout: 30000,
         },
       },
