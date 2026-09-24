@@ -5,6 +5,22 @@ import type { Kv } from "../ports/kv.port.js";
 const settle = (ms = 250) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Espera a que una condición se cumpla, con tope.
+ *
+ * Afirmar tras un `sleep` fijo funciona en una máquina ociosa y falla cuando
+ * corre la suite entera: el driver de Postgres hace viajes de red que el de
+ * memoria no. Una prueba que falla por carga no dice nada sobre el código.
+ */
+async function until(cond: () => boolean | Promise<boolean>, que: string, timeoutMs = 8000): Promise<void> {
+  const limite = Date.now() + timeoutMs;
+  while (Date.now() < limite) {
+    if (await cond()) return;
+    await settle(20);
+  }
+  throw new Error(`no se cumplió a tiempo: ${que}`);
+}
+
+/**
  * Contrato de la cola. Memoria y Postgres deben comportarse igual, porque el
  * perfil sin Redis usa Postgres y las pruebas usan memoria: si divergen, un
  * test verde no dice nada sobre producción.
@@ -26,7 +42,7 @@ export function runJobQueueContract(name: string, make: () => Promise<JobQueue>)
       const got: string[] = [];
       const sub = q.process<{ v: string }>("t1", async (p) => void got.push(p.v));
       await q.enqueue("t1", { v: "hola" });
-      await settle();
+      await until(() => got.length === 1, "el trabajo llega al manejador");
       await sub.stop();
       expect(got).toEqual(["hola"]);
     });
@@ -39,7 +55,7 @@ export function runJobQueueContract(name: string, make: () => Promise<JobQueue>)
         if (attempts < 3) throw new Error("todavía no");
       });
       await q.enqueue("t2", {}, { maxAttempts: 5, backoffMs: 10 });
-      await settle(600);
+      await until(() => attempts >= 3, "llega al tercer intento");
       await sub.stop();
       expect(attempts).toBe(3);
     });
@@ -51,7 +67,7 @@ export function runJobQueueContract(name: string, make: () => Promise<JobQueue>)
         onDead: async (payload) => void dead.push(payload),
       });
       await q.enqueue("t3", { id: 7 }, { maxAttempts: 2, backoffMs: 5 });
-      await settle(600);
+      await until(() => dead.length === 1, "el trabajo acaba en la cola muerta");
       await sub.stop();
       expect(dead).toEqual([{ id: 7 }]);
     });
@@ -65,7 +81,7 @@ export function runJobQueueContract(name: string, make: () => Promise<JobQueue>)
         order.push(p.n);
       }, { concurrency: 4 });
       for (const n of [1, 2, 3]) await q.enqueue("t4", { n }, { partitionKey: "linea-A" });
-      await settle(700);
+      await until(() => order.length === 3, "los tres trabajos de la partición terminan");
       await sub.stop();
       expect(order).toEqual([1, 2, 3]);
     });
@@ -79,7 +95,7 @@ export function runJobQueueContract(name: string, make: () => Promise<JobQueue>)
       }, { concurrency: 4 });
       await q.enqueue("t5", { p: "lenta" }, { partitionKey: "A" });
       await q.enqueue("t5", { p: "rapida" }, { partitionKey: "B" });
-      await settle(500);
+      await until(() => done.length === 2, "ambas particiones terminan");
       await sub.stop();
       expect(done[0]).toBe("rapida");
     });
