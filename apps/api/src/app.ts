@@ -298,6 +298,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     },
   );
 
+  registerMcp(app, container);
   registerWebhookRoutes(app, container);
   registerSandboxRoutes(app, container);
   registerDocs(app, container);
@@ -529,4 +530,30 @@ function registerDocs(app: OpenAPIHono<Env>, container: Container): void {
 <link rel="stylesheet" href="https://unpkg.com/@stoplight/elements/styles.min.css"></head>
 <body style="margin:0"><elements-api apiDescriptionUrl="/openapi.json" router="hash" layout="sidebar"></elements-api>
 <script src="https://unpkg.com/@stoplight/elements/web-components.min.js"></script></body></html>`));
+}
+
+
+// ─────────────────────────────────────────────── MCP
+function registerMcp(app: OpenAPIHono<Env>, container: Container): void {
+  if (!container.config.MCP_ENABLED) return;
+
+  /**
+   * El montaje MCP autentica FUERA del middleware REST, así que hace su propia
+   * comprobación. OpenWA documenta esto mismo: cada superficie que puede
+   * devolver datos de un chat necesita su propio control, porque no hereda el
+   * del guard REST. Aquí además cada herramienta vuelve a comprobar por llamada.
+   */
+  app.post("/mcp", async (c) => {
+    const principal = await authenticateApiKey(container.dbh.db, c.req.header("authorization"));
+    const { handleMcp } = await import("./mcp/server.js");
+
+    const body: unknown = await c.req.json().catch(() => null);
+    const answer = await handleMcp(container, principal, {
+      readOnly: container.config.MCP_READONLY,
+    }, body);
+
+    // Una notificación no lleva respuesta: 202 sin cuerpo, como manda el protocolo.
+    if (answer === null) return c.body(null, 202);
+    return c.json(answer as Record<string, unknown>, 200);
+  });
 }

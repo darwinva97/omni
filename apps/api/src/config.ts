@@ -5,6 +5,28 @@ import { z } from "zod";
  * con `REDIS_URL` se usan colas y bus distribuidos; sin ella, todo sobre
  * Postgres, que es lo que hace posible el perfil de coste cero.
  */
+/**
+ * Booleano desde una variable de entorno.
+ *
+ * `z.coerce.boolean()` NO vale aquí: aplica la veracidad de JavaScript, y la
+ * cadena "false" es veraz. Con ella, `SANDBOX_ENABLED=false` dejaba el sandbox
+ * encendido y `MCP_READONLY=false` no era el problema —lo era `=true`— pero
+ * sobre todo apagar algo por configuración simplemente no funcionaba. Un ajuste
+ * de seguridad que se ignora en silencio es peor que no tenerlo.
+ */
+const envBoolean = (def: boolean) =>
+  z
+    .union([z.boolean(), z.string()])
+    .default(def)
+    .transform((v, ctx) => {
+      if (typeof v === "boolean") return v;
+      const normal = v.trim().toLowerCase();
+      if (["true", "1", "yes", "y", "on", "si", "sí"].includes(normal)) return true;
+      if (["false", "0", "no", "n", "off", ""].includes(normal)) return false;
+      ctx.addIssue({ code: "custom", message: `"${v}" no es un booleano reconocible` });
+      return z.NEVER;
+    });
+
 export const Config = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
@@ -18,8 +40,15 @@ export const Config = z.object({
   /** Base pública, para construir URLs absolutas en la documentación. */
   PUBLIC_URL: z.string().default("http://127.0.0.1:4000"),
   /** Habilita el sandbox. En producción suele quedarse encendido: no toca nada real. */
-  SANDBOX_ENABLED: z.coerce.boolean().default(true),
-  BILLING_ENABLED: z.coerce.boolean().default(false),
+  SANDBOX_ENABLED: envBoolean(true),
+  BILLING_ENABLED: envBoolean(false),
+  /**
+   * Servidor MCP. Apagado por defecto: expone el gateway a agentes, y eso
+   * quiere una decisión explícita.
+   */
+  MCP_ENABLED: envBoolean(false),
+  /** Con `true` (el defecto) solo se ofrecen herramientas de lectura. */
+  MCP_READONLY: envBoolean(true),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 export type Config = z.infer<typeof Config>;
