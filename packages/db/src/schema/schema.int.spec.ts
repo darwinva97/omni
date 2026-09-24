@@ -49,14 +49,30 @@ run("esquema de mensajes", () => {
     expect(byId["m-now"]).toMatch(/^message_\d{4}_\d{2}$/);
   });
 
-  it("el scroll de una conversación usa el índice y no un recorrido secuencial", async () => {
-    const plan = await h.sql<{ "QUERY PLAN": string }[]>`
-      EXPLAIN SELECT * FROM message
-      WHERE line_id = ${LINE} AND chat_id = 'chat-a'
-      ORDER BY timestamp DESC, id LIMIT 50`;
-    const text = plan.map((r) => r["QUERY PLAN"]).join("\n");
-    // El fallo que degradaba el panel del gateway anterior era justo esto.
-    expect(text).not.toMatch(/Seq Scan on message_\d/);
+  it("toda partición hereda el índice que sirve el scroll de una conversación", async () => {
+    // Se comprueba la ESTRUCTURA, no la elección del planificador: con tres
+    // filas por partición elegir recorrido secuencial es correcto, y afirmar
+    // sobre el plan a esa escala daría una prueba que falla según el humor de
+    // las estadísticas. Lo que debe ser cierto siempre es que el índice existe
+    // en cada partición: su ausencia es lo que degradaba el panel del gateway
+    // anterior cuando la tabla crecía.
+    const parent = await h.sql<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes
+      WHERE tablename = 'message' AND indexname = 'message_chat_idx'`;
+    expect(parent).toHaveLength(1);
+    expect(parent[0]!.indexdef).toMatch(/line_id.*chat_id.*timestamp.*DESC/s);
+
+    // Postgres renombra los índices hijos, así que se buscan por su definición.
+    const partitions = await h.sql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM pg_inherits i
+      JOIN pg_class c ON c.oid = i.inhrelid
+      JOIN pg_class p ON p.oid = i.inhparent
+      WHERE p.relname = 'message'`;
+    const withIndex = await h.sql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM pg_indexes
+      WHERE tablename LIKE 'message\\_%' ESCAPE '\\'
+        AND indexdef LIKE '%line_id, chat_id, "timestamp" DESC%'`;
+    expect(Number(withIndex[0]!.n)).toBe(Number(partitions[0]!.n));
   });
 
   it("la clave primaria impide duplicar un mensaje", async () => {

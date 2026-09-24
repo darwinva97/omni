@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 
 const pkg = (name: string): string =>
   fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
+const app = (name: string): string =>
+  fileURLToPath(new URL(`./apps/${name}/src/index.ts`, import.meta.url));
 
 /**
  * Los paquetes del workspace se resuelven a su FUENTE durante las pruebas, no
@@ -16,6 +18,7 @@ const alias = {
   "@omni/platform": pkg("platform"),
   "@omni/db": pkg("db"),
   "@omni/storage": pkg("storage"),
+  "@omni/engine": app("engine"),
 };
 
 const base = { environment: "node" as const };

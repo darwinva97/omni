@@ -48,6 +48,8 @@ interface LineState {
   readonly groups: Map<string, GroupMetadata>;
   readonly known: Set<string>;
   pendingQr: string | null;
+  /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
+  saveCredentials: ((blob: Uint8Array) => Promise<void>) | null;
 }
 
 export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
@@ -101,9 +103,11 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       groups: new Map(),
       known: new Set(),
       pendingQr: null,
+      saveCredentials: null,
     };
     this.#lines.set(req.lineId, line);
     line.orgId = orgId;
+    line.saveCredentials = req.saveCredentials;
 
     // Con credenciales previas reconecta sin volver a pedir el QR. Es justo lo
     // que un gateway real debe hacer en un redespliegue y lo que `wapi` no hacía.
@@ -147,7 +151,9 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
     const self = parseAddress(phone);
     line.pendingQr = null;
     line.status = { state: "connected", self, pushName: "Sandbox" };
-    await credentialSink?.(new TextEncoder().encode(self.value));
+    // Igual que un driver real al recibir `creds.update`: persiste por su cuenta.
+    const sink = credentialSink ?? line.saveCredentials;
+    await sink?.(new TextEncoder().encode(self.value));
     await this.emit("session.connected", line.orgId, lineId, { self: self.value });
     await this.emit("session.status", line.orgId, lineId, { state: "connected" });
     return line.status;
