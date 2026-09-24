@@ -43,6 +43,7 @@ por línea reducen el riesgo. No lo eliminan.
 | Medios: subida, descarga por URL firmada y envío de adjuntos | ✅ |
 | Servidor **MCP** para agentes, con permisos por llamada | ✅ |
 | **CLI** con guard de cobertura sobre la API | ✅ |
+| **Identidad**: alta, sesión en cookie httpOnly, equipo e invitaciones | ✅ |
 | Drivers Cloud API y whatsapp-web.js | ⏳ |
 | SDKs y capas `/compat` | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |

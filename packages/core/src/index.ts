@@ -5,3 +5,4 @@ export * from "./auth/authorize.js";
 export * from "./webhooks/signature.js";
 export * from "./webhooks/filter.js";
 export * from "./webhooks/dispatcher.js";
+export * from "./identity/passwords.js";

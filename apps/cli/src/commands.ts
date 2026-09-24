@@ -242,6 +242,24 @@ export const COMMANDS: readonly Command[] = [
     run: (c, a) => c.request("DELETE", `/v1/api-keys/${req(a, 0, "clave")}`),
   },
   {
+    name: "equipo",
+    summary: "Quién está en la organización y con qué rol",
+    operation: "GET /v1/members",
+    args: [],
+    run: (c) => c.request("GET", "/v1/members"),
+  },
+  {
+    name: "invitar",
+    summary: "Invitar a alguien a la organización",
+    operation: "POST /v1/invitations",
+    args: [{ name: "correo", required: true, description: "A quién se invita" }],
+    flags: [{ name: "rol", description: "owner, manager, agent o viewer" }],
+    run: (c, a) => c.request("POST", "/v1/invitations", {
+      email: req(a, 0, "correo"),
+      role: flag(a, "rol") ?? "agent",
+    }),
+  },
+  {
     name: "auditoria",
     summary: "Quién hizo qué, con qué credencial y desde dónde",
     operation: "GET /v1/audit",

@@ -57,6 +57,14 @@ const SIN_COMANDO = new Map<string, string>([
   ["PATCH /v1/lines/{lineId}/groups/{groupId}", "pendiente"],
   ["POST /v1/lines/{lineId}/groups/{groupId}/leave", "pendiente"],
   ["POST /v1/lines/{lineId}/groups/{groupId}/participants", "pendiente"],
+  // La identidad de personas va por cookie de sesión y navegador. Una CLI que
+  // guardara sesiones necesita su propio almacén de credenciales, y eso es una
+  // decisión aparte: de momento la CLI usa claves de API.
+  ["POST /v1/auth/register", "alta por navegador; la CLI usa claves de API"],
+  ["POST /v1/auth/login", "sesión por cookie; la CLI usa claves de API"],
+  ["POST /v1/auth/logout", "sesión por cookie; la CLI usa claves de API"],
+  ["GET /v1/auth/me", "describe una sesión de persona, no una clave"],
+  ["POST /v1/invitations/accept", "se acepta desde el enlace, en el navegador"],
 ]);
 
 run("cobertura de la CLI sobre la API", () => {

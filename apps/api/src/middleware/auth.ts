@@ -1,4 +1,4 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { OmniError } from "@omni/shared";
 import type { Principal } from "@omni/core";
 import { apiKeyTable, type Database } from "@omni/db";
@@ -80,4 +80,67 @@ export function ipInCidr(ip: string, cidr: string): boolean {
   if (bits === 0) return true;
   const mask = (0xffffffff << (32 - bits)) >>> 0;
   return (a & mask) === (b & mask);
+}
+
+/**
+ * Autenticación por cookie de sesión.
+ *
+ * Devuelve el `Principal` de una persona, con su rol en la organización y sus
+ * roles por línea ya cargados: el guardián los necesita y consultarlos en cada
+ * ruta sería repetir el trabajo.
+ */
+export async function authenticateSession(
+  db: Database,
+  token: string | undefined,
+): Promise<Principal | null> {
+  if (!token) return null;
+
+  const { hashToken } = await import("@omni/core");
+  const { sessionTable, orgMemberTable, lineMemberTable, userTable } = await import("@omni/db");
+  const hash = await hashToken(token);
+
+  const filas = await db
+    .select({
+      userId: sessionTable.userId,
+      activeOrgId: sessionTable.activeOrgId,
+      expiresAt: sessionTable.expiresAt,
+      disabledAt: userTable.disabledAt,
+    })
+    .from(sessionTable)
+    .innerJoin(userTable, eq(userTable.id, sessionTable.userId))
+    .where(eq(sessionTable.id, hash))
+    .limit(1);
+
+  const sesion = filas[0];
+  if (!sesion) return null;
+  if (sesion.expiresAt.getTime() <= Date.now()) {
+    // Caducada: se borra al pasar, para que la tabla no acumule basura.
+    await db.delete(sessionTable).where(eq(sessionTable.id, hash));
+    return null;
+  }
+  // Una cuenta deshabilitada pierde el acceso AHORA, no cuando caduque su sesión.
+  if (sesion.disabledAt) return null;
+
+  const orgId = sesion.activeOrgId;
+  if (!orgId) return null;
+
+  const pertenencia = await db
+    .select({ role: orgMemberTable.role })
+    .from(orgMemberTable)
+    .where(and(eq(orgMemberTable.orgId, orgId), eq(orgMemberTable.userId, sesion.userId)))
+    .limit(1);
+  if (!pertenencia[0]) return null;
+
+  const porLinea = await db
+    .select({ lineId: lineMemberTable.lineId, role: lineMemberTable.role })
+    .from(lineMemberTable)
+    .where(eq(lineMemberTable.userId, sesion.userId));
+
+  return {
+    kind: "user",
+    userId: sesion.userId,
+    orgId,
+    orgRole: pertenencia[0].role,
+    lineRoles: new Map(porLinea.map((l) => [l.lineId, l.role])),
+  };
 }

@@ -6,11 +6,13 @@ import { and, desc, eq, lt } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
-import { authenticateApiKey, checkCidr } from "./middleware/auth.js";
+import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
+import { getCookie } from "hono/cookie";
 import { problem } from "./http.js";
 import { registerMessagingRoutes } from "./routes/messaging.js";
 import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
+import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 
 type Env = { Variables: { principal: Principal; container: Container } };
 
@@ -111,10 +113,34 @@ export function createApp(container: Container): OpenAPIHono<Env> {
    * en un `<img>` o mandárselo a un tercero, que es justo para lo que existe.
    */
   const sinCredencial = (method: string, path: string): boolean =>
-    path === "/v1/capabilities" || (method === "GET" && path.startsWith("/v1/media/"));
+    path === "/v1/capabilities" ||
+    // Alta, entrada y aceptación de invitación son, por definición, anteriores
+    // a tener credencial.
+    path === "/v1/auth/register" ||
+    path === "/v1/auth/login" ||
+    path === "/v1/auth/logout" ||
+    path === "/v1/invitations/accept" ||
+    (method === "GET" && path.startsWith("/v1/media/"));
 
   app.use("/v1/*", async (c, next) => {
     if (sinCredencial(c.req.method, c.req.path)) return next();
+
+    /*
+     * Dos formas de identificarse, con la misma salida.
+     *
+     * Una persona trae cookie de sesión; una integración, clave de API. A
+     * partir de aquí el resto del sistema ve un `Principal` y no sabe —ni
+     * necesita saber— cuál de las dos era.
+     */
+    const cookie = getCookie(c, SESSION_COOKIE);
+    if (cookie) {
+      const persona = await authenticateSession(container.dbh.db, cookie);
+      if (persona) {
+        c.set("principal", persona);
+        return next();
+      }
+    }
+
     const principal = await authenticateApiKey(container.dbh.db, c.req.header("authorization"));
 
     if (principal.kind === "api-key") {
@@ -310,6 +336,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     },
   );
 
+  registerIdentityRoutes(app, container);
   registerMessagingRoutes(app, container);
   registerLineAdminRoutes(app, container);
   registerGroupRoutes(app, container);
