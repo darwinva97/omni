@@ -93,15 +93,25 @@ export function runJobQueueContract(name: string, make: () => Promise<JobQueue>)
     });
 
     it("no ejecuta antes de runAt", async () => {
+      // Márgenes anchos y espera por condición, no por reloj: con la máquina
+      // cargada los temporizadores derivan y una prueba ajustada falla sin que
+      // haya nada roto. Una prueba inestable es peor que no tenerla.
       const q = await open();
       const got: number[] = [];
       const sub = q.process("t7", async () => void got.push(Date.now()));
-      await q.enqueue("t7", {}, { runAt: Date.now() + 200 });
-      await settle(80);
-      expect(got).toHaveLength(0);
-      await settle(400);
+
+      const runAt = Date.now() + 500;
+      await q.enqueue("t7", {}, { runAt });
+
+      await settle(150);
+      expect(got, "se ejecutó antes de su hora").toHaveLength(0);
+
+      const deadline = Date.now() + 4000;
+      while (got.length === 0 && Date.now() < deadline) await settle(25);
       await sub.stop();
-      expect(got).toHaveLength(1);
+
+      expect(got, "no llegó a ejecutarse tras su hora").toHaveLength(1);
+      expect(got[0]!).toBeGreaterThanOrEqual(runAt - 50);
     });
 
     it("informa la profundidad de la cola", async () => {

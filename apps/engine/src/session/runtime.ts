@@ -68,9 +68,16 @@ export class EngineRuntime {
 
   registerDriver(driver: ChannelDriver): void {
     this.#drivers.set(driver.descriptor.kind, driver);
-    // Todo lo que produce un driver pasa por el mismo camino de ingesta, sea
-    // WhatsApp, Telegram o el sandbox. Ahí está el valor del puerto único.
-    this.#unsubscribes.push(driver.subscribe((e) => void this.#ingest(e)));
+    /*
+     * Todo lo que produce un driver pasa por el mismo camino de ingesta, sea
+     * WhatsApp, Telegram o el sandbox. Ahí está el valor del puerto único.
+     *
+     * Se DEVUELVE la promesa en vez de descartarla con `void`: el emisor la
+     * espera, y así dos eventos seguidos de la misma línea se ingieren y se
+     * encolan en orden. Descartándola, un acuse de "leído" podía adelantar al
+     * de "entregado" y el receptor del webhook los veía al revés.
+     */
+    this.#unsubscribes.push(driver.subscribe((e) => this.#ingest(e)));
   }
 
   driverFor(kind: ChannelKind): ChannelDriver {

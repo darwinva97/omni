@@ -14,8 +14,17 @@ export class PostgresKv implements Kv {
     return this.#ready;
   }
 
-  #expiry(ttlSeconds?: number): Date | null {
-    return ttlSeconds ? new Date(Date.now() + ttlSeconds * 1000) : null;
+  /**
+   * La expiración se calcula con el reloj de la BASE DE DATOS, no con el de la
+   * aplicación: se manda un número de segundos y Postgres hace la suma. Dos
+   * nodos con relojes ligeramente distintos caducarían la misma clave en
+   * instantes distintos, y el cerrojo de propiedad de línea depende de eso.
+   *
+   * De paso evita enviar un `Date` como parámetro, que postgres.js serializa de
+   * forma distinta según cómo Postgres describa el parámetro.
+   */
+  #ttl(ttlSeconds?: number): number | null {
+    return ttlSeconds && ttlSeconds > 0 ? Math.floor(ttlSeconds) : null;
   }
 
   async get(key: string): Promise<string | null> {
@@ -28,8 +37,10 @@ export class PostgresKv implements Kv {
 
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     await this.#ensure();
+    const ttl = this.#ttl(ttlSeconds);
     await this.#sql`
-      INSERT INTO omni_kv (key, value, expires_at) VALUES (${key}, ${value}, ${this.#expiry(ttlSeconds)})
+      INSERT INTO omni_kv (key, value, expires_at)
+      VALUES (${key}, ${value}, CASE WHEN ${ttl}::int IS NULL THEN NULL ELSE now() + ${ttl}::int * interval '1 second' END)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at`;
   }
 
@@ -44,8 +55,10 @@ export class PostgresKv implements Kv {
    */
   async setIfAbsent(key: string, value: string, ttlSeconds?: number): Promise<boolean> {
     await this.#ensure();
+    const ttl = this.#ttl(ttlSeconds);
     const rows = await this.#sql<{ key: string }[]>`
-      INSERT INTO omni_kv (key, value, expires_at) VALUES (${key}, ${value}, ${this.#expiry(ttlSeconds)})
+      INSERT INTO omni_kv (key, value, expires_at)
+      VALUES (${key}, ${value}, CASE WHEN ${ttl}::int IS NULL THEN NULL ELSE now() + ${ttl}::int * interval '1 second' END)
       ON CONFLICT (key) DO UPDATE
         SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at
         WHERE omni_kv.expires_at IS NOT NULL AND omni_kv.expires_at <= now()
@@ -55,8 +68,10 @@ export class PostgresKv implements Kv {
 
   async increment(key: string, by = 1, ttlSeconds?: number): Promise<number> {
     await this.#ensure();
+    const ttl = this.#ttl(ttlSeconds);
     const rows = await this.#sql<{ value: string }[]>`
-      INSERT INTO omni_kv (key, value, expires_at) VALUES (${key}, ${String(by)}, ${this.#expiry(ttlSeconds)})
+      INSERT INTO omni_kv (key, value, expires_at)
+      VALUES (${key}, ${String(by)}, CASE WHEN ${ttl}::int IS NULL THEN NULL ELSE now() + ${ttl}::int * interval '1 second' END)
       ON CONFLICT (key) DO UPDATE SET
         value = (CASE
           WHEN omni_kv.expires_at IS NOT NULL AND omni_kv.expires_at <= now() THEN 0

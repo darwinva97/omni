@@ -117,6 +117,9 @@ importers:
       '@omni/shared':
         specifier: workspace:*
         version: link:../shared
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(postgres@3.4.9)
       postgres:
         specifier: ^3.4.9
         version: 3.4.9

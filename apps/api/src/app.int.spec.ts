@@ -60,7 +60,9 @@ beforeAll(async () => {
 
   container = await buildContainer(config, {
     runMigrations: false,
-    inMemoryPlatform: true,
+    // Contra el camino REAL de Postgres, no en memoria. Probar solo en memoria
+    // dejó pasar un fallo que reventaba todos los envíos en producción.
+    inMemoryPlatform: false,
     fetchImpl: (async (_u: string, init: RequestInit) => {
       hooks.push({ body: String(init.body), headers: init.headers as Record<string, string> });
       return new Response("ok", { status: 200 });

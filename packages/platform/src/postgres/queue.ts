@@ -8,7 +8,19 @@ import { ensurePlatformSchema } from "./ddl.js";
 
 interface Row {
   id: string; payload: unknown; partition_key: string | null;
-  attempt: number; max_attempts: number; backoff_ms: number; enqueued_at: Date;
+  attempt: number; max_attempts: number; backoff_ms: number;
+  /**
+   * Puede llegar como `Date` o como cadena: los parseadores de tipo de
+   * postgres.js dependen de cómo se haya configurado la conexión, y la API
+   * comparte la suya con Drizzle. No se da por supuesto el tipo.
+   */
+  enqueued_at: Date | string | number;
+}
+
+function toMillis(v: Date | string | number): number {
+  if (v instanceof Date) return v.getTime();
+  const parsed = new Date(v).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 /**
@@ -38,12 +50,26 @@ export class PostgresJobQueue implements JobQueue {
   async enqueue<T>(queue: string, payload: T, opts: EnqueueOptions = {}): Promise<JobId> {
     await this.#ensure();
     const id = `job-${crypto.randomUUID()}`;
-    const runAt = new Date(opts.runAt ?? Date.now());
+    // Igual que en el KV: se manda un desplazamiento en milisegundos y la suma
+    // la hace Postgres, para que todos los nodos compartan un solo reloj.
+    const delayMs = Math.max(0, (opts.runAt ?? Date.now()) - Date.now());
 
+    /*
+     * El payload viaja como TEXTO y Postgres lo convierte a jsonb.
+     *
+     * Pasar el objeto y dejar que el cliente infiera el tipo funcionaba solo a
+     * veces: postgres.js deduce el tipo de la descripción de la sentencia
+     * preparada, y cuando esa descripción no está disponible manda el objeto en
+     * crudo y revienta. Serializar a cadena SIN el cast tampoco vale: entonces
+     * el cliente la codifica otra vez y el trabajador recibe una cadena en vez
+     * de su objeto. Con el parámetro declarado texto no hay inferencia que
+     * pueda fallar ni doble codificación.
+     */
     const rows = await this.#sql<{ id: string }[]>`
       INSERT INTO omni_job (id, queue, payload, partition_key, max_attempts, backoff_ms, run_at, idempotency_key)
-      VALUES (${id}, ${queue}, ${this.#sql.json(payload as never)}, ${opts.partitionKey ?? null},
-              ${opts.maxAttempts ?? 5}, ${opts.backoffMs ?? 1000}, ${runAt}, ${opts.idempotencyKey ?? null})
+      VALUES (${id}, ${queue}, ${JSON.stringify(payload)}::text::jsonb, ${opts.partitionKey ?? null},
+              ${opts.maxAttempts ?? 5}, ${opts.backoffMs ?? 1000},
+              now() + ${delayMs}::bigint * interval '1 millisecond', ${opts.idempotencyKey ?? null})
       ON CONFLICT DO NOTHING
       RETURNING id`;
 
@@ -127,11 +153,17 @@ export class PostgresJobQueue implements JobQueue {
   }
 
   async #run(row: Row, handler: JobHandler<unknown>, opts: ProcessOptions): Promise<void> {
-    const ctx: JobContext = {
-      id: row.id, attempt: row.attempt,
-      maxAttempts: row.max_attempts, enqueuedAt: row.enqueued_at.getTime(),
-    };
+    /*
+     * TODO lo que pueda lanzar va DENTRO del try.
+     *
+     * Con la construcción del contexto fuera, un fallo ahí dejaba el trabajo
+     * reclamado para siempre: sin ejecutarse, sin error anotado y sin volver a
+     * la cola cuando venciera el arrendamiento. Los trabajos se filtraban de uno
+     * en uno y en silencio, que es la peor forma de perderlos.
+     */
+    let ctx: JobContext = { id: row.id, attempt: row.attempt, maxAttempts: row.max_attempts, enqueuedAt: 0 };
     try {
+      ctx = { ...ctx, enqueuedAt: toMillis(row.enqueued_at) };
       await handler(row.payload, ctx);
       await this.#sql`UPDATE omni_job SET done = true, claimed_until = NULL WHERE id = ${row.id}`;
     } catch (err) {
@@ -142,9 +174,11 @@ export class PostgresJobQueue implements JobQueue {
           WHERE id = ${row.id}`;
         await opts.onDead?.(row.payload, ctx, error);
       } else {
-        const next = new Date(Date.now() + backoffDelay(row.attempt, row.backoff_ms));
+        const delayMs = backoffDelay(row.attempt, row.backoff_ms);
         await this.#sql`
-          UPDATE omni_job SET run_at = ${next}, claimed_until = NULL, last_error = ${error.message}
+          UPDATE omni_job SET
+            run_at = now() + ${delayMs}::bigint * interval '1 millisecond',
+            claimed_until = NULL, last_error = ${error.message}
           WHERE id = ${row.id}`;
       }
     }

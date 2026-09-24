@@ -3,11 +3,20 @@ import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/s
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
 import { apiKeyTable, chatTable, lineTable, messageTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, lt } from "drizzle-orm";
+import type { LineStatus } from "@omni/channels";
+import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
 import { authenticateApiKey, checkCidr } from "./middleware/auth.js";
 import { problem } from "./http.js";
 
 type Env = { Variables: { principal: Principal; container: Container } };
+
+const LinkStateSchema = z.object({
+  state: z.string(),
+  qr: z.string().optional(),
+  pairingCode: z.string().optional(),
+  self: z.string().optional(),
+}).openapi("LinkState");
 
 const ProblemSchema = z.object({
   type: z.string(), title: z.string(), status: z.number(), detail: z.string(),
@@ -50,7 +59,10 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     createRoute({
       method: "get", path: "/health", tags: ["sistema"],
       summary: "Estado del servicio y sus dependencias",
-      responses: { 200: json(z.object({ data: z.object({ status: z.string(), checks: z.record(z.string(), z.boolean()) }) }), "ok") },
+      responses: {
+        200: json(z.object({ data: z.object({ status: z.string(), checks: z.record(z.string(), z.boolean()) }) }), "sano"),
+        503: json(z.object({ data: z.object({ status: z.string(), checks: z.record(z.string(), z.boolean()) }) }), "degradado"),
+      },
     }),
     async (c) => {
       const checks: Record<string, boolean> = { database: false, queue: false };
@@ -84,7 +96,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
           approxMemoryMbPerLine: d.descriptor.approxMemoryMbPerLine,
           capabilities: [...d.descriptor.capabilities].sort(),
         })),
-      });
+      }, 200);
     },
   );
 
@@ -111,7 +123,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     await next();
   });
 
-  const LineSchema = z.object({
+    const LineSchema = z.object({
     id: z.string(), name: z.string(), slug: z.string(), channelKind: z.string(),
     address: z.string().nullable(), status: z.string(), enabled: z.boolean(),
     sendRatePerMinute: z.number(),
@@ -131,7 +143,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
         .where(eq(lineTable.orgId, principal.orgId));
       // Una clave limitada ve SUS líneas, no un error: los listados se filtran.
       const visible = filterLines(principal, rows, (l) => l.id);
-      return c.json({ data: visible.map(toLine) });
+      return c.json({ data: visible.map(toLine) }, 200);
     },
   );
 
@@ -140,14 +152,13 @@ export function createApp(container: Container): OpenAPIHono<Env> {
       method: "post", path: "/v1/lines/{lineId}/connect", tags: ["líneas"],
       summary: "Iniciar el enlace de una línea",
       request: { params: z.object({ lineId: z.string() }) },
-      responses: { 200: json(z.object({ data: z.object({ state: z.string(), qr: z.string().optional() }) }), "ok"), ...errors },
+      responses: { 200: json(z.object({ data: LinkStateSchema }), "ok"), ...errors },
     }),
     async (c) => {
       const principal = c.get("principal");
       const { lineId } = c.req.valid("param");
       await authorize(principal, routeOf("line.connect"), { lineId });
-      const status = await container.runtime.connect(lineId);
-      return c.json({ data: status as never });
+      return c.json({ data: linkState(await container.runtime.connect(lineId)) }, 200);
     },
   );
 
@@ -156,7 +167,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
       method: "get", path: "/v1/lines/{lineId}/status", tags: ["líneas"],
       summary: "Estado de conexión de una línea",
       request: { params: z.object({ lineId: z.string() }) },
-      responses: { 200: json(z.object({ data: z.object({ state: z.string() }) }), "ok"), ...errors },
+      responses: { 200: json(z.object({ data: LinkStateSchema }), "ok"), ...errors },
     }),
     async (c) => {
       const principal = c.get("principal");
@@ -164,7 +175,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
       // Marcada segura para claves limitadas a chats: una integración necesita
       // saber si su línea está viva aunque no pueda ver ninguna conversación.
       await authorize(principal, routeOf("line.status"), { lineId });
-      return c.json({ data: (await container.runtime.status(lineId)) as never });
+      return c.json({ data: linkState(await container.runtime.status(lineId)) }, 200);
     },
   );
 
@@ -180,7 +191,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
       const { lineId } = c.req.valid("param");
       await authorize(principal, routeOf("line.connect"), { lineId });
       await container.runtime.disconnect(lineId);
-      return c.json({ data: { ok: true } });
+      return c.json({ data: { ok: true } }, 200);
     },
   );
 
@@ -240,7 +251,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
       return c.json({ data: visible.map((r) => ({
         address: r.address, kind: r.kind, title: r.title,
         lastMessageAt: r.lastMessageAt?.toISOString() ?? null, unreadCount: r.unreadCount,
-      })) });
+      })) }, 200);
     },
   );
 
@@ -283,7 +294,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
           kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
         })),
         meta: { nextBefore: rows.length === limit ? rows.at(-1)!.timestamp.toISOString() : null },
-      });
+      }, 200);
     },
   );
 
@@ -291,6 +302,16 @@ export function createApp(container: Container): OpenAPIHono<Env> {
   registerSandboxRoutes(app, container);
   registerDocs(app, container);
   return app;
+}
+
+/** Aplana el estado del driver a la forma que publica el contrato. */
+function linkState(s: LineStatus): { state: string; qr?: string; pairingCode?: string; self?: string } {
+  return {
+    state: s.state,
+    ...("qr" in s && s.qr ? { qr: s.qr } : {}),
+    ...("pairingCode" in s && s.pairingCode ? { pairingCode: s.pairingCode } : {}),
+    ...("self" in s ? { self: s.self.value } : {}),
+  };
 }
 
 function toLine(l: typeof lineTable.$inferSelect) {
@@ -363,7 +384,7 @@ function registerWebhookRoutes(app: OpenAPIHono<Env>, container: Container): voi
       return c.json({ data: rows.map((r) => ({
         id: r.id, url: r.url, events: r.events, lineId: r.lineId,
         enabled: r.enabled, hmacEnabled: r.hmacEnabled,
-      })) });
+      })) }, 200);
     },
   );
 
@@ -392,7 +413,7 @@ function registerWebhookRoutes(app: OpenAPIHono<Env>, container: Container): voi
         id: r.id, event: r.event, status: r.status, attempt: r.attempt,
         responseStatus: r.responseStatus, error: r.error, durationMs: r.durationMs,
         createdAt: r.createdAt.toISOString(),
-      })) });
+      })) }, 200);
     },
   );
 }
@@ -417,15 +438,15 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
         params: z.object({ lineId: z.string() }),
         ...body(z.object({ phone: z.string().min(5) })),
       },
-      responses: { 200: json(z.object({ data: z.object({ state: z.string() }) }), "enlazada"), ...errors },
+      responses: { 200: json(z.object({ data: LinkStateSchema }), "enlazada"), ...errors },
     }),
     async (c) => {
       const principal = guard(c);
       const { lineId } = c.req.valid("param");
       const { phone } = c.req.valid("json");
       await authorize(principal, routeOf("line.connect"), { lineId });
-      const status = await container.sandbox!.scan(lineId as never, phone);
-      return c.json({ data: status as never });
+      const status = await container.sandbox!.scan(lineId as LineId, phone);
+      return c.json({ data: linkState(status) }, 200);
     },
   );
 
@@ -451,7 +472,7 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
       const { lineId } = c.req.valid("param");
       const input = c.req.valid("json");
       await authorize(principal, routeOf("line.connect"), { lineId });
-      const msg = await container.sandbox!.inbound(lineId as never, input.from, input.text, {
+      const msg = await container.sandbox!.inbound(lineId as LineId, input.from, input.text, {
         ...(input.chat ? { chat: input.chat } : {}),
         ...(input.pushName ? { pushName: input.pushName } : {}),
       });
@@ -474,10 +495,10 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
       const { lineId } = c.req.valid("param");
       const { chat } = c.req.valid("query");
       await authorize(principal, routeOf("line.status"), { lineId });
-      const thread = container.sandbox!.thread(lineId as never, chat);
+      const thread = container.sandbox!.thread(lineId as LineId, chat);
       return c.json({ data: thread.map((m) => ({
         id: m.id, chat: m.chat, fromMe: m.fromMe, text: m.text, state: m.state,
-      })) });
+      })) }, 200);
     },
   );
 }
