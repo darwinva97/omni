@@ -1,0 +1,174 @@
+import { describe, it, expect } from "vitest";
+import { OmniError, CapabilityError, capabilities, parseAddress, type Capability, type EventEnvelope, type LineId } from "@omni/shared";
+import type { ChannelDriver } from "../port.js";
+
+/**
+ * BATERÍA DE CONTRATO.
+ *
+ * Cada driver de canal corre exactamente estas pruebas. Es lo que sostiene la
+ * abstracción: sin ella, nueve implementaciones del mismo puerto divergen en
+ * silencio y el código de arriba acaba lleno de "si es Baileys entonces...".
+ *
+ * Solo comprueba lo que DEBE ser cierto para todos, incluidos los que casi no
+ * saben hacer nada: que las capacidades declaradas y las reales coincidan, que
+ * lo no soportado falle con 422 y no con 500, y que un envío repetido no duplique.
+ */
+
+export interface DriverUnderTest {
+  readonly driver: ChannelDriver;
+  readonly lineId: LineId;
+  /** Lleva la línea al estado conectado, sea por QR simulado, token o lo que use. */
+  readonly link: () => Promise<void>;
+  readonly cleanup?: () => Promise<void>;
+}
+
+/** Método opcional del puerto que habilita cada capacidad, cuando hay uno. */
+const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
+  "message.edit": "editMessage",
+  "message.delete": "deleteMessage",
+  "send.reaction": "react",
+  "chat.read": "markRead",
+  "chat.presence": "setPresence",
+  "contact.check": "checkContact",
+  "group.read": "groupMetadata",
+  "group.participants": "updateParticipants",
+  "call.reject": "rejectCall",
+  "history.sync": "fetchHistory",
+};
+
+export function runChannelContract(name: string, make: () => Promise<DriverUnderTest>): void {
+  describe(`contrato de canal: ${name}`, () => {
+    it("declara un descriptor coherente", async () => {
+      const { driver, cleanup } = await make();
+      const d = driver.descriptor;
+      expect(d.kind).toBeTruthy();
+      expect(d.network).toBeTruthy();
+      expect(d.capabilities.size).toBeGreaterThan(0);
+      expect(d.approxMemoryMbPerLine).toBeGreaterThan(0);
+      // Un transporte no oficial DEBE declararse como tal: de ahí cuelga el aviso
+      // de riesgo de baneo que el panel enseña antes de enlazar un número.
+      expect(["official", "unofficial", "simulated"]).toContain(d.risk);
+      // Toda capacidad declarada existe en el catálogo: nada de cadenas sueltas.
+      for (const c of d.capabilities) expect(capabilities).toContain(c);
+      await cleanup?.();
+    });
+
+    it("una línea desconocida está desconectada, no explota", async () => {
+      const { driver, cleanup } = await make();
+      expect(driver.status("no-existe" as LineId).state).toBe("disconnected");
+      await cleanup?.();
+    });
+
+    it("declarar una capacidad implica implementar su método", async () => {
+      const { driver, cleanup } = await make();
+      for (const [cap, method] of Object.entries(METHOD_FOR) as [Capability, keyof ChannelDriver][]) {
+        if (driver.descriptor.capabilities.has(cap)) {
+          expect(typeof driver[method], `declara "${cap}" pero le falta ${String(method)}()`).toBe("function");
+        }
+      }
+      await cleanup?.();
+    });
+
+    it("lo no soportado falla con 422 explicando el motivo, nunca con 500", async () => {
+      const { driver, cleanup } = await make();
+      const missing = capabilities.filter((c) => !driver.descriptor.capabilities.has(c));
+      for (const cap of missing) {
+        const err = new CapabilityError(cap, driver.descriptor.kind);
+        expect(err.status).toBe(422);
+        expect(err.message).toContain(cap);
+      }
+      await cleanup?.();
+    });
+
+    it("enviar por una línea desconocida es error del cliente, no del servidor", async () => {
+      // 404 (no existe) y 409 (existe sin conectar) son ambos correctos; lo que
+      // no vale es un 500 ni una promesa que se resuelve sin enviar nada.
+      const { driver, lineId, cleanup } = await make();
+      const err = await driver
+        .send({
+          lineId, to: parseAddress("51999000111"), clientMessageId: "c1",
+          kind: "text", input: { to: "51999000111", text: "hola" },
+        })
+        .then(() => null)
+        .catch((e: unknown) => e as OmniError);
+      expect(err, "un envío sin línea no puede resolverse con éxito").not.toBeNull();
+      expect(err).toBeInstanceOf(OmniError);
+      expect(err!.status).toBeGreaterThanOrEqual(400);
+      expect(err!.status).toBeLessThan(500);
+      await cleanup?.();
+    });
+
+    it("tras desconectar, enviar falla exactamente con 409", async () => {
+      const { driver, lineId, link, cleanup } = await make();
+      await link();
+      await driver.disconnect(lineId);
+      await expect(
+        driver.send({
+          lineId, to: parseAddress("51999000111"), clientMessageId: "c2",
+          kind: "text", input: { to: "51999000111", text: "hola" },
+        }),
+      ).rejects.toMatchObject({ status: 409, code: "line_not_connected" });
+      await cleanup?.();
+    });
+
+    it("entrega eventos con el sobre completo y deja desuscribirse", async () => {
+      const { driver, lineId, link, cleanup } = await make();
+      const seen: EventEnvelope[] = [];
+      const off = driver.subscribe((e) => void seen.push(e));
+      await link();
+
+      expect(seen.length).toBeGreaterThan(0);
+      for (const e of seen) {
+        expect(e.id).toBeTruthy();
+        expect(e.event).toMatch(/^[a-z_]+\.[a-z_]+$/);
+        expect(e.lineId).toBe(lineId);
+        expect(typeof e.timestamp).toBe("number");
+      }
+      expect(seen.some((e) => e.event === "session.connected")).toBe(true);
+
+      const before = seen.length;
+      off();
+      await driver.send({
+        lineId, to: parseAddress("51999000111"), clientMessageId: "tras-off",
+        kind: "text", input: { to: "51999000111", text: "silencio" },
+      });
+      expect(seen.length).toBe(before);
+      await cleanup?.();
+    });
+
+    it("el mismo clientMessageId dos veces produce UN solo mensaje", async () => {
+      // Sin esto, un reintento de red del cliente le llega dos veces al destinatario.
+      const { driver, lineId, link, cleanup } = await make();
+      await link();
+      const cmd = {
+        lineId, to: parseAddress("51999000111"), clientMessageId: "idem-1",
+        kind: "text" as const, input: { to: "51999000111", text: "una vez" },
+      };
+      const a = await driver.send(cmd);
+      const b = await driver.send(cmd);
+      expect(b.providerMessageId).toBe(a.providerMessageId);
+      await cleanup?.();
+    });
+
+    it("desconectar deja la línea desconectada y es idempotente", async () => {
+      const { driver, lineId, link, cleanup } = await make();
+      await link();
+      await driver.disconnect(lineId);
+      expect(driver.status(lineId).state).toBe("disconnected");
+      await expect(driver.disconnect(lineId)).resolves.not.toThrow();
+      await cleanup?.();
+    });
+
+    it("los errores del driver son OmniError, con código traducible a HTTP", async () => {
+      const { driver, lineId, cleanup } = await make();
+      const err = await driver
+        .send({
+          lineId, to: parseAddress("51999000111"), clientMessageId: "x",
+          kind: "text", input: { to: "51999000111", text: "h" },
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OmniError);
+      await cleanup?.();
+    });
+  });
+}

@@ -1,0 +1,10 @@
+packages:
+  - "packages/*"
+  - "apps/*"
+  - "sdks/ts"
+
+allowBuilds:
+  esbuild: set this to true or false
+
+ignoredBuiltDependencies:
+  - esbuild

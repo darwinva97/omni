@@ -1,0 +1,27 @@
+{
+  "name": "omni",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "vitest run --project unit",
+    "test:int": "vitest run --project integration",
+    "test:contract": "vitest run --project contract",
+    "test:all": "vitest run",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @omni/db db:generate",
+    "db:migrate": "pnpm --filter @omni/db db:migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}
