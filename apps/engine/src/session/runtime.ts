@@ -344,7 +344,14 @@ export class EngineRuntime {
 
   // ------------------------------------------------------------------ trabajadores
 
+  /**
+   * Arranca el consumidor de la cola de salida.
+   *
+   * Con `concurrency` 0 NO consume: es el modo para cuando los trabajos los
+   * atiende un proceso aparte y este solo mantiene las conexiones vivas.
+   */
   start(concurrency = 8): void {
+    if (concurrency <= 0) return;
     this.#outboundWorker = this.#deps.queue.process<OutboundJob>(
       OUTBOUND_QUEUE,
       async (job) => { await this.#deliver(job); },

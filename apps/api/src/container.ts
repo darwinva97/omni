@@ -121,8 +121,15 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
   drivers.push(...(opts.drivers ?? []));
   for (const d of drivers) runtime.registerDriver(d);
 
-  runtime.start();
-  const workers: Subscription[] = [dispatcher.startWorker()];
+  const workers: Subscription[] = [];
+  if (config.RUN_WORKERS_IN_API) {
+    runtime.start();
+    workers.push(dispatcher.startWorker());
+  } else {
+    // El motor arranca igualmente —mantiene las conexiones— pero no consume la
+    // cola de salida ni entrega webhooks: de eso se ocupa `@omni/worker`.
+    runtime.start(0);
+  }
 
   // Reanudar las líneas ANTES de aceptar tráfico: si no, los primeros envíos
   // tras un despliegue fallan porque su línea todavía no está conectada.

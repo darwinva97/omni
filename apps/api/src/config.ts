@@ -46,6 +46,15 @@ export const Config = z.object({
    * Servidor MCP. Apagado por defecto: expone el gateway a agentes, y eso
    * quiere una decisión explícita.
    */
+  /**
+   * Ejecutar los trabajadores dentro de la API.
+   *
+   * Cómodo para un despliegue de un solo proceso. En cuanto hay tráfico
+   * conviene apagarlo y levantar `@omni/worker` aparte: si la API entrega
+   * webhooks, una ráfaga de reintentos compite por el mismo bucle de eventos
+   * que los usuarios.
+   */
+  RUN_WORKERS_IN_API: envBoolean(true),
   /** Transporte Baileys. Cliente NO oficial: ver el aviso del README. */
   WHATSAPP_BAILEYS_ENABLED: envBoolean(true),
   MCP_ENABLED: envBoolean(false),

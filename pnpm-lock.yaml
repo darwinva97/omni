@@ -99,6 +99,27 @@ importers:
         specifier: ^0.45.3
         version: 0.45.3(postgres@3.4.9)
 
+  apps/worker:
+    dependencies:
+      '@omni/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@omni/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@omni/platform':
+        specifier: workspace:*
+        version: link:../../packages/platform
+      '@omni/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(postgres@3.4.9)
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
   packages/channels:
     dependencies:
       '@hapi/boom':
