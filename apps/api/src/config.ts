@@ -50,6 +50,17 @@ export const Config = z.object({
   /** Con `true` (el defecto) solo se ofrecen herramientas de lectura. */
   MCP_READONLY: envBoolean(true),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+
+  /**
+   * Almacén de medios. Sin `S3_BUCKET` se usa el disco, en un directorio propio
+   * que NO debe estar bajo ninguna carpeta servida estáticamente.
+   */
+  MEDIA_DIR: z.string().default("./.data/media"),
+  S3_BUCKET: z.string().optional(),
+  S3_REGION: z.string().default("auto"),
+  S3_ENDPOINT: z.string().optional(),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
 });
 export type Config = z.infer<typeof Config>;
 

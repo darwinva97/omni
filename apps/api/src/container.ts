@@ -8,11 +8,13 @@ import {
 } from "@omni/platform";
 import { createDatabase, migrate, webhookDeliveryTable, webhookEndpointTable, type DbHandle } from "@omni/db";
 import { EngineRuntime, SecretBox } from "@omni/engine";
+import { LocalStorage, S3Storage, type Storage } from "@omni/storage";
 import { and, eq, or, isNull } from "drizzle-orm";
 import type { Config } from "./config.js";
 
 export interface Container {
   readonly config: Config;
+  readonly storage: Storage;
   readonly dbh: DbHandle;
   readonly queue: JobQueue;
   readonly kv: Kv;
@@ -82,8 +84,23 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
   });
 
+  const storage: Storage = config.S3_BUCKET
+    ? new S3Storage({
+        bucket: config.S3_BUCKET,
+        region: config.S3_REGION,
+        ...(config.S3_ENDPOINT ? { endpoint: config.S3_ENDPOINT } : {}),
+        accessKeyId: config.S3_ACCESS_KEY_ID!,
+        secretAccessKey: config.S3_SECRET_ACCESS_KEY!,
+      })
+    : new LocalStorage({
+        directory: config.MEDIA_DIR,
+        // La clave maestra ya es un secreto de despliegue; reutilizarla evita
+        // una variable más que alguien olvidaría rotar.
+        signingSecret: config.OMNI_MASTER_KEY,
+      });
+
   const runtime = new EngineRuntime({
-    db: dbh.db, queue, kv, bus,
+    db: dbh.db, queue, kv, bus, storage,
     box: new SecretBox(config.OMNI_MASTER_KEY),
     dispatcher,
   });
@@ -104,7 +121,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
   }
 
   return {
-    config, dbh, queue, kv, bus, runtime, dispatcher, sandbox,
+    config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage,
     shutdown: async () => {
       await Promise.all(workers.map((w) => w.stop().catch(() => {})));
       await runtime.stop();

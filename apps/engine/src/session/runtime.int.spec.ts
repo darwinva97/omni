@@ -5,6 +5,10 @@ import { SandboxDriver } from "@omni/channels";
 import { MemoryBus, MemoryJobQueue, MemoryKv } from "@omni/platform";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import { createDatabase, migrate, lineTable, messageTable, chatTable, orgTable, authStateTable, type DbHandle } from "@omni/db";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { LocalStorage } from "@omni/storage";
 import { SecretBox } from "../crypto/secret-box.js";
 import { EngineRuntime } from "./runtime.js";
 
@@ -34,6 +38,13 @@ interface Harness {
   stop: () => Promise<void>;
 }
 
+async function testStorage(): Promise<LocalStorage> {
+  return new LocalStorage({
+    directory: await mkdtemp(join(tmpdir(), "omni-rt-")),
+    signingSecret: "secreto-de-firma-de-pruebas",
+  });
+}
+
 async function harness(endpoints: WebhookEndpoint[] = []): Promise<Harness> {
   await h.sql`DELETE FROM message WHERE line_id = ${LINE}`;
   await h.sql`DELETE FROM chat WHERE line_id = ${LINE}`;
@@ -61,7 +72,7 @@ async function harness(endpoints: WebhookEndpoint[] = []): Promise<Harness> {
   const driver = new SandboxDriver();
   const runtime = new EngineRuntime({
     db: h.db, queue, kv: new MemoryKv(), bus: new MemoryBus(),
-    box: new SecretBox(MASTER), dispatcher,
+    box: new SecretBox(MASTER), dispatcher, storage: await testStorage(),
   });
   runtime.registerDriver(driver);
   runtime.start();
@@ -74,6 +85,31 @@ async function harness(endpoints: WebhookEndpoint[] = []): Promise<Harness> {
 }
 
 const settle = (ms = 300) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Espera a que algo se cumpla, con tope. Afirmar tras un `sleep` fijo funciona
+ * en una máquina ociosa y falla cuando corren las demás pruebas a la vez: una
+ * prueba inestable no dice nada sobre el código.
+ */
+async function until<T>(
+  fn: () => Promise<T | null | undefined>,
+  descripcion: string,
+  timeoutMs = 6000,
+): Promise<T> {
+  const limite = Date.now() + timeoutMs;
+  let ultimo: T | null | undefined;
+  while (Date.now() < limite) {
+    ultimo = await fn();
+    if (ultimo !== null && ultimo !== undefined) return ultimo;
+    await settle(30);
+  }
+  throw new Error(`no se cumplió a tiempo: ${descripcion} (último valor: ${JSON.stringify(ultimo)})`);
+}
+
+/** Estado actual de un mensaje saliente, o null si aún no es el esperado. */
+const estadoDe = async (clientMessageId: string): Promise<string | undefined> =>
+  (await h.db.select({ s: messageTable.state }).from(messageTable)
+    .where(and(eq(messageTable.lineId, LINE), eq(messageTable.clientMessageId, clientMessageId))))[0]?.s;
 
 const endpoint = (over: Partial<WebhookEndpoint> = {}): WebhookEndpoint => ({
   id: "ep1", orgId: ORG, lineId: LINE, url: "https://receptor.test/hook",
@@ -106,7 +142,7 @@ run("runtime del motor, de punta a punta", () => {
     const fresh = new SandboxDriver();
     const runtime2 = new EngineRuntime({
       db: h.db, queue: H.queue, kv: new MemoryKv(), bus: new MemoryBus(),
-      box: new SecretBox(MASTER),
+      box: new SecretBox(MASTER), storage: await testStorage(),
       dispatcher: new WebhookDispatcher(H.queue, {
         endpointsFor: async () => [], recordDelivery: async () => {},
       }),
@@ -126,7 +162,7 @@ run("runtime del motor, de punta a punta", () => {
     const fresh = new SandboxDriver();
     const runtime2 = new EngineRuntime({
       db: h.db, queue: H.queue, kv: new MemoryKv(), bus: new MemoryBus(),
-      box: new SecretBox(MASTER),
+      box: new SecretBox(MASTER), storage: await testStorage(),
       dispatcher: new WebhookDispatcher(H.queue, {
         endpointsFor: async () => [], recordDelivery: async () => {},
       }),
@@ -173,10 +209,10 @@ run("runtime del motor, de punta a punta", () => {
     expect(Date.now() - started).toBeLessThan(200);
     expect(accepted.state).toBe("queued");
 
-    await settle(600);
+    await until(async () => (await estadoDe(accepted.clientMessageId)) === "read" ? true : null,
+      "el mensaje llega a leído");
     const rows = await h.db.select().from(messageTable)
       .where(and(eq(messageTable.lineId, LINE), eq(messageTable.clientMessageId, accepted.clientMessageId)));
-    expect(rows[0]!.state).toBe("read");
     expect(rows[0]!.providerMessageId).toBeTruthy();
     expect(rows[0]!.sentFromPlatform).toBe(true);
   });
@@ -194,25 +230,39 @@ run("runtime del motor, de punta a punta", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("una reserva huérfana no se traga el envío", async () => {
+    // Pasa cuando el mensaje se borra —retención, limpieza, una migración— y la
+    // reserva sigue viva. Antes devolvía 202 sin insertar ni encolar nada.
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+
+    const input = { to: "51988777666", text: "tras la limpieza", clientMessageId: "huerfano-1" };
+    await H.runtime.send(LINE, input);
+    await until(async () => (await estadoDe("huerfano-1")) ? true : null, "se insertó el primero");
+
+    // Se borra el mensaje pero NO la reserva, que es el caso problemático.
+    await h.sql`DELETE FROM message WHERE line_id = ${LINE} AND client_message_id = 'huerfano-1'`;
+
+    await H.runtime.send(LINE, input);
+    const estado = await until(async () => (await estadoDe("huerfano-1")) ?? null,
+      "el segundo envío se vuelve a insertar");
+    expect(estado).toBeTruthy();
+  });
+
   it("los acuses avanzan el estado y nunca retroceden", async () => {
     await H.runtime.connect(LINE);
     await H.driver.scan(asLineId(LINE), "51999888777");
     const accepted = await H.runtime.send(LINE, { to: "51988777666", text: "acuses" });
-    await settle(500);
-
-    const before = await h.db.select({ s: messageTable.state }).from(messageTable)
-      .where(and(eq(messageTable.lineId, LINE), eq(messageTable.clientMessageId, accepted.clientMessageId)));
-    expect(before[0]!.s).toBe("read");
+    await until(async () => (await estadoDe(accepted.clientMessageId)) === "read" ? true : null,
+      "el mensaje llega a leído antes del acuse tardío");
 
     // Un recibo tardío de "delivered" no puede degradar un mensaje ya leído.
     const rows = await h.db.select({ p: messageTable.providerMessageId }).from(messageTable)
       .where(and(eq(messageTable.lineId, LINE), eq(messageTable.clientMessageId, accepted.clientMessageId)));
     await H.driver.ack(asLineId(LINE), rows[0]!.p!, "delivered");
-    await settle(300);
-
-    const after = await h.db.select({ s: messageTable.state }).from(messageTable)
-      .where(and(eq(messageTable.lineId, LINE), eq(messageTable.clientMessageId, accepted.clientMessageId)));
-    expect(after[0]!.s).toBe("read");
+    await settle(400);
+    // Sigue en "leído": un recibo tardío no puede degradarlo.
+    expect(await estadoDe(accepted.clientMessageId)).toBe("read");
   });
 
   it("enviar por una línea sin conectar no se acepta en silencio", async () => {

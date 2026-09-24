@@ -84,24 +84,28 @@ const call = (path: string, init: RequestInit = {}, key = adminKey) =>
 
 const settle = (ms = 400) => new Promise((r) => setTimeout(r, ms));
 
+/** Lee el cuerpo con el tipo que el test espera, en vez de arrastrar `unknown`. */
+const json = async <T>(res: Response): Promise<T> => (await res.json()) as T;
+
 run("API HTTP de punta a punta", () => {
   it("publica salud y capacidades sin credencial", async () => {
     const health = await app.request("/health");
     expect(health.status).toBe(200);
-    expect((await health.json()).data.checks.database).toBe(true);
+    expect((await json<{ data: { checks: Record<string, boolean> } }>(health)).data.checks["database"]).toBe(true);
 
     const caps = await app.request("/v1/capabilities");
-    const body = await caps.json();
-    expect(body.data[0].kind).toBe("sandbox");
+    const body = await json<{ data: { kind: string; risk: string; capabilities: string[] }[] }>(caps);
+    const sandbox = body.data[0]!;
+    expect(sandbox.kind).toBe("sandbox");
     // El perfil de riesgo se publica para que el panel pueda advertir.
-    expect(body.data[0].risk).toBe("simulated");
-    expect(body.data[0].capabilities).toContain("send.text");
+    expect(sandbox.risk).toBe("simulated");
+    expect(sandbox.capabilities).toContain("send.text");
   });
 
   it("genera un contrato OpenAPI con el aviso de riesgo por delante", async () => {
     const res = await app.request("/openapi.json");
     expect(res.status).toBe(200);
-    const spec = await res.json();
+    const spec = await json<{ openapi: string; info: { description: string }; paths: Record<string, unknown> }>(res);
     expect(spec.openapi).toBe("3.1.0");
     expect(spec.info.description).toMatch(/NO oficiales/);
     expect(Object.keys(spec.paths).length).toBeGreaterThan(8);
@@ -122,12 +126,12 @@ run("API HTTP de punta a punta", () => {
 
     // 2. enlazar la línea: sin teléfono, por API
     const connect = await call(`/v1/lines/${LINE}/connect`, { method: "POST" });
-    expect((await connect.json()).data.state).toBe("awaiting-link");
+    expect((await json<{ data: { state: string } }>(connect)).data.state).toBe("awaiting-link");
 
     const scan = await call(`/v1/sandbox/lines/${LINE}/scan`, {
       method: "POST", body: JSON.stringify({ phone: "51999888777" }),
     });
-    expect((await scan.json()).data.state).toBe("connected");
+    expect((await json<{ data: { state: string } }>(scan)).data.state).toBe("connected");
 
     // 3. un contacto que no existe nos escribe
     const inbound = await call(`/v1/sandbox/lines/${LINE}/inbound`, {
@@ -155,7 +159,7 @@ run("API HTTP de punta a punta", () => {
     // 6. la conversación está completa y en orden
     const chatId = encodeURIComponent("51988777666@s.whatsapp.net");
     const history = await call(`/v1/lines/${LINE}/chats/${chatId}/messages`);
-    const msgs = (await history.json()).data as { body: string; fromMe: boolean; state: string }[];
+    const msgs = (await json<{ data: { body: string; fromMe: boolean; state: string }[] }>(history)).data;
     expect(msgs.map((m) => m.body)).toEqual(["sí, quedan tres", "¿tienen stock?"]);
     expect(msgs.find((m) => m.fromMe)!.state).toBe("read");
   });
@@ -164,7 +168,8 @@ run("API HTTP de punta a punta", () => {
     const payload = JSON.stringify({ to: "51988777666", text: "una vez", clientMessageId: "http-idem-1" });
     const a = await call(`/v1/lines/${LINE}/messages`, { method: "POST", body: payload });
     const b = await call(`/v1/lines/${LINE}/messages`, { method: "POST", body: payload });
-    expect((await b.json()).data.messageId).toBe((await a.json()).data.messageId);
+    type Aceptado = { data: { messageId: string } };
+    expect((await json<Aceptado>(b)).data.messageId).toBe((await json<Aceptado>(a)).data.messageId);
   });
 
   it("valida el cuerpo y explica el problema en formato RFC 7807", async () => {
@@ -173,7 +178,7 @@ run("API HTTP de punta a punta", () => {
     });
     expect(res.status).toBe(422);
     expect(res.headers.get("content-type")).toContain("application/problem+json");
-    const p = await res.json();
+    const p = await json<{ status: number; type: string }>(res);
     expect(p.status).toBe(422);
     expect(p.type).toContain("/errors/");
   });
@@ -203,7 +208,7 @@ run("API HTTP de punta a punta", () => {
 
   it("los intentos de entrega quedan consultables", async () => {
     const res = await call("/v1/dispatches");
-    const body = await res.json();
+    const body = await json<{ data: { status: string; durationMs: number }[] }>(res);
     expect(body.data.length).toBeGreaterThan(0);
     expect(body.data[0]).toHaveProperty("status");
     expect(body.data[0]).toHaveProperty("durationMs");

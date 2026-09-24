@@ -101,8 +101,18 @@ export function createApp(container: Container): OpenAPIHono<Env> {
   );
 
   // ─────────────────────────────────────────────── autenticación
+  /**
+   * Rutas de `/v1` que NO llevan credencial.
+   *
+   * `GET /v1/media/...` se sirve por URL firmada y caducada: la firma es la
+   * credencial. Exigir además una clave de API haría imposible pegar el enlace
+   * en un `<img>` o mandárselo a un tercero, que es justo para lo que existe.
+   */
+  const sinCredencial = (method: string, path: string): boolean =>
+    path === "/v1/capabilities" || (method === "GET" && path.startsWith("/v1/media/"));
+
   app.use("/v1/*", async (c, next) => {
-    if (c.req.path === "/v1/capabilities") return next();
+    if (sinCredencial(c.req.method, c.req.path)) return next();
     const principal = await authenticateApiKey(container.dbh.db, c.req.header("authorization"));
 
     if (principal.kind === "api-key") {
@@ -298,6 +308,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     },
   );
 
+  registerMediaRoutes(app, container);
   registerMcp(app, container);
   registerWebhookRoutes(app, container);
   registerSandboxRoutes(app, container);
@@ -555,5 +566,96 @@ function registerMcp(app: OpenAPIHono<Env>, container: Container): void {
     // Una notificación no lleva respuesta: 202 sin cuerpo, como manda el protocolo.
     if (answer === null) return c.body(null, 202);
     return c.json(answer as Record<string, unknown>, 200);
+  });
+}
+
+// ─────────────────────────────────────────────── medios
+function registerMediaRoutes(app: OpenAPIHono<Env>, container: Container): void {
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/media", tags: ["medios"],
+      summary: "Subir un fichero y obtener su clave",
+      description:
+        "Devuelve una `storageKey` que luego se pasa a `POST /v1/lines/{lineId}/messages` " +
+        "en el campo del tipo correspondiente. Útil para reutilizar el mismo fichero en " +
+        "varios envíos sin volver a subirlo.",
+      request: {
+        body: {
+          content: {
+            "multipart/form-data": {
+              schema: z.object({
+                file: z.any().openapi({ type: "string", format: "binary" }),
+                lineId: z.string(),
+              }),
+            },
+          },
+          required: true,
+        },
+      },
+      responses: {
+        201: json(z.object({ data: z.object({
+          storageKey: z.string(), size: z.number(), mimeType: z.string(), checksum: z.string(),
+        }) }), "subido"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const form = await c.req.formData();
+      const lineId = String(form.get("lineId") ?? "");
+      await authorize(principal, routeOf("media.upload"), { lineId });
+
+      const file = form.get("file");
+      if (!(file instanceof File)) {
+        throw new OmniError("validation_failed", "falta el campo `file`");
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const key = `media/${principal.orgId}/${lineId}/subidos/${crypto.randomUUID()}`;
+      const stored = await container.storage.put(key, bytes, {
+        mimeType: file.type || "application/octet-stream",
+        ...(file.name ? { fileName: file.name } : {}),
+      });
+      // Se expone como `storageKey` porque es el nombre del campo con el que
+      // se vuelve a usar al enviar; llamarlo `key` obligaría a traducir.
+      return c.json({
+        data: {
+          storageKey: stored.key, size: stored.size,
+          mimeType: stored.mimeType, checksum: stored.checksum,
+        },
+      }, 201);
+    },
+  );
+
+  /**
+   * Sirve un medio local. NO lleva autenticación por credencial a propósito: se
+   * accede con una URL firmada y caducada, que es lo que permite pegarla en un
+   * `<img>` o mandarla a un tercero sin repartir claves de API.
+   *
+   * Lo que sí es imprescindible es que la firma se compruebe de verdad. En el
+   * gateway anterior los adjuntos se escribían bajo `public/` y los servía el
+   * framework sin comprobar nada: quien tuviera la URL leía los adjuntos de
+   * cualquier inquilino, para siempre.
+   */
+  app.get("/v1/media/:key{.+}", async (c) => {
+    if (container.storage.kind !== "local") {
+      throw new OmniError("not_found", "con almacén S3 los medios se sirven por su URL firmada");
+    }
+    const key = decodeURIComponent(c.req.param("key"));
+    const expires = Number(c.req.query("expires"));
+    const signature = c.req.query("signature") ?? "";
+
+    const local = container.storage as unknown as {
+      verify(k: string, e: number, s: string): { ok: true } | { ok: false; reason: string };
+    };
+    const check = local.verify(key, expires, signature);
+    if (!check.ok) throw new OmniError("forbidden", check.reason);
+
+    const found = await container.storage.get(key);
+    if (!found) throw new OmniError("not_found", "el medio ya no está disponible");
+    return c.body(found.bytes as unknown as ArrayBuffer, 200, {
+      "content-type": found.mimeType,
+      // Es contenido privado servido por URL firmada: que no lo cachee un proxy.
+      "cache-control": "private, max-age=60",
+    });
   });
 }

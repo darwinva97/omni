@@ -10,10 +10,14 @@ import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
 import { authStateTable, chatTable, lineTable, messageTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
+import { resolveMedia, type Storage } from "@omni/storage";
 import { SecretBox } from "../crypto/secret-box.js";
 import { SendPacer } from "../outbound/pacer.js";
 
 export const OUTBOUND_QUEUE = "outbound";
+
+/** Ventana de la reserva de idempotencia. Ver el comentario en `send`. */
+export const IDEMPOTENCY_RESERVE_SECONDS = 120;
 
 export interface OutboundJob {
   readonly lineId: string;
@@ -23,6 +27,12 @@ export interface OutboundJob {
   readonly kind: MessageKind;
   readonly sentByUserId: string | null;
   readonly sentByConnectorId: string | null;
+  /**
+   * Clave del medio ya guardado. Va la CLAVE y no los bytes: meter un vídeo de
+   * cuarenta megas en la carga de un trabajo hincha la cola, se copia en cada
+   * reintento y acaba en los registros.
+   */
+  readonly mediaKey: string | null;
 }
 
 export interface RuntimeDeps {
@@ -32,6 +42,7 @@ export interface RuntimeDeps {
   readonly bus: Bus;
   readonly box: SecretBox;
   readonly dispatcher: WebhookDispatcher;
+  readonly storage: Storage;
   readonly now?: () => number;
   readonly newId?: () => string;
 }
@@ -230,13 +241,36 @@ export class EngineRuntime {
     const existing = await this.#findByClientId(lineId, clientMessageId);
     if (existing) return { clientMessageId, messageId: existing, state: "queued" };
 
+    /*
+     * La reserva es CORTA a propósito.
+     *
+     * Solo tiene que cubrir la ventana entre reservar e insertar, que son
+     * milisegundos; la memoria a largo plazo es la propia fila del mensaje. Con
+     * una reserva de días, borrar un mensaje dejaba su reserva huérfana y el
+     * siguiente envío con ese mismo identificador se tragaba en silencio: ni se
+     * insertaba ni se encolaba, y el cliente recibía un 202 por nada.
+     */
     const reserved = await this.#deps.kv.setIfAbsent(
-      `idem:${lineId}:${clientMessageId}`, messageId, 7 * 24 * 3600,
+      `idem:${lineId}:${clientMessageId}`, messageId, IDEMPOTENCY_RESERVE_SECONDS,
     );
     if (!reserved) {
-      const found = await this.#findByClientId(lineId, clientMessageId);
-      return { clientMessageId, messageId: found ?? messageId, state: "queued" };
+      // Otro proceso ganó la carrera. Se le da un momento para que inserte; si
+      // no aparece nada, es que murió por el camino y seguimos nosotros.
+      const found = await this.#waitForMessage(lineId, clientMessageId);
+      if (found) return { clientMessageId, messageId: found, state: "queued" };
     }
+
+    /*
+     * El medio se resuelve y se GUARDA aquí, antes de encolar.
+     *
+     * Así una URL rota o un base64 inválido se contestan con un 4xx inmediato,
+     * en vez de encolar algo que fallará dentro de un minuto sin que nadie mire.
+     * Y el envío deja de depender de que el servidor ajeno siga en pie cuando
+     * al trabajo le toque el turno.
+     */
+    const media = await resolveMedia(input, { orgId: line.orgId, lineId, messageId }, {
+      storage: this.#deps.storage,
+    });
 
     const inserted = await this.#deps.db
       .insert(messageTable)
@@ -245,6 +279,10 @@ export class EngineRuntime {
         clientMessageId, senderAddress: line.address ?? "", fromMe: true, kind,
         body: input.text ?? input.caption ?? null, state: "queued",
         replyToId: input.replyTo ?? null, mentions: input.mentions ? [...input.mentions] : null,
+        mediaKey: media?.storageKey ?? null,
+        mediaMime: media?.mimeType ?? null,
+        mediaSize: media?.size ?? null,
+        mediaFileName: media?.fileName ?? null,
         sentFromPlatform: true,
         sentByUserId: actor.userId ?? null,
         sentByConnectorId: actor.connectorId ?? null,
@@ -261,6 +299,7 @@ export class EngineRuntime {
       {
         lineId, orgId: line.orgId, clientMessageId, input, kind,
         sentByUserId: actor.userId ?? null, sentByConnectorId: actor.connectorId ?? null,
+        mediaKey: media?.storageKey ?? null,
       },
       {
         // Una partición por LÍNEA: los envíos de un número salen en orden y al
@@ -273,6 +312,17 @@ export class EngineRuntime {
     );
 
     return { clientMessageId, messageId, state: "queued" };
+  }
+
+  /** Espera acotada a que otro proceso termine de insertar su mensaje. */
+  async #waitForMessage(lineId: string, clientMessageId: string, timeoutMs = 2000): Promise<string | null> {
+    const limite = this.#now() + timeoutMs;
+    for (;;) {
+      const found = await this.#findByClientId(lineId, clientMessageId);
+      if (found) return found;
+      if (this.#now() >= limite) return null;
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 
   async #findByClientId(lineId: string, clientMessageId: string): Promise<string | null> {
@@ -314,12 +364,26 @@ export class EngineRuntime {
 
     await this.#pacer.pace(job.lineId, line.sendRatePerMinute);
 
+    let media: OutboundCommand["media"];
+    if (job.mediaKey) {
+      const stored = await this.#deps.storage.get(job.mediaKey);
+      if (!stored) {
+        throw new OmniError("not_found", `el medio "${job.mediaKey}" ya no está en el almacén`);
+      }
+      media = {
+        bytes: stored.bytes,
+        mimeType: stored.mimeType,
+        ...(job.input.fileName ? { fileName: job.input.fileName } : {}),
+      };
+    }
+
     const cmd: OutboundCommand = {
       lineId: job.lineId as LineId,
       to: parseAddress(job.input.to),
       clientMessageId: job.clientMessageId,
       kind: job.kind,
       input: job.input,
+      ...(media ? { media } : {}),
     };
     const receipt = await driver.send(cmd);
 

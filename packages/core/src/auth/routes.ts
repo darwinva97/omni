@@ -56,6 +56,10 @@ export const ROUTES = {
   "message.edit": { id: "message.edit", permission: "message.send", scope: "chat", chatSafe: true },
   "message.delete": { id: "message.delete", permission: "message.delete", scope: "chat", chatSafe: true },
   "message.react": { id: "message.react", permission: "message.send", scope: "chat", chatSafe: true },
+  // Subir un fichero es parte de poder enviar: una clave acotada a chats debe
+  // poder hacerlo, porque si no no puede mandar más que texto en los suyos.
+  // El ámbito es de LÍNEA y no de chat: al subir todavía no hay destinatario.
+  "media.upload": { id: "media.upload", permission: "message.send", scope: "line", chatSafe: true },
 
   // --- grupos
   // Leer, renombrar y salir sí; decidir QUIÉN pertenece al grupo, no. Un agente

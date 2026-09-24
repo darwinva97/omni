@@ -20,6 +20,7 @@
     "@omni/engine": "workspace:*",
     "@omni/platform": "workspace:*",
     "@omni/shared": "workspace:*",
+    "@omni/storage": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "fetch-to-node": "^2.1.0",
     "hono": "^4.13.8",

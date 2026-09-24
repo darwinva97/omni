@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parseAddress } from "@omni/shared";
 import { authorize, filterChats, filterLines } from "./authorize.js";
 import type { Principal } from "./principal.js";
-import { ROUTES, route } from "./routes.js";
+import { ROUTES, route, type RouteDescriptor } from "./routes.js";
 import { canGrantRole, roleHas } from "./rbac.js";
 
 const CHAT_A = parseAddress("51999000111@s.whatsapp.net");
@@ -86,7 +86,7 @@ describe("alcance por chat: denegación por defecto", () => {
   it("PROPIEDAD: toda ruta no marcada chatSafe se deniega, también las futuras", async () => {
     // Esta prueba es el contrato del modelo: añadir una ruta sin marcarla la
     // deja cerrada sola. Nadie tiene que acordarse de mantener una lista negra.
-    for (const r of Object.values(ROUTES)) {
+    for (const r of Object.values(ROUTES) as RouteDescriptor[]) {
       if (r.chatSafe === true) continue;
       await denied(authorize(scoped, r, { lineId: "l1", chat: CHAT_A }), 403);
     }
