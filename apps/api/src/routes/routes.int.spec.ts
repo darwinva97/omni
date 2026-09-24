@@ -64,7 +64,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await container?.shutdown(); await dbh?.close(); });
 
-function call(path: string, init: RequestInit = {}, key = adminKey): Promise<Response> {
+async function call(path: string, init: RequestInit = {}, key = adminKey): Promise<Response> {
   return app.request(path, {
     ...init,
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...init.headers },

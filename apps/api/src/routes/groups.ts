@@ -3,7 +3,7 @@ import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver, type GroupMetadata } from "@omni/channels";
 import { authorize, route as routeOf } from "@omni/core";
 import { groupInfoTable, groupParticipantTable, lineTable } from "@omni/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
@@ -166,6 +166,95 @@ export function registerGroupRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
       return c.json({ data: res.map((r) => ({
         address: r.address.value, ok: r.ok, ...(r.reason ? { reason: r.reason } : {}),
       })) }, 200);
+    },
+  );
+}
+
+/** Acciones sobre un grupo que SÍ puede hacer una clave acotada a ese chat. */
+export function registerGroupChatRoutes(app: OpenAPIHono<ApiEnv>, container: Container): void {
+  const driverOf = async (lineId: string): Promise<ChannelDriver> => {
+    const rows = await container.dbh.db
+      .select({ kind: lineTable.channelKind })
+      .from(lineTable).where(eq(lineTable.id, lineId)).limit(1);
+    if (!rows[0]) throw new OmniError("not_found", `la línea "${lineId}" no existe`);
+    return container.runtime.driverFor(rows[0].kind);
+  };
+  const Ok = z.object({ data: z.object({ ok: z.boolean() }) });
+
+  app.openapi(
+    createRoute({
+      method: "patch", path: "/v1/lines/{lineId}/groups/{groupId}", tags: ["grupos"],
+      summary: "Cambiar el asunto o la descripción de un grupo",
+      request: {
+        params: z.object({ lineId: z.string(), groupId: z.string() }),
+        ...body(z.object({
+          subject: z.string().min(1).max(100).optional(),
+          description: z.string().max(2048).optional(),
+        })),
+      },
+      responses: { 200: json(Ok, "actualizado"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, groupId } = c.req.valid("param");
+      const patch = c.req.valid("json");
+      const group = parseAddress(decodeURIComponent(groupId));
+      await authorize(c.get("principal"), routeOf("group.update"), { lineId, chat: group });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "group.manage");
+
+      await container.dbh.db.update(groupInfoTable)
+        .set({
+          ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
+          ...(patch.description !== undefined ? { description: patch.description } : {}),
+          syncedAt: new Date(),
+        })
+        .where(eq(groupInfoTable.address, group.value));
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/groups/{groupId}/leave", tags: ["grupos"],
+      summary: "Salir de un grupo",
+      request: { params: z.object({ lineId: z.string(), groupId: z.string() }) },
+      responses: { 200: json(Ok, "hecho"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, groupId } = c.req.valid("param");
+      const group = parseAddress(decodeURIComponent(groupId));
+      await authorize(c.get("principal"), routeOf("group.leave"), { lineId, chat: group });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "group.manage");
+      await container.dbh.db.delete(groupInfoTable).where(eq(groupInfoTable.address, group.value));
+      await container.dbh.db.delete(groupParticipantTable)
+        .where(eq(groupParticipantTable.groupAddress, group.value));
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/archive", tags: ["chats"],
+      summary: "Archivar o desarchivar una conversación",
+      request: {
+        params: z.object({ lineId: z.string(), chatId: z.string() }),
+        ...body(z.object({ archived: z.boolean().default(true) })),
+      },
+      responses: { 200: json(Ok, "hecho"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, chatId } = c.req.valid("param");
+      const { archived } = c.req.valid("json");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("chat.archive"), { lineId, chat });
+      const { chatTable } = await import("@omni/db");
+      const rows = await container.dbh.db.update(chatTable)
+        .set({ archived })
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)))
+        .returning({ id: chatTable.id });
+      if (rows.length === 0) throw new OmniError("not_found", "esa conversación no existe en esta línea");
+      return c.json({ data: { ok: true } }, 200);
     },
   );
 }
