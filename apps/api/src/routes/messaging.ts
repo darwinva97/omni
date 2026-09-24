@@ -222,6 +222,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
           target: [contactTable.lineId, contactTable.address],
           set: { blocked, updatedAt: new Date() },
         });
+      await container.runtime.publish("contact.blocked", lineId, { address: chat.value, blocked });
       return c.json({ data: { ok: true } }, 200);
     },
   );

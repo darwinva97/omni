@@ -254,6 +254,7 @@ export function registerGroupChatRoutes(app: OpenAPIHono<ApiEnv>, container: Con
         .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)))
         .returning({ id: chatTable.id });
       if (rows.length === 0) throw new OmniError("not_found", "esa conversación no existe en esta línea");
+      await container.runtime.publish("chat.archived", lineId, { chat: chat.value, archived });
       return c.json({ data: { ok: true } }, 200);
     },
   );

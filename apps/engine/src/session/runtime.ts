@@ -411,6 +411,22 @@ export class EngineRuntime {
     });
   }
 
+  /**
+   * Publica un evento originado en la API, no en un driver.
+   *
+   * Archivar un chat o bloquear un contacto los decide una persona desde el
+   * panel, no llegan por el socket. Pasan por el mismo camino de ingesta para
+   * que un webhook los reciba igual que cualquier otro: si tomaran una vía
+   * distinta, suscribirse a ellos no serviría de nada.
+   */
+  async publish(event: EventEnvelope["event"], lineId: string, data: unknown): Promise<void> {
+    const line = await this.#line(lineId);
+    await this.#ingest({
+      id: this.#newId(), event, orgId: line.orgId, lineId,
+      timestamp: this.#now(), data,
+    });
+  }
+
   // ------------------------------------------------------------------ ingesta
 
   /**
