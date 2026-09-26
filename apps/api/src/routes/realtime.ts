@@ -29,8 +29,9 @@ export function registerRealtimeRoutes(
         "registros de acceso y en el historial del navegador.",
       responses: {
         201: json(z.object({ data: z.object({
-          ticket: z.string(), expiresIn: z.number(),
-          url: z.string().describe("Ruta relativa del socket"),
+          ticket: z.string(),
+          expiresIn: z.number(),
+          url: z.string().describe("URL ABSOLUTA del socket, con el billete ya puesto"),
         }) }), "emitido"),
         ...errors,
       },
@@ -38,7 +39,19 @@ export function registerRealtimeRoutes(
     async (c) => {
       const principal = c.get("principal");
       const { ticket, expiresIn } = await issueTicket(container.kv, principal);
-      return c.json({ data: { ticket, expiresIn, url: "/v1/realtime/ws" } }, 201);
+
+      /*
+       * Se devuelve la URL ABSOLUTA y con el billete puesto.
+       *
+       * El panel no puede reenviar un WebSocket —un manejador de ruta HTTP
+       * habla en peticiones, no en sockets—, así que el navegador se conecta
+       * directamente aquí. Que sea el servidor quien diga dónde evita que cada
+       * cliente tenga que componer la URL y acertar con el esquema.
+       */
+      const ws = container.config.PUBLIC_URL.replace(/^http/, "ws").replace(/\/+$/, "");
+      return c.json({
+        data: { ticket, expiresIn, url: `${ws}/v1/realtime/ws?ticket=${ticket}` },
+      }, 201);
     },
   );
 

@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * Una escala corta y deliberada.
+ *
+ * El panel enseña conversaciones, y una conversación se lee mejor con poco
+ * contraste de color y mucho de jerarquía: el texto manda, el cromo desaparece.
+ */
+@theme {
+  --color-fondo: oklch(0.99 0.002 250);
+  --color-panel: oklch(1 0 0);
+  --color-borde: oklch(0.92 0.004 250);
+  --color-tenue: oklch(0.55 0.01 250);
+  --color-texto: oklch(0.22 0.01 250);
+  --color-acento: oklch(0.55 0.15 250);
+  --color-propio: oklch(0.95 0.03 150);
+  --color-ajeno: oklch(0.97 0.002 250);
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-fondo: oklch(0.17 0.008 250);
+    --color-panel: oklch(0.21 0.008 250);
+    --color-borde: oklch(0.28 0.008 250);
+    --color-tenue: oklch(0.65 0.01 250);
+    --color-texto: oklch(0.94 0.004 250);
+    --color-acento: oklch(0.72 0.13 250);
+    --color-propio: oklch(0.30 0.05 150);
+    --color-ajeno: oklch(0.25 0.008 250);
+  }
+}
+
+html { color-scheme: light dark; }
+
+body {
+  background: var(--color-fondo);
+  color: var(--color-texto);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Las cifras de una tabla se comparan mal si bailan de ancho. */
+  font-variant-numeric: tabular-nums;
+}
