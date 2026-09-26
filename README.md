@@ -51,7 +51,7 @@ por línea reducen el riesgo. No lo eliminan.
 | **Panel web**: conversación en vivo, líneas, claves, equipo, entregas y bitácora | ✅ |
 | Capas **`/compat`**: WasenderAPI y Evolution API | ✅ |
 | **SDK de Python**, solo biblioteca estándar, probado contra la API real | ✅ |
-| SDK de Go | ⏳ |
+| **SDK de Go**, solo net/http, probado contra la API real | ✅ |
 | Fases 4-7: paridad extendida, plugins, multicanal, CRM | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 
