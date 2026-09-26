@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { apiFetchAuth, type Linea, type Yo } from "@/lib/api";
 import { Cabecera, Estado, Vacio, Aviso } from "@/lib/ui";
+import { Navegacion } from "@/lib/ui-nav";
 
 export default async function Lineas() {
   const [yo, lineas] = await Promise.all([
@@ -13,6 +14,7 @@ export default async function Lineas() {
   return (
     <>
       <Cabecera titulo={`${yo.name} · ${yo.role ?? ""}`} />
+      <Navegacion actual="/" />
       <main className="mx-auto max-w-5xl space-y-4 px-5 py-6">
         {noOficiales.length > 0 && (
           <Aviso>
@@ -22,10 +24,15 @@ export default async function Lineas() {
           </Aviso>
         )}
 
-        <h2 className="text-sm font-medium">Líneas</h2>
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-medium">Líneas</h2>
+          <Link href="/lineas/nueva" className="text-sm text-(--color-acento) hover:underline">
+            Nueva línea
+          </Link>
+        </div>
 
         {lineas.length === 0 ? (
-          <Vacio>Todavía no hay líneas. Se crean desde la API o con <code>omni linea:crear</code>.</Vacio>
+          <Vacio>Todavía no hay líneas. Crea la primera con <strong>Nueva línea</strong>.</Vacio>
         ) : (
           <ul className="divide-y divide-(--color-borde) overflow-hidden rounded-lg border border-(--color-borde) bg-(--color-panel)">
             {lineas.map((l) => (

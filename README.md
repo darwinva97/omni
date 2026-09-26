@@ -48,7 +48,7 @@ por línea reducen el riesgo. No lo eliminan.
 | Driver **whatsapp-web.js**: menor riesgo de baneo, 400 MB por línea | ✅ |
 | **SDK de TypeScript**, sin dependencias, probado contra la API real | ✅ |
 | Tiempo real por **WebSocket** | ✅ |
-| **Panel web** con conversación en vivo | ✅ |
+| **Panel web**: conversación en vivo, líneas, claves, equipo, entregas y bitácora | ✅ |
 | Capas **`/compat`**: WasenderAPI y Evolution API | ✅ |
 | SDKs de Python y Go | ⏳ |
 | Fases 4-7: paridad extendida, plugins, multicanal, CRM | ⏳ |
