@@ -52,7 +52,9 @@ por línea reducen el riesgo. No lo eliminan.
 | Capas **`/compat`**: WasenderAPI y Evolution API | ✅ |
 | **SDK de Python**, solo biblioteca estándar, probado contra la API real | ✅ |
 | **SDK de Go**, solo net/http, probado contra la API real | ✅ |
-| Fases 4-7: paridad extendida, plugins, multicanal, CRM | ⏳ |
+| **Etiquetas** propias, iguales en los cuatro transportes | ✅ |
+| Resto de fase 4: canales, comunidades, botones y listas | ⏳ |
+| Fases 5-7: plugins, buses, multicanal, CRM | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 
 155 pruebas: unitarias, de contrato y de integración contra Postgres real.

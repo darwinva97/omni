@@ -440,6 +440,63 @@ export const COMMANDS: readonly Command[] = [
       }),
   },
   {
+    name: "etiquetas",
+    summary: "Etiquetas de una línea, con cuántas veces se usa cada una",
+    operation: "GET /v1/lines/{lineId}/labels",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/labels`),
+  },
+  {
+    name: "etiqueta:crear",
+    summary: "Crear una etiqueta",
+    operation: "POST /v1/lines/{lineId}/labels",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "nombre", required: true, description: "Nombre de la etiqueta" },
+    ],
+    flags: [{ name: "color", description: "gris, rojo, ámbar, verde, azul o violeta" }],
+    run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/labels`, {
+      name: req(a, 1, "nombre"),
+      ...(flag(a, "color") ? { color: flag(a, "color") } : {}),
+    }),
+  },
+  {
+    name: "etiqueta:borrar",
+    summary: "Borrar una etiqueta y quitarla de donde estuviera",
+    operation: "DELETE /v1/lines/{lineId}/labels/{labelId}",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "etiqueta", required: true, description: "Identificador de la etiqueta" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/labels/${enc(req(a, 1, "etiqueta"))}`),
+  },
+  {
+    name: "etiqueta:chats",
+    summary: "Conversaciones que llevan una etiqueta",
+    operation: "GET /v1/lines/{lineId}/labels/{labelId}/chats",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "etiqueta", required: true, description: "Identificador de la etiqueta" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/labels/${enc(req(a, 1, "etiqueta"))}/chats`),
+  },
+  {
+    name: "chat:etiquetar",
+    summary: "Fijar las etiquetas de una conversación; reemplaza el conjunto entero",
+    operation: "PUT /v1/lines/{lineId}/chats/{chatId}/labels",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "etiquetas", required: false, description: "Separadas por comas; vacío las quita todas" },
+    ],
+    run: (c, a) => c.request("PUT",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/labels`,
+      { labelIds: (a.positional[2] ?? "").split(",").map((s) => s.trim()).filter(Boolean) }),
+  },
+  {
     name: "auditoria",
     summary: "Quién hizo qué, con qué credencial y desde dónde",
     operation: "GET /v1/audit",

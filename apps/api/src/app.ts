@@ -12,6 +12,7 @@ import { problem } from "./http.js";
 import { registerMessagingRoutes } from "./routes/messaging.js";
 import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
+import { registerLabelRoutes } from "./routes/labels.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
 import { registerRealtimeRoutes } from "./routes/realtime.js";
@@ -365,6 +366,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerLineAdminRoutes(app, container);
   registerGroupRoutes(app, container);
   registerGroupChatRoutes(app, container);
+  registerLabelRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);
   registerWebhookRoutes(app, container);

@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, index, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, index, primaryKey, uniqueIndex } from "drizzle-orm/pg-core";
 import { lineTable } from "./lines.js";
 
 export const groupInfoTable = pgTable(
@@ -61,7 +61,12 @@ export const labelTable = pgTable(
      */
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [index("label_line_idx").on(t.lineId)],
+  (t) => [
+    index("label_line_idx").on(t.lineId),
+    // Dos etiquetas con el mismo nombre en una línea serían indistinguibles en
+    // el panel y en la API.
+    uniqueIndex("label_line_name_idx").on(t.lineId, t.name),
+  ],
 );
 
 export const labelAssignmentTable = pgTable(

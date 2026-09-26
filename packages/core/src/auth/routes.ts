@@ -61,6 +61,14 @@ export const ROUTES = {
   // El ámbito es de LÍNEA y no de chat: al subir todavía no hay destinatario.
   "media.upload": { id: "media.upload", permission: "message.send", scope: "line", chatSafe: true },
 
+  // --- etiquetas
+  // Son nuestras, no del protocolo: funcionan igual en los cuatro transportes.
+  "label.read": { id: "label.read", permission: "message.read", scope: "line", chatSafe: true },
+  "label.manage": { id: "label.manage", permission: "chat.manage", scope: "line" },
+  // Etiquetar una conversación es parte de trabajarla, así que una clave
+  // acotada a chats puede hacerlo EN LOS SUYOS.
+  "label.assign": { id: "label.assign", permission: "chat.manage", scope: "chat", chatSafe: true },
+
   // --- grupos
   // Leer, renombrar y salir sí; decidir QUIÉN pertenece al grupo, no. Un agente
   // acotado a un grupo no puede meter ni echar a nadie de él.

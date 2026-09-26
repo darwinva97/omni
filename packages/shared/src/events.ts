@@ -40,13 +40,12 @@ export const eventNames = [
   // varios
   "presence.updated",
   "history.synced",
+  "label.updated",
   /*
    * Deliberadamente AUSENTES hasta que exista quien los emita:
    *
    * `poll.vote` — WhatsApp cifra los votos y agregarlos es frágil; anunciarlo
    *   sin implementarlo dejaría a alguien esperando un evento que no llega.
-   * `label.updated` — las etiquetas serán nuestras, no del protocolo, y
-   *   todavía no hay nada que las mueva.
    * `newsletter.updated` — los canales aún no están.
    *
    * Un evento al que uno puede suscribirse y no recibir nunca es peor que su
