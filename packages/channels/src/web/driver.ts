@@ -311,7 +311,15 @@ export class WhatsappWebDriver extends EventEmitterBase implements ChannelDriver
     await (mensaje as { delete: (t: boolean) => Promise<void> }).delete(true);
   }
 
-  async markRead(lineId: LineId, chat: Address): Promise<void> {
+  /**
+   * Marca el chat como visto.
+   *
+   * La interfaz web no marca mensajes sueltos: marca la CONVERSACIÓN entera. Se
+   * acepta la lista de identificadores para cumplir el puerto, pero se ignora a
+   * propósito —y se dice aquí, porque un cliente que espere precisión por
+   * mensaje merece saber que no la tiene.
+   */
+  async markRead(lineId: LineId, chat: Address, _providerMessageIds: readonly string[]): Promise<void> {
     const { cliente } = this.#require(lineId);
     const c = (await cliente.getChatById(toWebId(chat))) as { sendSeen: () => Promise<void> };
     await c.sendSeen();

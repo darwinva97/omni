@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Comprobación de tipos antes de cada commit.
+#
+# Dos veces he cometido con el chequeo roto por no ejecutarlo antes. Que lo
+# recuerde un hook y no yo.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+if ! ./node_modules/.bin/tsc -p tsconfig.check.json >/tmp/omni-tsc.log 2>&1; then
+  echo "La comprobación de tipos falla; no se comete:" >&2
+  head -20 /tmp/omni-tsc.log >&2
+  exit 1
+fi
