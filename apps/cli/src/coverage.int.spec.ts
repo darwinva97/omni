@@ -42,21 +42,6 @@ const SIN_COMANDO = new Map<string, string>([
   // Se descarga por URL firmada, que ya devuelve la API. Un comando sería un
   // envoltorio de `curl` sin valor añadido.
   ["GET /v1/media/{key}", "se accede por la URL firmada que ya devuelve la API; un comando sería un envoltorio de curl"],
-  // Acciones sobre un mensaje concreto: van encadenadas a `mensajes` y su
-  // ergonomía en línea de comandos todavía no está decidida.
-  ["PATCH /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}", "pendiente"],
-  ["DELETE /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}", "pendiente"],
-  ["POST /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/reaction", "pendiente"],
-  ["POST /v1/lines/{lineId}/chats/{chatId}/read", "pendiente"],
-  ["POST /v1/lines/{lineId}/chats/{chatId}/presence", "pendiente"],
-  ["POST /v1/lines/{lineId}/chats/{chatId}/archive", "pendiente"],
-  ["GET /v1/lines/{lineId}/contacts/{address}/exists", "pendiente"],
-  ["POST /v1/lines/{lineId}/contacts/{address}/block", "pendiente"],
-  ["GET /v1/lines/{lineId}/groups/{groupId}", "pendiente"],
-  ["POST /v1/lines/{lineId}/groups", "pendiente"],
-  ["PATCH /v1/lines/{lineId}/groups/{groupId}", "pendiente"],
-  ["POST /v1/lines/{lineId}/groups/{groupId}/leave", "pendiente"],
-  ["POST /v1/lines/{lineId}/groups/{groupId}/participants", "pendiente"],
   // La identidad de personas va por cookie de sesión y navegador. Una CLI que
   // guardara sesiones necesita su propio almacén de credenciales, y eso es una
   // decisión aparte: de momento la CLI usa claves de API.

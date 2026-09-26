@@ -30,6 +30,9 @@ const req = (a: Args, i: number, nombre: string): string => {
   return v;
 };
 
+/** Las direcciones llevan `@`: sin escapar, la ruta se parte donde no debe. */
+const enc = encodeURIComponent;
+
 const flag = (a: Args, n: string): string | undefined => {
   const v = a.flags[n];
   return typeof v === "string" ? v : undefined;
@@ -258,6 +261,183 @@ export const COMMANDS: readonly Command[] = [
       email: req(a, 0, "correo"),
       role: flag(a, "rol") ?? "agent",
     }),
+  },
+  {
+    name: "mensaje:editar",
+    summary: "Editar un mensaje ya enviado, dentro de la ventana que WhatsApp permite",
+    operation: "PATCH /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador del proveedor" },
+      { name: "texto", required: true, description: "Nuevo contenido" },
+    ],
+    run: (c, a) => c.request("PATCH",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}`,
+      { text: req(a, 3, "texto") }),
+  },
+  {
+    name: "mensaje:borrar",
+    summary: "Borrar un mensaje para todos",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador del proveedor" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}`),
+  },
+  {
+    name: "mensaje:reaccionar",
+    summary: "Reaccionar a un mensaje; un emoji vacío retira la reacción",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/reaction",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador del proveedor" },
+      { name: "emoji", required: false, description: "Vacío retira la reacción" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/reaction`,
+      { emoji: a.positional[3] ?? "" }),
+  },
+  {
+    name: "chat:leido",
+    summary: "Marcar mensajes como leídos",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/read",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensajes", required: true, description: "Identificadores separados por comas" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/read`,
+      { messageIds: req(a, 2, "mensajes").split(",").map((s) => s.trim()).filter(Boolean) }),
+  },
+  {
+    name: "chat:escribiendo",
+    summary: "Mostrar que se está escribiendo o grabando",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/presence",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "estado", required: false, description: "composing, recording o paused" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/presence`,
+      { presence: a.positional[2] ?? "composing" }),
+  },
+  {
+    name: "chat:archivar",
+    summary: "Archivar o desarchivar una conversación",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/archive",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    flags: [{ name: "desarchivar", description: "Sacarla del archivo en vez de archivarla" }],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/archive`,
+      { archived: a.flags["desarchivar"] !== true }),
+  },
+  {
+    name: "contacto:existe",
+    summary: "Comprobar si un número está registrado en la red del transporte",
+    operation: "GET /v1/lines/{lineId}/contacts/{address}/exists",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "direccion", required: true, description: "Teléfono o dirección completa" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/contacts/${enc(req(a, 1, "direccion"))}/exists`),
+  },
+  {
+    name: "contacto:bloquear",
+    summary: "Bloquear o desbloquear un contacto",
+    operation: "POST /v1/lines/{lineId}/contacts/{address}/block",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "direccion", required: true, description: "Teléfono o dirección completa" },
+    ],
+    flags: [{ name: "desbloquear", description: "Quitar el bloqueo en vez de ponerlo" }],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/contacts/${enc(req(a, 1, "direccion"))}/block`,
+      { blocked: a.flags["desbloquear"] !== true }),
+  },
+  {
+    name: "grupo:ver",
+    summary: "Datos y participantes de un grupo",
+    operation: "GET /v1/lines/{lineId}/groups/{groupId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}`),
+  },
+  {
+    name: "grupo:crear",
+    summary: "Crear un grupo con sus participantes",
+    operation: "POST /v1/lines/{lineId}/groups",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "asunto", required: true, description: "Nombre del grupo" },
+      { name: "participantes", required: true, description: "Separados por comas" },
+    ],
+    run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/groups`, {
+      subject: req(a, 1, "asunto"),
+      participants: req(a, 2, "participantes").split(",").map((s) => s.trim()).filter(Boolean),
+    }),
+  },
+  {
+    name: "grupo:renombrar",
+    summary: "Cambiar el asunto o la descripción de un grupo",
+    operation: "PATCH /v1/lines/{lineId}/groups/{groupId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+    ],
+    flags: [
+      { name: "asunto", description: "Nuevo nombre" },
+      { name: "descripcion", description: "Nueva descripción" },
+    ],
+    run: (c, a) => c.request("PATCH",
+      `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}`,
+      {
+        ...(flag(a, "asunto") ? { subject: flag(a, "asunto") } : {}),
+        ...(flag(a, "descripcion") ? { description: flag(a, "descripcion") } : {}),
+      }),
+  },
+  {
+    name: "grupo:salir",
+    summary: "Salir de un grupo",
+    operation: "POST /v1/lines/{lineId}/groups/{groupId}/leave",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/leave`),
+  },
+  {
+    name: "grupo:participantes",
+    summary: "Añadir, quitar, promover o degradar participantes",
+    operation: "POST /v1/lines/{lineId}/groups/{groupId}/participants",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+      { name: "accion", required: true, description: "add, remove, promote o demote" },
+      { name: "participantes", required: true, description: "Separados por comas" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/participants`,
+      {
+        action: req(a, 2, "accion"),
+        participants: req(a, 3, "participantes").split(",").map((s) => s.trim()).filter(Boolean),
+      }),
   },
   {
     name: "auditoria",
