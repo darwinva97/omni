@@ -47,3 +47,12 @@ jobs:
       # responder. Sin teléfono, desatendido, en cada push.
       - name: Integración
         run: pnpm test:int
+
+      # El SDK de Python no tiene dependencias, así que no hay nada que instalar.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: SDK de Python
+        working-directory: sdks/python
+        run: python -m unittest discover -s tests -v

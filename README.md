@@ -50,7 +50,8 @@ por línea reducen el riesgo. No lo eliminan.
 | Tiempo real por **WebSocket** | ✅ |
 | **Panel web**: conversación en vivo, líneas, claves, equipo, entregas y bitácora | ✅ |
 | Capas **`/compat`**: WasenderAPI y Evolution API | ✅ |
-| SDKs de Python y Go | ⏳ |
+| **SDK de Python**, solo biblioteca estándar, probado contra la API real | ✅ |
+| SDK de Go | ⏳ |
 | Fases 4-7: paridad extendida, plugins, multicanal, CRM | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 

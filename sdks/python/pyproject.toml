@@ -1,0 +1,13 @@
+[project]
+name = "omni-sdk"
+version = "0.1.0"
+description = "Cliente de Omni. Solo biblioteca estándar."
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["omni*"]
