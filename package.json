@@ -12,7 +12,7 @@
     "test:int": "vitest run --project integration",
     "test:contract": "vitest run --project contract",
     "test:all": "vitest run",
-    "typecheck": "tsc -p tsconfig.check.json",
+    "typecheck": "tsc -p tsconfig.check.json && pnpm --filter @omni/web exec tsc --noEmit",
     "lint": "turbo run lint",
     "db:generate": "pnpm --filter @omni/db db:generate",
     "db:migrate": "pnpm --filter @omni/db db:migrate"

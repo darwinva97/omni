@@ -34,5 +34,8 @@
     "apps/*/src/**/*.ts",
     "vitest.config.ts",
     "sdks/*/src/**/*.ts"
+  ],
+  "exclude": [
+    "apps/web/**"
   ]
 }
