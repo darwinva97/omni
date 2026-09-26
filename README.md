@@ -45,12 +45,13 @@ por línea reducen el riesgo. No lo eliminan.
 | **CLI** con guard de cobertura sobre la API | ✅ |
 | **Identidad**: alta, sesión en cookie httpOnly, equipo e invitaciones | ✅ |
 | Driver **Cloud API**: transporte OFICIAL, sin riesgo de baneo | ✅ |
-| Driver whatsapp-web.js | ⏳ |
+| Driver **whatsapp-web.js**: menor riesgo de baneo, 400 MB por línea | ✅ |
 | **SDK de TypeScript**, sin dependencias, probado contra la API real | ✅ |
 | Tiempo real por **WebSocket** | ✅ |
 | **Panel web** con conversación en vivo | ✅ |
 | Capas **`/compat`**: WasenderAPI y Evolution API | ✅ |
 | SDKs de Python y Go | ⏳ |
+| Fases 4-7: paridad extendida, plugins, multicanal, CRM | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 
 155 pruebas: unitarias, de contrato y de integración contra Postgres real.

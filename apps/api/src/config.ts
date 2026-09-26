@@ -61,6 +61,12 @@ export const Config = z.object({
   WHATSAPP_BAILEYS_ENABLED: envBoolean(true),
   /** Transporte oficial de Meta. Sin riesgo de baneo y sin coste por línea. */
   WHATSAPP_CLOUD_ENABLED: envBoolean(true),
+  /**
+   * Transporte por navegador. Menor riesgo de baneo que Baileys —el tráfico es
+   * de un Chromium real— a cambio de unos 400 MB por línea. Apagado por defecto.
+   */
+  WHATSAPP_WEB_ENABLED: envBoolean(false),
+  CHROMIUM_PATH: z.string().optional(),
   MCP_ENABLED: envBoolean(false),
   /** Con `true` (el defecto) solo se ofrecen herramientas de lectura. */
   MCP_READONLY: envBoolean(true),

@@ -8,3 +8,6 @@ export { createFakeSocket, type FakeSocketControl } from "./baileys/fake-socket.
 export { CloudDriver, CLOUD_DESCRIPTOR, cloudKind, cloudText, statusToState } from "./cloud/driver.js";
 export { createFakeMeta, type FakeMeta } from "./cloud/fake-meta.js";
 export type { CloudWebhookPayload, CloudInboundMessage, CloudStatus } from "./cloud/types.js";
+export { WhatsappWebDriver, WEB_DESCRIPTOR, webKind, toWebContent } from "./web/driver.js";
+export { ObjectStorageSessionStore } from "./web/session-store.js";
+export { createFakeWebClient, type FakeWebControl } from "./web/fake-client.js";

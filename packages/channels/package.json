@@ -18,6 +18,8 @@
   "dependencies": {
     "@hapi/boom": "^10.0.1",
     "@omni/shared": "workspace:*",
-    "baileys": "7.0.0-rc14"
+    "@omni/storage": "workspace:*",
+    "baileys": "7.0.0-rc14",
+    "whatsapp-web.js": "^1.34.7"
   }
 }

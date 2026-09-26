@@ -1,4 +1,4 @@
-import { BaileysDriver, CloudDriver, SandboxDriver, type ChannelDriver } from "@omni/channels";
+import { BaileysDriver, CloudDriver, SandboxDriver, WhatsappWebDriver, type ChannelDriver } from "@omni/channels";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
   MemoryBus, MemoryJobQueue, MemoryKv,
@@ -124,6 +124,20 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    * Una línea solo lo usa si su configuración trae las credenciales.
    */
   if (config.WHATSAPP_CLOUD_ENABLED) drivers.push(new CloudDriver());
+
+  /*
+   * whatsapp-web.js va APAGADO por defecto.
+   *
+   * Conduce un Chromium por línea: cuatrocientos megas frente a los sesenta de
+   * Baileys. Encenderlo sin querer en un servidor pequeño lo tumba en cuanto se
+   * enlazan tres números, así que se activa a propósito o no se activa.
+   */
+  if (config.WHATSAPP_WEB_ENABLED) {
+    drivers.push(new WhatsappWebDriver({
+      storage,
+      ...(config.CHROMIUM_PATH ? { executablePath: config.CHROMIUM_PATH } : {}),
+    }));
+  }
 
   drivers.push(...(opts.drivers ?? []));
   for (const d of drivers) runtime.registerDriver(d);
