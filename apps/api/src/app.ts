@@ -15,6 +15,8 @@ import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
 import { registerRealtimeRoutes } from "./routes/realtime.js";
+import { wasenderCompat } from "./compat/wasender.js";
+import { evolutionCompat } from "./compat/evolution.js";
 
 type Env = { Variables: { principal: Principal; container: Container } };
 
@@ -347,6 +349,14 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       }, 200);
     },
   );
+
+  /*
+   * Compatibilidad de cable. Migrar desde WasenderAPI es cambiar la URL base.
+   * Se monta bajo `/compat/wasender` y NO pasa por el middleware de `/v1`:
+   * tiene su propia autenticación, igual de estricta.
+   */
+  app.route("/compat/wasender", wasenderCompat(container));
+  app.route("/compat/evolution", evolutionCompat(container));
 
   registerRealtimeRoutes(app, container);
   registerIdentityRoutes(app, container);

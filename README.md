@@ -47,7 +47,10 @@ por línea reducen el riesgo. No lo eliminan.
 | Driver **Cloud API**: transporte OFICIAL, sin riesgo de baneo | ✅ |
 | Driver whatsapp-web.js | ⏳ |
 | **SDK de TypeScript**, sin dependencias, probado contra la API real | ✅ |
-| SDKs de Python y Go, capas `/compat` | ⏳ |
+| Tiempo real por **WebSocket** | ✅ |
+| **Panel web** con conversación en vivo | ✅ |
+| Capas **`/compat`**: WasenderAPI y Evolution API | ✅ |
+| SDKs de Python y Go | ⏳ |
 | Multicanal (Telegram, correo, Meta, SMS, web) y CRM | ⏳ |
 
 155 pruebas: unitarias, de contrato y de integración contra Postgres real.
@@ -99,6 +102,21 @@ curl -X POST $API/v1/lines/$L/messages -H "Authorization: Bearer $KEY" \
 
 Responde **202**: aceptado y encolado, todavía no entregado. Repetir el mismo
 `clientMessageId` **no duplica** el mensaje.
+
+## Migrar desde otro gateway
+
+Cambiar la URL base, y nada más:
+
+| Vienes de | Apunta a |
+|---|---|
+| WasenderAPI | `https://tu-servidor/compat/wasender` |
+| Evolution API | `https://tu-servidor/compat/evolution` |
+
+Se reproducen sus formas de petición y sus sobres de respuesta —inconsistencias
+incluidas, porque el objetivo es que un cliente existente funcione sin tocarlo—
+y no aparecen en el contrato OpenAPI: son clones de una interfaz ajena, no
+parte de la nuestra. **Los permisos son los mismos que en `/v1`**: la
+compatibilidad no es una puerta trasera.
 
 ## SDK de TypeScript
 
