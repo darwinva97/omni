@@ -72,7 +72,7 @@ WhatsApp en CI, en cada push, sin teléfono y sin riesgo de baneo.
 ## La CLI
 
 ```bash
-export OMNI_URL=http://127.0.0.1:4000
+export OMNI_URL=http://127.0.0.1:4010
 export OMNI_API_KEY=omni_...
 
 omni ayuda
@@ -169,8 +169,8 @@ pnpm build
 scripts/dev-api.sh
 ```
 
-- Documentación: `http://127.0.0.1:4000/docs`
-- Contrato: `http://127.0.0.1:4000/openapi.json`
+- Documentación: `http://127.0.0.1:4010/docs`
+- Contrato: `http://127.0.0.1:4010/openapi.json`
 
 > **`OMNI_MASTER_KEY` cifra las credenciales de todas las líneas. Perderla
 > significa perder todas las sesiones.** Guárdala fuera de la base de datos.

@@ -14,6 +14,7 @@ import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
+import { registerRealtimeRoutes } from "./routes/realtime.js";
 
 type Env = { Variables: { principal: Principal; container: Container } };
 
@@ -45,7 +46,12 @@ const body = <T extends z.ZodType>(schema: T) => ({
   body: { content: { "application/json": { schema } }, required: true },
 });
 
-export function createApp(container: Container): OpenAPIHono<Env> {
+export interface AppOptions {
+  readonly gateway?: import("./realtime/gateway.js").RealtimeGateway;
+}
+
+export function createApp(container: Container, opts: AppOptions = {}): OpenAPIHono<Env> {
+  void opts;
   const app = new OpenAPIHono<Env>({
     defaultHook: (result, c) => {
       if (!result.success) {
@@ -121,6 +127,8 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     path === "/v1/auth/login" ||
     path === "/v1/auth/logout" ||
     path === "/v1/invitations/accept" ||
+    // El billete de un solo uso ES la credencial; se canjea en el manejador.
+    path === "/v1/realtime/ws" ||
     // Meta no tiene credencial nuestra: esta ruta se autentica con la firma
     // del cuerpo, comprobada dentro del propio manejador.
     /^\/v1\/channels\/cloud\/[^/]+\/webhook$/.test(path) ||
@@ -340,6 +348,7 @@ export function createApp(container: Container): OpenAPIHono<Env> {
     },
   );
 
+  registerRealtimeRoutes(app, container);
   registerIdentityRoutes(app, container);
   registerCloudWebhookRoutes(app, container);
   registerMessagingRoutes(app, container);

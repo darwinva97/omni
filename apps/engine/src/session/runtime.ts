@@ -441,7 +441,14 @@ export class EngineRuntime {
         const data = envelope.data as { state?: string };
         if (data.state) await this.#setStatus(envelope.lineId, data.state);
       }
-      await this.#deps.bus.publish(`line:${envelope.lineId}`, envelope);
+      /*
+       * Se publica por ORGANIZACIÓN, no por línea.
+       *
+       * El WebSocket filtra por línea de todos modos, y suscribirse por línea
+       * significaría una suscripción al bus por cada línea abierta: con
+       * Postgres eso son otras tantas conexiones `LISTEN` a la base.
+       */
+      await this.#deps.bus.publish(`org:${envelope.orgId}`, envelope);
       await this.#deps.dispatcher.dispatch(envelope);
     } catch {
       // Un fallo ingiriendo un evento no puede tumbar la conexión de la línea.

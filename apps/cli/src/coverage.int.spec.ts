@@ -69,6 +69,10 @@ const SIN_COMANDO = new Map<string, string>([
   // autentica con la firma del cuerpo, no con una credencial nuestra.
   ["GET /v1/channels/cloud/{lineId}/webhook", "la llama Meta para verificar la URL"],
   ["POST /v1/channels/cloud/{lineId}/webhook", "la llama Meta para empujar eventos"],
+  // El billete solo sirve para abrir un socket, y una CLI de un disparo no
+  // tiene dónde mantenerlo abierto. Un comando `omni escuchar` tendría sentido,
+  // pero es otra forma de programa.
+  ["POST /v1/realtime/ticket", "solo sirve para abrir un WebSocket"],
 ]);
 
 run("cobertura de la CLI sobre la API", () => {
