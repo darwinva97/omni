@@ -71,6 +71,13 @@ export const Config = z.object({
    * una línea solo lo usa si su configuración trae el token del bot.
    */
   TELEGRAM_ENABLED: envBoolean(true),
+  /**
+   * Correo. Encendido: no arriesga nada y una línea solo lo usa si su
+   * configuración trae servidor y credenciales.
+   */
+  EMAIL_ENABLED: envBoolean(true),
+  /** Cada cuánto se revisa el buzón IMAP, en segundos. */
+  EMAIL_POLL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
   CHROMIUM_PATH: z.string().optional(),
   /**
    * Plugins. Apagados por defecto: ejecutan código de terceros, aunque sea en

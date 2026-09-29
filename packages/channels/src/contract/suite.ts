@@ -22,6 +22,14 @@ export interface DriverUnderTest {
   readonly lineId: LineId;
   /** Lleva la línea al estado conectado, sea por QR simulado, token o lo que use. */
   readonly link: () => Promise<void>;
+  /**
+   * Un destinatario válido PARA ESTE CANAL.
+   *
+   * El puerto es multicanal, así que la batería no puede dar por hecho que todo
+   * destino es un teléfono: al correo hay que escribirle a una dirección de
+   * correo. Por defecto un número, que es lo que usan los cuatro de WhatsApp.
+   */
+  readonly sampleTo?: string;
   readonly cleanup?: () => Promise<void>;
 }
 
@@ -68,6 +76,9 @@ const CONTENIDO: Record<ContentField, Partial<SendMessageInput>> = {
   },
   template: { template: { name: "saludo", languageCode: "es" } },
 };
+
+/** Un teléfono, que es lo que aceptan los cuatro transportes de WhatsApp. */
+const DESTINO_POR_DEFECTO = "51999000111";
 
 export function runChannelContract(name: string, make: () => Promise<DriverUnderTest>): void {
   describe(`contrato de canal: ${name}`, () => {
@@ -124,15 +135,16 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
        * Otros fallos SÍ valen —una URL inalcanzable, una línea sin conectar—:
        * lo único inaceptable es que la capacidad declarada no exista.
        */
-      const { driver, lineId, link, cleanup } = await make();
+      const { driver, lineId, link, cleanup, sampleTo } = await make();
+      const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       await link();
 
       for (const field of contentFields) {
         if (!driver.descriptor.capabilities.has(`send.${field}` as Capability)) continue;
 
-        const input = { to: "51999000111", ...CONTENIDO[field] } as SendMessageInput;
+        const input = { to: destino, ...CONTENIDO[field] } as SendMessageInput;
         const err = await driver
-          .send({ lineId, to: parseAddress("51999000111"), clientMessageId: `cap-${field}`, kind: field as never, input })
+          .send({ lineId, to: parseAddress(destino), clientMessageId: `cap-${field}`, kind: field as never, input })
           .then(() => null)
           .catch((e: unknown) => e as OmniError);
 
@@ -147,11 +159,12 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
     it("enviar por una línea desconocida es error del cliente, no del servidor", async () => {
       // 404 (no existe) y 409 (existe sin conectar) son ambos correctos; lo que
       // no vale es un 500 ni una promesa que se resuelve sin enviar nada.
-      const { driver, lineId, cleanup } = await make();
+      const { driver, lineId, cleanup, sampleTo } = await make();
+      const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       const err = await driver
         .send({
-          lineId, to: parseAddress("51999000111"), clientMessageId: "c1",
-          kind: "text", input: { to: "51999000111", text: "hola" },
+          lineId, to: parseAddress(destino), clientMessageId: "c1",
+          kind: "text", input: { to: destino, text: "hola" },
         })
         .then(() => null)
         .catch((e: unknown) => e as OmniError);
@@ -163,20 +176,22 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
     });
 
     it("tras desconectar, enviar falla exactamente con 409", async () => {
-      const { driver, lineId, link, cleanup } = await make();
+      const { driver, lineId, link, cleanup, sampleTo } = await make();
+      const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       await link();
       await driver.disconnect(lineId);
       await expect(
         driver.send({
-          lineId, to: parseAddress("51999000111"), clientMessageId: "c2",
-          kind: "text", input: { to: "51999000111", text: "hola" },
+          lineId, to: parseAddress(destino), clientMessageId: "c2",
+          kind: "text", input: { to: destino, text: "hola" },
         }),
       ).rejects.toMatchObject({ status: 409, code: "line_not_connected" });
       await cleanup?.();
     });
 
     it("entrega eventos con el sobre completo y deja desuscribirse", async () => {
-      const { driver, lineId, link, cleanup } = await make();
+      const { driver, lineId, link, cleanup, sampleTo } = await make();
+      const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       const seen: EventEnvelope[] = [];
       const off = driver.subscribe((e) => void seen.push(e));
       await link();
@@ -193,8 +208,8 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
       const before = seen.length;
       off();
       await driver.send({
-        lineId, to: parseAddress("51999000111"), clientMessageId: "tras-off",
-        kind: "text", input: { to: "51999000111", text: "silencio" },
+        lineId, to: parseAddress(destino), clientMessageId: "tras-off",
+        kind: "text", input: { to: destino, text: "silencio" },
       });
       expect(seen.length).toBe(before);
       await cleanup?.();
@@ -202,11 +217,12 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
 
     it("el mismo clientMessageId dos veces produce UN solo mensaje", async () => {
       // Sin esto, un reintento de red del cliente le llega dos veces al destinatario.
-      const { driver, lineId, link, cleanup } = await make();
+      const { driver, lineId, link, cleanup, sampleTo } = await make();
+      const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       await link();
       const cmd = {
-        lineId, to: parseAddress("51999000111"), clientMessageId: "idem-1",
-        kind: "text" as const, input: { to: "51999000111", text: "una vez" },
+        lineId, to: parseAddress(destino), clientMessageId: "idem-1",
+        kind: "text" as const, input: { to: destino, text: "una vez" },
       };
       const a = await driver.send(cmd);
       const b = await driver.send(cmd);
@@ -224,11 +240,12 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
     });
 
     it("los errores del driver son OmniError, con código traducible a HTTP", async () => {
-      const { driver, lineId, cleanup } = await make();
+      const { driver, lineId, cleanup, sampleTo } = await make();
+      const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       const err = await driver
         .send({
-          lineId, to: parseAddress("51999000111"), clientMessageId: "x",
-          kind: "text", input: { to: "51999000111", text: "h" },
+          lineId, to: parseAddress(destino), clientMessageId: "x",
+          kind: "text", input: { to: destino, text: "h" },
         })
         .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(OmniError);

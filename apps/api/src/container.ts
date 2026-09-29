@@ -1,4 +1,8 @@
-import { BaileysDriver, CloudDriver, SandboxDriver, TelegramDriver, WhatsappWebDriver, type ChannelDriver } from "@omni/channels";
+import {
+  BaileysDriver, CloudDriver, EmailDriver, SandboxDriver, TelegramDriver,
+  WhatsappWebDriver, type ChannelDriver,
+} from "@omni/channels";
+import { makeImap, makeSmtp } from "./email-transport.js";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
   MemoryBus, MemoryJobQueue, MemoryKv,
@@ -150,6 +154,18 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    * vez de mantener un socket, así que cuesta poco tenerlo encendido.
    */
   if (config.TELEGRAM_ENABLED) drivers.push(new TelegramDriver());
+
+  /*
+   * Correo. Las fábricas de SMTP e IMAP se inyectan desde aquí para que el
+   * driver no dependa de ninguna biblioteca concreta y se pueda probar entero
+   * contra un servidor falso.
+   */
+  if (config.EMAIL_ENABLED) {
+    drivers.push(new EmailDriver({
+      makeSmtp, makeImap,
+      pollMs: config.EMAIL_POLL_SECONDS * 1000,
+    }));
+  }
 
   drivers.push(...(opts.drivers ?? []));
   for (const d of drivers) runtime.registerDriver(d);
