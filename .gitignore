@@ -10,3 +10,4 @@ coverage/
 # datos locales de desarrollo (incluye claves de demostración)
 .data/
 apps/web/.next/
+packages/plugins/dist/
