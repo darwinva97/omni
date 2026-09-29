@@ -6,7 +6,8 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type GroupPatch, type LineStatus, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
+  type ContactProfile, type ForwardSource, type GroupMetadata, type GroupPatch,
+  type LineStatus, type NetworkLabel, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 
 /**
@@ -49,6 +50,10 @@ interface LineState {
   /** Códigos de invitación vigentes, por grupo. */
   readonly invites: Map<string, string>;
   readonly newsletters: Map<string, NewsletterMetadata>;
+  readonly archivados: Set<string>;
+  readonly silenciados: Map<string, number>;
+  readonly efimeros: Map<string, number>;
+  readonly bloqueados: Set<string>;
   readonly known: Set<string>;
   pendingQr: string | null;
   /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
@@ -70,7 +75,7 @@ export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
     "send.reply", "send.mentions", "send.viewOnce", "send.forward",
     "message.edit", "message.delete", "message.receipts",
     "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
-    "chat.clear",
+    "chat.clear", "send.forward", "contact.profile", "contact.block",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
@@ -107,6 +112,10 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       groups: new Map(),
       invites: new Map(),
       newsletters: new Map(),
+      archivados: new Set(),
+      silenciados: new Map(),
+      efimeros: new Map(),
+      bloqueados: new Set(),
       known: new Set(),
       pendingQr: null,
       saveCredentials: null,
@@ -419,6 +428,95 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
    * canal de alguien, no el propio. Sin esto no había forma de probar seguir y
    * dejar de seguir, porque del canal propio uno es dueño y no seguidor.
    */
+  async listNetworkLabels(lineId: LineId): Promise<readonly NetworkLabel[]> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    // Las de WhatsApp Business, distintas de las nuestras: un juego fijo, para
+    // que una prueba pueda afirmar sobre ellas.
+    return [
+      { id: "sbx-1", name: "Nuevo cliente", color: "#25d366" },
+      { id: "sbx-2", name: "Pedido pendiente", color: "#ffa000" },
+    ];
+  }
+
+  async archiveChat(lineId: LineId, chat: Address, archivar: boolean): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    if (archivar) line.archivados.add(chat.value);
+    else line.archivados.delete(chat.value);
+    await this.emit("chat.archived", line.orgId, lineId, { chat: chat.value, archived: archivar });
+  }
+
+  async muteChat(lineId: LineId, chat: Address, hasta: number | null): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    if (hasta === null) line.silenciados.delete(chat.value);
+    else line.silenciados.set(chat.value, hasta);
+    await this.emit("chat.updated", line.orgId, lineId, { chat: chat.value, mutedUntil: hasta });
+  }
+
+  async setEphemeral(lineId: LineId, chat: Address, segundos: number): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    // Los mismos valores que acepta WhatsApp: un sandbox que admitiera
+    // cualquiera dejaría pasar en las pruebas lo que en producción se ignora.
+    const PERMITIDOS = [0, 86400, 604800, 7776000];
+    if (!PERMITIDOS.includes(segundos)) {
+      throw new OmniError(
+        "validation_failed",
+        `WhatsApp solo admite ${PERMITIDOS.join(", ")} segundos; "${segundos}" se ignoraría en silencio`,
+      );
+    }
+    line.efimeros.set(chat.value, segundos);
+    await this.emit("chat.updated", line.orgId, lineId, { chat: chat.value, ephemeral: segundos });
+  }
+
+  async blockContact(lineId: LineId, address: Address, bloquear: boolean): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    if (bloquear) line.bloqueados.add(address.value);
+    else line.bloqueados.delete(address.value);
+    await this.emit("contact.blocked", line.orgId, lineId, {
+      contact: address.value, blocked: bloquear,
+    });
+  }
+
+  async contactProfile(lineId: LineId, address: Address): Promise<ContactProfile> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    return {
+      address,
+      name: `Contacto ${address.local}`,
+      pictureUrl: `https://sandbox.omni.test/avatar/${address.local}.jpg`,
+      about: "línea de pruebas",
+      isBusiness: false,
+    };
+  }
+
+  async forwardMessage(
+    lineId: LineId, origen: ForwardSource, hacia: Address,
+  ): Promise<SendReceipt> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const original = line.thread.find((m) => m.id === origen.providerMessageId);
+    if (!original) {
+      throw new OmniError("not_found", `el mensaje "${origen.providerMessageId}" no existe`);
+    }
+    const copia: SandboxMessage = {
+      ...original,
+      id: `${original.id}-fwd${this.#nextId()}`,
+      chat: hacia.value, fromMe: true,
+      timestamp: this.#now(), state: "sent",
+    };
+    line.thread.push(copia);
+    await this.emit("message.sent", line.orgId, lineId, {
+      key: { id: copia.id, remoteJid: copia.chat, fromMe: true },
+      kind: copia.kind, text: copia.text, timestamp: copia.timestamp,
+      forwarded: true,
+    });
+    return { providerMessageId: copia.id, state: copia.state, timestamp: copia.timestamp };
+  }
+
   async clearChat(lineId: LineId, chat: Address): Promise<void> {
     const line = this.#require(lineId);
     this.#requireConnected(line, lineId);

@@ -255,6 +255,185 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/mute",
+      tags: ["chats"], summary: "Silenciar una conversación hasta un instante dado",
+      description: "`until` nulo la desilencia. Es el silencio DE WHATSAPP, no un ajuste del panel.",
+      request: {
+        params: lineChat,
+        ...body(z.object({ until: z.string().datetime().nullable() })),
+      },
+      responses: { 200: json(Ok, "hecho"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, chatId } = c.req.valid("param");
+      const { until } = c.req.valid("json");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("chat.mute"), { lineId, chat });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "chat.mute");
+      await driver.muteChat!(lineId as LineId, chat, until ? new Date(until).getTime() : null);
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/ephemeral",
+      tags: ["chats"], summary: "Poner los mensajes de una conversación a caducar",
+      description:
+        "WhatsApp solo admite 0 (desactivado), 86400, 604800 y 7776000 segundos. " +
+        "Cualquier otro valor NO falla en WhatsApp: se ignora en silencio, así que " +
+        "aquí se rechaza con 422 antes de que alguien crea que ha caducado algo.",
+      request: {
+        params: lineChat,
+        ...body(z.object({ seconds: z.union([z.literal(0), z.literal(86400), z.literal(604800), z.literal(7776000)]) })),
+      },
+      responses: { 200: json(Ok, "hecho"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, chatId } = c.req.valid("param");
+      const { seconds } = c.req.valid("json");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("chat.ephemeral"), { lineId, chat });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "chat.ephemeral");
+      await driver.setEphemeral!(lineId as LineId, chat, seconds);
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/forward",
+      tags: ["mensajes"], summary: "Reenviar un mensaje a otra conversación",
+      description:
+        "Baileys necesita el mensaje original entero, que solo conservamos de los " +
+        "ENTRANTES; de los que enviamos nosotros responde 422 en vez de reenviar " +
+        "algo distinto. whatsapp-web.js no tiene esa limitación.",
+      request: {
+        params: z.object({ lineId: z.string(), chatId: z.string(), messageId: z.string() }),
+        ...body(z.object({ to: z.string().min(1) })),
+      },
+      responses: {
+        200: json(z.object({ data: z.object({ messageId: z.string() }) }), "reenviado"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId, chatId, messageId } = c.req.valid("param");
+      const { to } = c.req.valid("json");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      const destino = parseAddress(to);
+      await authorize(c.get("principal"), routeOf("message.forward"), { lineId, chat });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "send.forward");
+
+      const filas = await container.dbh.db
+        .select({ raw: messageTable.raw })
+        .from(messageTable)
+        .where(and(
+          eq(messageTable.lineId, lineId),
+          eq(messageTable.providerMessageId, messageId),
+        ))
+        .limit(1);
+
+      const receipt = await driver.forwardMessage!(
+        lineId as LineId,
+        { chat, providerMessageId: messageId, ...(filas[0]?.raw ? { raw: filas[0].raw } : {}) },
+        destino,
+      );
+      return c.json({ data: { messageId: receipt.providerMessageId } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/contacts/{address}/profile",
+      tags: ["contactos"], summary: "Perfil público de un contacto",
+      description:
+        "La foto puede caducar: es una URL firmada por WhatsApp, no un enlace " +
+        "permanente, y guardarla como si lo fuera da imágenes rotas semanas después.",
+      request: { params: z.object({ lineId: z.string(), address: z.string() }) },
+      responses: {
+        200: json(z.object({ data: z.object({
+          address: z.string(), name: z.string().optional(),
+          pictureUrl: z.string().optional(), about: z.string().optional(),
+          isBusiness: z.boolean().optional(),
+        }) }), "el perfil"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId, address } = c.req.valid("param");
+      const contacto = parseAddress(decodeURIComponent(address));
+      await authorize(c.get("principal"), routeOf("contact.profile"), { lineId, chat: contacto });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "contact.profile");
+      const perfil = await driver.contactProfile!(lineId as LineId, contacto);
+      return c.json({ data: {
+        address: perfil.address.value,
+        ...(perfil.name ? { name: perfil.name } : {}),
+        ...(perfil.pictureUrl ? { pictureUrl: perfil.pictureUrl } : {}),
+        ...(perfil.about ? { about: perfil.about } : {}),
+        ...(perfil.isBusiness !== undefined ? { isBusiness: perfil.isBusiness } : {}),
+      } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/network-labels",
+      tags: ["etiquetas"], summary: "Etiquetas de WhatsApp Business, las de la propia red",
+      description:
+        "NO son las etiquetas de Omni: estas viven en la cuenta de WhatsApp y solo " +
+        "existen si la cuenta enlazada es de empresa. Las nuestras están en " +
+        "`/v1/lines/{lineId}/labels`.",
+      request: { params: z.object({ lineId: z.string() }) },
+      responses: {
+        200: json(z.object({ data: z.array(z.object({
+          id: z.string(), name: z.string(), color: z.string().optional(),
+        })) }), "ok"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId } = c.req.valid("param");
+      await authorize(c.get("principal"), routeOf("label.network.read"), { lineId });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "label.manage");
+      const etiquetas = await driver.listNetworkLabels!(lineId as LineId);
+      return c.json({ data: etiquetas.map((l) => ({
+        id: l.id, name: l.name, ...(l.color ? { color: l.color } : {}),
+      })) }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/calls/{callId}/reject",
+      tags: ["llamadas"], summary: "Rechazar una llamada entrante",
+      description:
+        "Hay que hacerlo MIENTRAS suena: pasados unos segundos WhatsApp ya la ha " +
+        "dado por perdida y rechazarla no hace nada.",
+      request: {
+        params: z.object({ lineId: z.string(), callId: z.string() }),
+        ...body(z.object({ from: z.string().min(1) })),
+      },
+      responses: { 200: json(Ok, "rechazada"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, callId } = c.req.valid("param");
+      const { from } = c.req.valid("json");
+      await authorize(c.get("principal"), routeOf("call.reject"), { lineId });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "call.reject");
+      await driver.rejectCall!(lineId as LineId, callId, parseAddress(from));
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "post", path: "/v1/lines/{lineId}/contacts/{address}/block",
       tags: ["contactos"], summary: "Bloquear o desbloquear un contacto",
       request: {
@@ -270,6 +449,9 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       await authorize(c.get("principal"), routeOf("contact.block"), { lineId, chat });
       const driver = await driverOf(lineId);
       assertCapability(driver, "contact.block");
+      // Primero WhatsApp. Escribir solo en nuestra tabla marcaba el contacto
+      // como bloqueado en el panel y lo dejaba escribiendo tan tranquilo.
+      await driver.blockContact!(lineId as LineId, chat, blocked);
       await container.dbh.db.insert(contactTable)
         .values({ id: `c-${lineId}-${chat.value}`, lineId, address: chat.value, blocked })
         .onConflictDoUpdate({

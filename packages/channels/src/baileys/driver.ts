@@ -11,8 +11,8 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type ChatAnchorMessage, type GroupMetadata, type GroupPatch, type LineStatus,
-  type NewsletterMetadata, type OutboundCommand, type SendReceipt,
+  type ChatAnchorMessage, type ContactProfile, type ForwardSource, type GroupMetadata,
+  type GroupPatch, type LineStatus, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
@@ -42,7 +42,7 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
     "chat.clear",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
-    "newsletter.read", "history.sync", "media.decrypt",
+    "newsletter.read", "newsletter.send", "history.sync", "media.decrypt",
     // Deliberadamente AUSENTES: `send.buttons` y `send.list` necesitan un fork,
     // y `label.manage` no lo expone el protocolo de forma estable. Declararlas
     // haría que la API aceptara peticiones que luego no llegan a ninguna parte.
@@ -560,15 +560,105 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       );
     }
     await socket.chatModify(
-      {
-        clear: true,
-        lastMessages: anchor.map((m) => ({
-          key: { id: m.providerMessageId, remoteJid: chat.value, fromMe: m.fromMe },
-          messageTimestamp: Math.floor(m.timestamp / 1000),
-        })),
-      },
+      { clear: true, lastMessages: anclaBaileys(chat, anchor) },
       chat.value,
     );
+  }
+
+  async archiveChat(
+    lineId: LineId, chat: Address, archivar: boolean, anchor: readonly ChatAnchorMessage[],
+  ): Promise<void> {
+    const { socket } = this.#require(lineId);
+    // Archivar pide el mismo ancla que vaciar: WhatsApp necesita saber hasta
+    // qué punto del historial se está actuando.
+    await socket.chatModify({ archive: archivar, lastMessages: anclaBaileys(chat, anchor) }, chat.value);
+  }
+
+  async muteChat(lineId: LineId, chat: Address, hasta: number | null): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.chatModify({ mute: hasta }, chat.value);
+  }
+
+  async setEphemeral(lineId: LineId, chat: Address, segundos: number): Promise<void> {
+    const { socket } = this.#require(lineId);
+    /*
+     * WhatsApp solo admite estos valores. Mandar otro NO falla: se ignora en
+     * silencio y el usuario cree que ha puesto sus mensajes a caducar en una
+     * hora cuando siguen ahí para siempre.
+     */
+    const PERMITIDOS = [0, 86400, 604800, 7776000];
+    if (!PERMITIDOS.includes(segundos)) {
+      throw new OmniError(
+        "validation_failed",
+        `WhatsApp solo admite ${PERMITIDOS.join(", ")} segundos; "${segundos}" se ignoraría en silencio`,
+      );
+    }
+    if (chat.kind === "group") {
+      await socket.groupToggleEphemeral(chat.value, segundos);
+      return;
+    }
+    await socket.sendMessage(chat.value, { disappearingMessagesInChat: segundos });
+  }
+
+  async blockContact(lineId: LineId, address: Address, bloquear: boolean): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.updateBlockStatus(address.value, bloquear ? "block" : "unblock");
+  }
+
+  async contactProfile(lineId: LineId, address: Address): Promise<ContactProfile> {
+    const { socket } = this.#require(lineId);
+    /*
+     * Cada dato viene de una llamada distinta y cualquiera puede fallar sola:
+     * quien tiene la foto oculta devuelve un error, no un hueco. Un fallo en
+     * una parte no puede dejar sin las otras.
+     */
+    const [foto, estado, negocio] = await Promise.all([
+      socket.profilePictureUrl(address.value, "image").catch(() => undefined),
+      socket.fetchStatus(address.value).catch(() => undefined),
+      socket.getBusinessProfile(address.value).catch(() => undefined),
+    ]);
+    const about = Array.isArray(estado)
+      ? (estado[0] as { status?: { status?: string } } | undefined)?.status?.status
+      : undefined;
+    return {
+      address,
+      ...(foto ? { pictureUrl: foto } : {}),
+      ...(about ? { about } : {}),
+      isBusiness: Boolean(negocio),
+    };
+  }
+
+  async forwardMessage(
+    lineId: LineId, origen: ForwardSource, hacia: Address,
+  ): Promise<SendReceipt> {
+    const { socket } = this.#require(lineId);
+    /*
+     * Baileys reenvía el MENSAJE entero, no su identificador: necesita el
+     * objeto original tal cual llegó. Lo guardamos en `message.raw` de los
+     * entrantes, y quien llama nos lo pasa. De los que enviamos nosotros no
+     * guardamos ese objeto, así que ahí se dice que no en vez de reenviar algo
+     * distinto de lo que se pidió.
+     */
+    if (!origen.raw) {
+      throw new OmniError(
+        "validation_failed",
+        `no conservamos el mensaje original de "${origen.providerMessageId}", y este transporte lo necesita entero para reenviarlo`,
+      );
+    }
+    const enviado = await socket.sendMessage(hacia.value, { forward: origen.raw as never });
+    return {
+      providerMessageId: String(enviado?.key?.id ?? origen.providerMessageId),
+      state: "sent",
+      timestamp: Date.now(),
+    };
+  }
+
+  async createNewsletter(
+    lineId: LineId, name: string, description?: string,
+  ): Promise<NewsletterMetadata> {
+    const { socket } = this.#require(lineId);
+    const meta = await socket.newsletterCreate(name, description);
+    return toNewsletterMetadata(meta);
   }
 
   async newsletterMetadata(lineId: LineId, newsletter: Address): Promise<NewsletterMetadata> {
@@ -695,6 +785,16 @@ function toGroupMetadata(meta: {
     })),
     ...(meta.creation ? { createdAt: meta.creation * 1000 } : {}),
   };
+}
+
+/** Los últimos mensajes en la forma que pide `chatModify`. */
+function anclaBaileys(
+  chat: Address, anchor: readonly ChatAnchorMessage[],
+): { key: { id: string; remoteJid: string; fromMe: boolean }; messageTimestamp: number }[] {
+  return anchor.map((m) => ({
+    key: { id: m.providerMessageId, remoteJid: chat.value, fromMe: m.fromMe },
+    messageTimestamp: Math.floor(m.timestamp / 1000),
+  }));
 }
 
 /** La forma de Baileys para un canal, traducida a la nuestra. */

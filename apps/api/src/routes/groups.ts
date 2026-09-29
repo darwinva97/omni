@@ -3,7 +3,7 @@ import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver, type GroupMetadata } from "@omni/channels";
 import { authorize, route as routeOf } from "@omni/core";
 import { groupInfoTable, groupParticipantTable, lineTable } from "@omni/db";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
@@ -296,7 +296,39 @@ export function registerGroupChatRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const { archived } = c.req.valid("json");
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.archive"), { lineId, chat });
-      const { chatTable } = await import("@omni/db");
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "chat.archive");
+
+      /*
+       * Primero la red, después nuestro espejo.
+       *
+       * Escribir solo aquí archivaba la conversación en el panel y la dejaba
+       * intacta en el teléfono. El ancla es la misma que para vaciar: WhatsApp
+       * necesita saber hasta qué punto del historial se está actuando.
+       */
+      const { chatTable, messageTable } = await import("@omni/db");
+      const ultimos = await container.dbh.db
+        .select({
+          providerMessageId: messageTable.providerMessageId,
+          fromMe: messageTable.fromMe,
+          timestamp: messageTable.timestamp,
+        })
+        .from(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.chatId, chat.value)))
+        .orderBy(desc(messageTable.timestamp))
+        .limit(5);
+
+      await driver.archiveChat!(
+        lineId as LineId, chat, archived,
+        ultimos
+          .filter((m) => m.providerMessageId !== null)
+          .map((m) => ({
+            providerMessageId: m.providerMessageId!,
+            fromMe: m.fromMe,
+            timestamp: m.timestamp.getTime(),
+          })),
+      );
+
       const rows = await container.dbh.db.update(chatTable)
         .set({ archived })
         .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)))

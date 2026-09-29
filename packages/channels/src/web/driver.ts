@@ -7,7 +7,8 @@ import type { Storage } from "@omni/storage";
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type GroupPatch, type LineStatus, type OutboundCommand, type SendReceipt,
+  type ContactProfile, type ForwardSource, type GroupMetadata, type GroupPatch,
+  type LineStatus, type NetworkLabel, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { ObjectStorageSessionStore } from "./session-store.js";
 
@@ -370,6 +371,88 @@ export class WhatsappWebDriver extends EventEmitterBase implements ChannelDriver
       clearMessages: () => Promise<unknown>;
     };
     await c.clearMessages();
+  }
+
+  async archiveChat(lineId: LineId, chat: Address, archivar: boolean): Promise<void> {
+    const { cliente } = this.#require(lineId);
+    // Aquí no hace falta anclar en ningún mensaje: conduce el cliente web, que
+    // ya tiene el historial delante.
+    const c = (await cliente.getChatById(toWebId(chat))) as unknown as {
+      archive: () => Promise<unknown>; unarchive: () => Promise<unknown>;
+    };
+    await (archivar ? c.archive() : c.unarchive());
+  }
+
+  async muteChat(lineId: LineId, chat: Address, hasta: number | null): Promise<void> {
+    const { cliente } = this.#require(lineId);
+    const c = (await cliente.getChatById(toWebId(chat))) as unknown as {
+      mute: (hasta?: Date) => Promise<unknown>; unmute: () => Promise<unknown>;
+    };
+    await (hasta === null ? c.unmute() : c.mute(new Date(hasta)));
+  }
+
+  async blockContact(lineId: LineId, address: Address, bloquear: boolean): Promise<void> {
+    const { cliente } = this.#require(lineId);
+    const c = (await (cliente as unknown as {
+      getContactById: (id: string) => Promise<{ block: () => Promise<unknown>; unblock: () => Promise<unknown> }>;
+    }).getContactById(toWebId(address)));
+    await (bloquear ? c.block() : c.unblock());
+  }
+
+  async contactProfile(lineId: LineId, address: Address): Promise<ContactProfile> {
+    const { cliente } = this.#require(lineId);
+    const c = await (cliente as unknown as {
+      getContactById: (id: string) => Promise<{
+        name?: string; pushname?: string; isBusiness?: boolean;
+        getProfilePicUrl: () => Promise<string | undefined>;
+        getAbout: () => Promise<string | null>;
+      }>;
+    }).getContactById(toWebId(address));
+
+    // Cada dato falla por su cuenta: quien tiene la foto oculta da error, no
+    // un hueco, y eso no puede dejar sin el resto del perfil.
+    const [foto, about] = await Promise.all([
+      c.getProfilePicUrl().catch(() => undefined),
+      c.getAbout().catch(() => null),
+    ]);
+    return {
+      address,
+      ...(c.name ?? c.pushname ? { name: c.name ?? c.pushname! } : {}),
+      ...(foto ? { pictureUrl: foto } : {}),
+      ...(about ? { about } : {}),
+      isBusiness: Boolean(c.isBusiness),
+    };
+  }
+
+  async forwardMessage(
+    lineId: LineId, origen: ForwardSource, hacia: Address,
+  ): Promise<SendReceipt> {
+    const { cliente } = this.#require(lineId);
+    /*
+     * Esto es lo que este transporte hace mejor que Baileys: el cliente web
+     * tiene el historial, así que el mensaje se busca por identificador y no
+     * hace falta haberlo guardado entero.
+     */
+    const m = await (cliente as unknown as {
+      getMessageById: (id: string) => Promise<{ forward: (a: string) => Promise<unknown> } | null>;
+    }).getMessageById(origen.providerMessageId);
+    if (!m) {
+      throw new OmniError("not_found", `el mensaje "${origen.providerMessageId}" ya no está disponible`);
+    }
+    await m.forward(toWebId(hacia));
+    return { providerMessageId: origen.providerMessageId, state: "sent", timestamp: Date.now() };
+  }
+
+  async listNetworkLabels(lineId: LineId): Promise<readonly NetworkLabel[]> {
+    const { cliente } = this.#require(lineId);
+    // Las etiquetas DE WHATSAPP BUSINESS, no las nuestras: solo existen si la
+    // cuenta enlazada es de empresa.
+    const etiquetas = await (cliente as unknown as {
+      getLabels: () => Promise<{ id: string; name: string; hexColor?: string }[]>;
+    }).getLabels();
+    return etiquetas.map((l) => ({
+      id: String(l.id), name: l.name, ...(l.hexColor ? { color: l.hexColor } : {}),
+    }));
   }
 
   async createGroup(

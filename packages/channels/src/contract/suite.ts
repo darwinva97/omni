@@ -47,8 +47,21 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "group.invite": "groupInviteCode",
   "newsletter.read": "newsletterMetadata",
   "chat.clear": "clearChat",
-  "group.participants": "updateParticipants",
+  "chat.archive": "archiveChat",
+  "chat.mute": "muteChat",
+  "chat.ephemeral": "setEphemeral",
+  "contact.block": "blockContact",
+  "contact.profile": "contactProfile",
+  "send.forward": "forwardMessage",
+  "label.manage": "listNetworkLabels",
+  "newsletter.send": "createNewsletter",
+  /*
+   * `call.receive` NO está, y no es un olvido: no es una operación que se
+   * invoque, es la promesa de emitir `call.received`. Mapearla a un método
+   * obligaría a inventar uno que nadie llamaría.
+   */
   "call.reject": "rejectCall",
+  "group.participants": "updateParticipants",
   "history.sync": "fetchHistory",
 };
 

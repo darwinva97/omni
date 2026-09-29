@@ -19,6 +19,10 @@ export interface FakeWebControl {
   readonly cambiosDeGrupo: { id: string; asunto?: string; desc?: string }[];
   readonly salidas: string[];
   readonly vaciados: string[];
+  readonly archivados: { id: string; archivado: boolean }[];
+  readonly silenciados: { id: string; hasta: Date | null }[];
+  readonly bloqueos: { id: string; bloqueado: boolean }[];
+  readonly reenviados: { id: string; a: string }[];
   readonly gruposCreados: string[];
   destruido: boolean;
 }
@@ -35,6 +39,10 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
     cambiosDeGrupo: [],
     salidas: [],
     vaciados: [],
+    archivados: [],
+    silenciados: [],
+    bloqueos: [],
+    reenviados: [],
     gruposCreados: [],
     destruido: false,
     cliente: null as unknown as WebClient,
@@ -71,6 +79,10 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
     setDescription: async (desc: string) => { control.cambiosDeGrupo.push({ id, desc }); },
     leave: async () => { control.salidas.push(id); },
     clearMessages: async () => { control.vaciados.push(id); },
+    archive: async () => { control.archivados.push({ id, archivado: true }); },
+    unarchive: async () => { control.archivados.push({ id, archivado: false }); },
+    mute: async (hasta?: Date) => { control.silenciados.push({ id, hasta: hasta ?? null }); },
+    unmute: async () => { control.silenciados.push({ id, hasta: null }); },
     getInviteCode: async () => "WEBINVITE1234",
     revokeInvite: async () => "WEBINVITE5678",
   });
@@ -100,6 +112,17 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
       return { gid: { _serialized: "123@g.us" } };
     },
     acceptInvite: async () => "124@g.us",
+    getContactById: async (cid: string) => ({
+      name: "Contacto falso", isBusiness: false,
+      block: async () => { control.bloqueos.push({ id: cid, bloqueado: true }); },
+      unblock: async () => { control.bloqueos.push({ id: cid, bloqueado: false }); },
+      getProfilePicUrl: async () => "https://falso.test/foto.jpg",
+      getAbout: async () => "disponible",
+    }),
+    getMessageById: async (mid: string) => ({
+      forward: async (a: string) => { control.reenviados.push({ id: mid, a }); },
+    }),
+    getLabels: async () => [{ id: "1", name: "Nuevo cliente", hexColor: "#ff0000" }],
   } as WebClient & Record<string, unknown>;
 
   (control as { cliente: WebClient }).cliente = cliente;

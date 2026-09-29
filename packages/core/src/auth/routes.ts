@@ -48,6 +48,17 @@ export const ROUTES = {
   "chat.list": { id: "chat.list", permission: "message.read", scope: "line", chatSafe: true },
   "chat.markRead": { id: "chat.markRead", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.archive": { id: "chat.archive", permission: "chat.manage", scope: "chat", chatSafe: true },
+  "chat.mute": { id: "chat.mute", permission: "chat.manage", scope: "chat", chatSafe: true },
+  "chat.ephemeral": { id: "chat.ephemeral", permission: "chat.manage", scope: "chat", chatSafe: true },
+  /*
+   * Reenviar es SACAR un mensaje de su conversación y meterlo en otra, así que
+   * una clave acotada a un chat no puede hacerlo: podría filtrar fuera de su
+   * ámbito justo lo que el ámbito servía para contener.
+   */
+  "message.forward": { id: "message.forward", permission: "message.send", scope: "chat" },
+  "contact.profile": { id: "contact.profile", permission: "contact.read", scope: "chat", chatSafe: true },
+  "label.network.read": { id: "label.network.read", permission: "chat.manage", scope: "line" },
+  "call.reject": { id: "call.reject", permission: "chat.manage", scope: "line" },
   "chat.clear": { id: "chat.clear", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.presence": { id: "chat.presence", permission: "message.send", scope: "chat", chatSafe: true },
   "message.list": { id: "message.list", permission: "message.read", scope: "chat", chatSafe: true },

@@ -43,7 +43,6 @@ export const CLOUD_DESCRIPTOR: ChannelDescriptor = {
     "send.template", "send.buttons", "send.list",
     "send.reply",
     "message.receipts", "chat.read", "media.decrypt",
-    "contact.profile",
     /*
      * Lo que NO está, y por qué:
      *
@@ -58,6 +57,10 @@ export const CLOUD_DESCRIPTOR: ChannelDescriptor = {
      * `history.sync` — no hay historial: solo llega lo que Meta empuja desde
      *   que configuras el webhook.
      * `identity.lid` — el sistema LID es del cliente no oficial.
+     * `contact.profile` — la API oficial deja leer el perfil DE LA EMPRESA,
+     *   que es el propio, no el de quien escribe. Estaba declarada y no había
+     *   forma de cumplirla: en la API de negocio el perfil del cliente no se
+     *   consulta, llega en el webhook si Meta quiere.
      */
   ),
 };

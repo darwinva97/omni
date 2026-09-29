@@ -24,6 +24,8 @@ export interface FakeSocketControl {
   readonly groupUpdates: { jid: string; subject?: string; description?: string }[];
   readonly groupLeaves: string[];
   readonly modificaciones: { jid: string; mod: Record<string, unknown> }[];
+  readonly bloqueos: { jid: string; action: string }[];
+  readonly efimeros: { jid: string; segundos: number }[];
   readonly newsletterSeguidos: string[];
   readonly newsletterDejados: string[];
   nextMessageId: string;
@@ -42,6 +44,8 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     groupUpdates: [],
     groupLeaves: [],
     modificaciones: [],
+    bloqueos: [],
+    efimeros: [],
     newsletterSeguidos: [],
     newsletterDejados: [],
     nextMessageId: "FAKE-0001",
@@ -111,6 +115,20 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     chatModify: async (mod: Record<string, unknown>, jid: string) => {
       control.modificaciones.push({ jid, mod });
     },
+    updateBlockStatus: async (jid: string, action: string) => {
+      control.bloqueos.push({ jid, action });
+    },
+    profilePictureUrl: async () => "https://falso.test/foto.jpg",
+    fetchStatus: async () => [{ status: { status: "disponible" } }],
+    getBusinessProfile: async () => undefined,
+    groupToggleEphemeral: async (jid: string, segundos: number) => {
+      control.efimeros.push({ jid, segundos });
+    },
+    newsletterCreate: async (name: string, description?: string) => ({
+      id: "130@newsletter", name, description,
+      invite: "CANALNUEVO1", subscribers: 0, verification: "UNVERIFIED",
+      viewer_metadata: { role: "OWNER" },
+    }),
     newsletterMetadata: async (tipo: string, clave: string) => ({
       id: tipo === "invite" ? "120@newsletter" : clave,
       name: "Canal falso", description: "un canal de prueba",

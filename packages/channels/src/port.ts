@@ -79,6 +79,26 @@ export interface ChannelDriverOptional {
     lineId: LineId, group: Address, participants: readonly Address[],
     action: "add" | "remove" | "promote" | "demote",
   ): Promise<readonly { address: Address; ok: boolean; reason?: string }[]>;
+  /** Archiva o desarchiva EN LA RED, no en nuestro espejo. */
+  archiveChat?(lineId: LineId, chat: Address, archivar: boolean, anchor: readonly ChatAnchorMessage[]): Promise<void>;
+  /** Silencia hasta un instante dado; `null` la desilencia. */
+  muteChat?(lineId: LineId, chat: Address, hasta: number | null): Promise<void>;
+  /**
+   * Mensajes efímeros. `segundos` a 0 los desactiva.
+   *
+   * WhatsApp solo admite unos pocos valores (24 h, 7 días, 90 días); mandar
+   * otro no falla, se ignora, que es peor. El driver lo valida.
+   */
+  setEphemeral?(lineId: LineId, chat: Address, segundos: number): Promise<void>;
+  blockContact?(lineId: LineId, address: Address, bloquear: boolean): Promise<void>;
+  contactProfile?(lineId: LineId, address: Address): Promise<ContactProfile>;
+  /** Reenvía un mensaje ya existente a otra conversación. */
+  forwardMessage?(lineId: LineId, origen: ForwardSource, hacia: Address): Promise<SendReceipt>;
+  /** Etiquetas de WhatsApp Business, las de la propia red. */
+  listNetworkLabels?(lineId: LineId): Promise<readonly NetworkLabel[]>;
+  /** Publica en un canal del que se es dueño o administrador. */
+  createNewsletter?(lineId: LineId, name: string, description?: string): Promise<NewsletterMetadata>;
+
   /**
    * Vacía una conversación en la red.
    *
@@ -99,9 +119,36 @@ export interface ChannelDriverOptional {
   newsletterByInvite?(lineId: LineId, code: string): Promise<NewsletterMetadata>;
   followNewsletter?(lineId: LineId, newsletter: Address): Promise<void>;
   unfollowNewsletter?(lineId: LineId, newsletter: Address): Promise<void>;
-  createNewsletter?(lineId: LineId, name: string, description?: string): Promise<NewsletterMetadata>;
   rejectCall?(lineId: LineId, callId: string, from: Address): Promise<void>;
   fetchHistory?(lineId: LineId, chat: Address, before: number, count: number): Promise<void>;
+}
+
+export interface ForwardSource {
+  readonly chat: Address;
+  readonly providerMessageId: string;
+  /**
+   * El mensaje original tal cual llegó, cuando lo conservamos.
+   *
+   * Baileys no reenvía por identificador: necesita el objeto entero. Guardamos
+   * el de los mensajes entrantes; de los que enviamos nosotros, no, y ahí el
+   * driver dice que no en vez de reenviar algo distinto de lo que se pidió.
+   */
+  readonly raw?: unknown;
+}
+
+export interface ContactProfile {
+  readonly address: Address;
+  readonly name?: string;
+  /** URL de la foto. Puede caducar: no se guarda como si fuera permanente. */
+  readonly pictureUrl?: string;
+  readonly about?: string;
+  readonly isBusiness?: boolean;
+}
+
+export interface NetworkLabel {
+  readonly id: string;
+  readonly name: string;
+  readonly color?: string;
 }
 
 export interface ChatAnchorMessage {
