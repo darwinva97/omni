@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
-  Browsers, DisconnectReason, fetchLatestBaileysVersion,
+  Browsers, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion,
   type WAMessage, type WASocket,
 } from "baileys";
 import {
@@ -11,8 +11,9 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type ChatAnchorMessage, type ContactProfile, type ForwardSource, type GroupMetadata,
-  type GroupPatch, type LineStatus, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
+  type ChatAnchorMessage, type Collection, type CommunityMetadata, type ContactProfile,
+  type DownloadedMedia, type ForwardSource, type GroupMetadata, type GroupPatch,
+  type LineStatus, type NewsletterMetadata, type OrderDetails, type Product, type ProductInput, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
@@ -42,6 +43,8 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
     "chat.clear",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
+    "community.read", "community.manage",
+    "catalog.read", "catalog.manage",
     "newsletter.read", "newsletter.send", "history.sync", "media.decrypt",
     // Deliberadamente AUSENTES: `send.buttons` y `send.list` necesitan un fork,
     // y `label.manage` no lo expone el protocolo de forma estable. Declararlas
@@ -653,6 +656,175 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     };
   }
 
+  async downloadMedia(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null> {
+    const { socket } = this.#require(lineId);
+    const mensaje = raw as WAMessage | { raw?: WAMessage } | null;
+    // La ingesta guarda el sobre entero; el mensaje de Baileys va dentro.
+    const m = (mensaje && "raw" in mensaje ? mensaje.raw : mensaje) as WAMessage | null;
+    if (!m?.message) return null;
+
+    const tipo = messageKind(m);
+    if (!["image", "video", "audio", "document", "sticker"].includes(tipo)) return null;
+
+    /*
+     * `reuploadRequest` es lo que salva los medios viejos: si el servidor ya
+     * no tiene el fichero, Baileys pide al remitente que lo vuelva a subir.
+     * Sin eso, cualquier medio de hace unos días se descarga con un 404.
+     */
+    const bytes = await downloadMediaMessage(m, "buffer", {}, {
+      // Baileys escribe por aquí; sin un registro mudo saca ruido por consola
+      // en cada medio que llega.
+      logger: REGISTRO_MUDO,
+      reuploadRequest: socket.updateMediaMessage,
+    });
+
+    const contenido = m.message;
+    const info =
+      contenido.imageMessage ?? contenido.videoMessage ?? contenido.audioMessage ??
+      contenido.documentMessage ?? contenido.stickerMessage;
+    return {
+      bytes: new Uint8Array(bytes),
+      mimeType: info?.mimetype ?? "application/octet-stream",
+      ...(contenido.documentMessage?.fileName
+        ? { fileName: contenido.documentMessage.fileName }
+        : {}),
+    };
+  }
+
+  // ---------------------------------------------------------------- comunidades
+
+  async communityMetadata(lineId: LineId, community: Address): Promise<CommunityMetadata> {
+    const { socket } = this.#require(lineId);
+    const [meta, enlazados] = await Promise.all([
+      socket.communityMetadata(community.value),
+      socket.communityFetchLinkedGroups(community.value).catch(() => null),
+    ]);
+    return toCommunityMetadata(meta, enlazados?.linkedGroups ?? []);
+  }
+
+  async listCommunities(lineId: LineId): Promise<readonly CommunityMetadata[]> {
+    const { socket } = this.#require(lineId);
+    const todas = await socket.communityFetchAllParticipating();
+    /*
+     * Los grupos enlazados se piden por comunidad, no vienen en el listado.
+     * Se traen en paralelo y un fallo en una no deja sin el resto: en una
+     * cuenta con veinte comunidades, una sola con problemas se llevaría por
+     * delante la lista entera.
+     */
+    return Promise.all(
+      Object.values(todas).map(async (meta) => {
+        const enlazados = await socket
+          .communityFetchLinkedGroups(String(meta.id))
+          .catch(() => null);
+        return toCommunityMetadata(meta, enlazados?.linkedGroups ?? []);
+      }),
+    );
+  }
+
+  async createCommunity(
+    lineId: LineId, subject: string, description: string,
+  ): Promise<CommunityMetadata> {
+    const { socket } = this.#require(lineId);
+    const meta = await socket.communityCreate(subject, description);
+    if (!meta) throw new OmniError("upstream_failed", "WhatsApp no devolvió la comunidad creada");
+    return toCommunityMetadata(meta, []);
+  }
+
+  async linkGroupToCommunity(lineId: LineId, group: Address, community: Address): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.communityLinkGroup(group.value, community.value);
+  }
+
+  async unlinkGroupFromCommunity(lineId: LineId, group: Address, community: Address): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.communityUnlinkGroup(group.value, community.value);
+  }
+
+  async leaveCommunity(lineId: LineId, community: Address): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.communityLeave(community.value);
+  }
+
+  // ---------------------------------------------------------------- catálogo
+
+  async listProducts(lineId: LineId, de: Address | null, limite: number): Promise<readonly Product[]> {
+    const { socket, line } = this.#requireConSelf(lineId);
+    const jid = de?.value ?? line;
+    const res = await socket.getCatalog({ jid, limit: limite });
+    return (res.products ?? []).map(toProduct);
+  }
+
+  async listCollections(lineId: LineId, de: Address | null, limite: number): Promise<readonly Collection[]> {
+    const { socket, line } = this.#requireConSelf(lineId);
+    const res = await socket.getCollections(de?.value ?? line, limite);
+    return (res.collections ?? []).map((c) => ({
+      id: String(c.id), name: c.name,
+      products: (c.products ?? []).map(toProduct),
+      ...(c.status?.status ? { status: c.status.status } : {}),
+    }));
+  }
+
+  async createProduct(lineId: LineId, input: ProductInput): Promise<Product> {
+    const { socket } = this.#require(lineId);
+    const creado = await socket.productCreate({
+      name: input.name, description: input.description,
+      price: input.price, currency: input.currency,
+      ...(input.retailerId ? { retailerId: input.retailerId } : {}),
+      ...(input.url ? { url: input.url } : {}),
+      ...(input.hidden !== undefined ? { isHidden: input.hidden } : {}),
+      originCountryCode: input.originCountryCode,
+      images: input.imageUrls.map((url) => ({ url: new URL(url) })),
+    });
+    return toProduct(creado);
+  }
+
+  async updateProduct(lineId: LineId, productId: string, input: ProductInput): Promise<Product> {
+    const { socket } = this.#require(lineId);
+    const actualizado = await socket.productUpdate(productId, {
+      name: input.name, description: input.description,
+      price: input.price, currency: input.currency,
+      ...(input.retailerId ? { retailerId: input.retailerId } : {}),
+      ...(input.url ? { url: input.url } : {}),
+      ...(input.hidden !== undefined ? { isHidden: input.hidden } : {}),
+      images: input.imageUrls.map((url) => ({ url: new URL(url) })),
+    });
+    return toProduct(actualizado);
+  }
+
+  async deleteProducts(lineId: LineId, productIds: readonly string[]): Promise<number> {
+    const { socket } = this.#require(lineId);
+    const res = await socket.productDelete([...productIds]);
+    return res.deleted ?? 0;
+  }
+
+  async orderDetails(lineId: LineId, orderId: string, token: string): Promise<OrderDetails> {
+    const { socket } = this.#require(lineId);
+    /*
+     * El testigo viene DENTRO del mensaje del pedido y es de un solo uso: sin
+     * él no hay forma de leer un pedido, ni siquiera siendo su destinatario.
+     */
+    const pedido = await socket.getOrderDetails(orderId, token);
+    return {
+      currency: pedido.price?.currency ?? "",
+      total: pedido.price?.total ?? 0,
+      products: (pedido.products ?? []).map((p) => ({
+        id: String(p.id), name: p.name, quantity: p.quantity,
+        price: p.price, currency: p.currency,
+        ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
+      })),
+    };
+  }
+
+  /** Como `#require`, y además la dirección propia: el catálogo por defecto es el nuestro. */
+  #requireConSelf(lineId: string): { socket: WASocket; line: string } {
+    const runtime = this.#require(lineId);
+    const estado = this.status(lineId as LineId);
+    if (estado.state !== "connected") {
+      throw new OmniError("line_not_connected", `la línea "${lineId}" no está conectada`);
+    }
+    return { socket: runtime.socket, line: estado.self.value };
+  }
+
   async createNewsletter(
     lineId: LineId, name: string, description?: string,
   ): Promise<NewsletterMetadata> {
@@ -710,12 +882,26 @@ export function deterministicMessageId(clientMessageId: string): string {
   return `3EB0${hash.slice(0, 28)}`;
 }
 
-function normalizeKey(key: { id?: string | null; remoteJid?: string | null; fromMe?: boolean | null; participant?: string | null }) {
+/**
+ * Normaliza la clave de un mensaje, CONSERVANDO la dirección alternativa.
+ *
+ * Baileys 7 direcciona con `@lid` de forma habitual y adjunta el teléfono en
+ * `remoteJidAlt`/`participantAlt` cuando WhatsApp lo da. Tirar esos campos
+ * —que es lo que se hacía— deja un chat identificado solo por un LID que ya no
+ * se puede atar a ninguna persona: el mapeo no se puede reconstruir después,
+ * porque esa es la única vez que el servidor lo dice.
+ */
+function normalizeKey(key: {
+  id?: string | null; remoteJid?: string | null; fromMe?: boolean | null;
+  participant?: string | null; remoteJidAlt?: string | null; participantAlt?: string | null;
+}) {
   return {
     id: key.id ?? "",
     remoteJid: key.remoteJid ?? "",
     fromMe: key.fromMe ?? false,
     ...(key.participant ? { participant: key.participant } : {}),
+    ...(key.remoteJidAlt ? { remoteJidAlt: key.remoteJidAlt } : {}),
+    ...(key.participantAlt ? { participantAlt: key.participantAlt } : {}),
   };
 }
 
@@ -784,6 +970,56 @@ function toGroupMetadata(meta: {
       role: p.admin === "superadmin" ? "superadmin" : p.admin === "admin" ? "admin" : "member",
     })),
     ...(meta.creation ? { createdAt: meta.creation * 1000 } : {}),
+  };
+}
+
+/** Un registro que no dice nada: el nuestro ya sale por los eventos. */
+const REGISTRO_MUDO = {
+  level: "silent",
+  trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
+  fatal: () => {},
+  child: () => REGISTRO_MUDO,
+} as unknown as Parameters<typeof downloadMediaMessage>[3] extends { logger: infer L } ? L : never;
+
+/** La forma de Baileys para una comunidad, traducida a la nuestra. */
+function toCommunityMetadata(
+  meta: { id: string; subject?: string; desc?: string; owner?: string; size?: number },
+  enlazados: readonly { id?: string; subject?: string; size?: number }[],
+): CommunityMetadata {
+  const dueno = meta.owner ? tryParseAddress(meta.owner) : null;
+  return {
+    address: parseAddress(meta.id),
+    subject: meta.subject ?? "",
+    ...(meta.desc ? { description: meta.desc } : {}),
+    ...(dueno ? { owner: dueno } : {}),
+    linkedGroups: enlazados
+      .filter((g) => g.id)
+      .map((g) => ({
+        address: parseAddress(String(g.id)),
+        subject: g.subject ?? "",
+        ...(g.size !== undefined ? { size: g.size } : {}),
+      })),
+    ...(meta.size !== undefined ? { size: meta.size } : {}),
+  };
+}
+
+/** La forma de Baileys para un producto, traducida a la nuestra. */
+function toProduct(p: {
+  id: string; name: string; description: string; price: number; currency: string;
+  retailerId?: string; url?: string; isHidden?: boolean; availability?: string;
+  imageUrls?: Record<string, string>; reviewStatus?: Record<string, string>;
+}): Product {
+  return {
+    id: String(p.id), name: p.name, description: p.description,
+    price: p.price, currency: p.currency,
+    ...(p.retailerId ? { retailerId: p.retailerId } : {}),
+    ...(p.url ? { url: p.url } : {}),
+    imageUrls: Object.values(p.imageUrls ?? {}),
+    ...(p.isHidden !== undefined ? { hidden: p.isHidden } : {}),
+    ...(p.availability ? { availability: p.availability } : {}),
+    ...(Object.values(p.reviewStatus ?? {})[0]
+      ? { reviewStatus: Object.values(p.reviewStatus ?? {})[0] }
+      : {}),
   };
 }
 

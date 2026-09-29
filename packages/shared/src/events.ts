@@ -31,6 +31,8 @@ export const eventNames = [
   "group.created",
   "group.updated",
   "group.participants",
+  // comunidades
+  "community.updated",
   // canales (newsletters)
   "newsletter.created",
   "newsletter.updated",

@@ -16,6 +16,7 @@ import { registerLabelRoutes } from "./routes/labels.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
 import { registerCrmRoutes } from "./routes/crm.js";
+import { registerCommerceRoutes } from "./routes/commerce.js";
 import { HOST_VERSION } from "./container.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
@@ -374,6 +375,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
   registerNewsletterRoutes(app, container);
   registerCrmRoutes(app, container);
+  registerCommerceRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);
   registerWebhookRoutes(app, container);
@@ -541,6 +543,9 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
           from: z.string().min(5), text: z.string(),
           chat: z.string().optional().describe("Para simular un grupo"),
           pushName: z.string().optional(),
+          kind: z.enum([
+            "text", "image", "video", "audio", "document", "sticker",
+          ]).optional().describe("Para simular un mensaje con fichero"),
         })),
       },
       responses: { 201: json(z.object({ data: z.object({ id: z.string(), chat: z.string() }) }), "creado"), ...errors },
@@ -553,6 +558,7 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
       const msg = await container.sandbox!.inbound(lineId as LineId, input.from, input.text, {
         ...(input.chat ? { chat: input.chat } : {}),
         ...(input.pushName ? { pushName: input.pushName } : {}),
+        ...(input.kind ? { kind: input.kind } : {}),
       });
       return c.json({ data: { id: msg.id, chat: msg.chat } }, 201);
     },

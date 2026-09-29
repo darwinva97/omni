@@ -241,6 +241,88 @@ run("grupos", () => {
   });
 });
 
+run("medios entrantes e identidad", () => {
+  it("una foto que llega se descarga, se guarda y se puede descargar", async () => {
+    /*
+     * WhatsApp no manda el fichero: manda una referencia cifrada. Sin
+     * descargarla, una foto que llega es una fila en la base y ninguna forma
+     * de ver la foto, que es lo que pasaba antes.
+     */
+    const chat = "51900222333@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST",
+      body: JSON.stringify({ from: "51900222333", text: "mira esto", kind: "image" }),
+    });
+
+    const limite = Date.now() + 8000;
+    let fila: Record<string, unknown> | undefined;
+    for (;;) {
+      const filas = await dbh.sql`
+        SELECT media_key, media_mime, media_size, failure_reason
+        FROM message WHERE line_id = ${LINE} AND chat_id = ${chat}`;
+      fila = filas[0];
+      if (fila?.["media_key"]) break;
+      if (Date.now() > limite) {
+        throw new Error(`el medio no se guardó: ${JSON.stringify(fila ?? null)}`);
+      }
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    expect(fila["media_mime"]).toBe("image/jpeg");
+    expect(Number(fila["media_size"])).toBeGreaterThan(0);
+    expect(fila["failure_reason"]).toBeNull();
+  });
+
+  it("un mensaje de texto no encola ninguna descarga", async () => {
+    // Encolar un trabajo por cada mensaje de texto llenaría la cola de nada.
+    const antes = await dbh.sql`SELECT count(*)::int AS n FROM omni_job WHERE queue = 'inbound-media'`;
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900222333", text: "solo texto" }),
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    const despues = await dbh.sql`SELECT count(*)::int AS n FROM omni_job WHERE queue = 'inbound-media'`;
+    expect(despues[0]?.["n"]).toBe(antes[0]?.["n"]);
+  });
+
+  it("de un LID sin mapear decimos que NO lo sabemos, no lo adivinamos", async () => {
+    /*
+     * Adivinar el teléfono por los dígitos del LID confundiría a dos personas
+     * distintas. `null` significa "no lo sabemos", que es la verdad.
+     */
+    const { data } = await j<{ data: { phone: string | null; kind: string } }>(
+      await call(`/v1/lines/${LINE}/identity/${enc("555000111@lid")}`));
+    expect(data.kind).toBe("lid");
+    expect(data.phone).toBeNull();
+  });
+
+  it("aprende el mapeo LID↔teléfono de lo que trae el mensaje", async () => {
+    // Es la ÚNICA vez que WhatsApp lo dice; si no se guarda aquí, ese LID no
+    // se puede atar a nadie nunca más.
+    await container.runtime.publish("message.received", LINE, {
+      key: {
+        id: "SBX-lid-1",
+        remoteJid: "555000999@lid",
+        remoteJidAlt: "51900444555@s.whatsapp.net",
+        fromMe: false,
+      },
+      kind: "text", text: "hola desde un lid", timestamp: Date.now(),
+    });
+
+    const limite = Date.now() + 5000;
+    for (;;) {
+      const res = await j<{ data: { phone: string | null } }>(
+        await call(`/v1/lines/${LINE}/identity/${enc("555000999@lid")}`));
+      if (res.data.phone === "51900444555@s.whatsapp.net") break;
+      if (Date.now() > limite) throw new Error("no aprendió el mapeo");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    // Y al revés: del teléfono al LID.
+    const inverso = await j<{ data: { lid: string | null } }>(
+      await call(`/v1/lines/${LINE}/identity/${enc("51900444555@s.whatsapp.net")}`));
+    expect(inverso.data.lid).toBe("555000999@lid");
+  });
+});
+
 run("organización y limpieza", () => {
   it("dice de qué organización es la credencial, con sus líneas por canal", async () => {
     const { data } = await j<{ data: { slug: string; lines: number; linesByChannel: Record<string, number> } }>(

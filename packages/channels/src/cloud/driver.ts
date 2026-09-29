@@ -7,7 +7,7 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type LineStatus, type OutboundCommand, type SendReceipt,
+  type DownloadedMedia, type LineStatus, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import type { CloudInboundMessage, CloudSendResponse, CloudWebhookPayload } from "./types.js";
 
@@ -185,6 +185,35 @@ export class CloudDriver extends EventEmitterBase implements ChannelDriver {
       if (primera !== undefined) line.recent.delete(primera);
     }
     return receipt;
+  }
+
+  async downloadMedia(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null> {
+    const line = this.#require(lineId);
+    const sobre = raw as { media?: { id?: string; mimeType?: string; fileName?: string } } | null;
+    const id = sobre?.media?.id;
+    if (!id) return null;
+
+    /*
+     * Dos pasos, y el segundo no se puede saltar: Meta da una URL temporal que
+     * SOLO responde con el token de la aplicación en la cabecera. Pasársela a
+     * un navegador o guardarla como enlace da un 401 y una imagen rota.
+     */
+    const meta = await this.#get<{ url?: string; mime_type?: string; file_size?: number }>(
+      line, `/${id}`, {},
+    );
+    if (!meta.url) return null;
+
+    const res = await this.#fetch(meta.url, {
+      headers: { authorization: `Bearer ${line.accessToken}` },
+    });
+    if (!res.ok) {
+      throw new OmniError("upstream_failed", `Meta no entregó el medio ${id}: ${res.status}`);
+    }
+    return {
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      mimeType: meta.mime_type ?? sobre?.media?.mimeType ?? "application/octet-stream",
+      ...(sobre?.media?.fileName ? { fileName: sobre.media.fileName } : {}),
+    };
   }
 
   #buildBody(cmd: OutboundCommand, field: string): Record<string, unknown> {

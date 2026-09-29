@@ -1,20 +1,44 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
-  OmniError, parseAddress, resolveContent, advanceState,
-  type ChannelKind, type EventEnvelope, type LineId, type MessageKind, type SendMessageInput,
+  OmniError, parseAddress, tryParseAddress, resolveContent, advanceState,
+  type Address, type ChannelKind, type EventEnvelope, type LineId, type MessageKind,
+  type SendMessageInput,
 } from "@omni/shared";
 import type { ChannelDriver, LineStatus, OutboundCommand } from "@omni/channels";
 import { assertCapability } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, lineTable, messageTable } from "@omni/db";
+import { authStateTable, chatTable, identityMapTable, lineTable, messageTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
-import { resolveMedia, type Storage } from "@omni/storage";
+import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { SecretBox } from "../crypto/secret-box.js";
 import { SendPacer } from "../outbound/pacer.js";
 
 export const OUTBOUND_QUEUE = "outbound";
+
+/**
+ * Los medios entrantes se descargan en su propia cola.
+ *
+ * WhatsApp no manda el fichero: manda una referencia cifrada que solo el
+ * cliente enlazado resuelve y que CADUCA. Hacerlo dentro de la ingesta ataría
+ * la llegada del mensaje a la descarga de un adjunto de veinte megas; hacerlo
+ * en una cola deja el mensaje disponible al instante, reintenta si falla y
+ * manda a la cola muerta lo que no se pueda, donde se ve.
+ */
+export const INBOUND_MEDIA_QUEUE = "inbound-media";
+
+export interface InboundMediaJob {
+  readonly lineId: string;
+  readonly orgId: string;
+  readonly messageId: string;
+  readonly providerMessageId: string;
+  readonly timestamp: number;
+  readonly raw: unknown;
+}
+
+/** Los tipos de mensaje que llevan fichero detrás. */
+const MEDIA_KINDS = new Set(["image", "video", "audio", "document", "sticker"]);
 
 /** Ventana de la reserva de idempotencia. Ver el comentario en `send`. */
 export const IDEMPOTENCY_RESERVE_SECONDS = 120;
@@ -69,6 +93,7 @@ export class EngineRuntime {
   readonly #now: () => number;
   readonly #newId: () => string;
   #outboundWorker: Subscription | null = null;
+  #mediaWorker: Subscription | null = null;
   readonly #oyentes: ((e: EventEnvelope) => Promise<void> | void)[] = [];
 
   constructor(deps: RuntimeDeps) {
@@ -231,6 +256,12 @@ export class EngineRuntime {
     if (input.replyTo) assertCapability(driver, "send.reply");
     if (input.mentions?.length) assertCapability(driver, "send.mentions");
     if (input.viewOnce) assertCapability(driver, "send.viewOnce");
+    /*
+     * `typingMs` pide simular escritura antes de enviar. Donde no hay
+     * indicador de escritura no se puede: aceptarlo y no hacerlo dejaría a
+     * quien lo pidió creyendo que su mensaje sale con pausa cuando sale seco.
+     */
+    if (input.typingMs && input.typingMs > 0) assertCapability(driver, "chat.typing");
 
     const to = parseAddress(input.to);
     const clientMessageId = input.clientMessageId ?? this.#newId();
@@ -363,6 +394,27 @@ export class EngineRuntime {
    */
   start(concurrency = 8): void {
     if (concurrency <= 0) return;
+    this.#mediaWorker = this.#deps.queue.process<InboundMediaJob>(
+      INBOUND_MEDIA_QUEUE,
+      async (job) => { await this.#descargarMedio(job); },
+      {
+        // Menos paralelismo que el envío: son ficheros, no mensajes, y
+        // saturar la red de subida de la línea perjudica a los envíos.
+        concurrency: Math.max(1, Math.floor(concurrency / 2)),
+        onDead: async (payload, _ctx, error) => {
+          const job = payload as InboundMediaJob;
+          // El mensaje se queda sin fichero, pero con el motivo escrito: un
+          // adjunto que no llega y no deja rastro es imposible de diagnosticar.
+          await this.#deps.db
+            .update(messageTable)
+            .set({ failureReason: `no se pudo traer el medio: ${error.message}` })
+            .where(and(
+              eq(messageTable.lineId, job.lineId),
+              eq(messageTable.providerMessageId, job.providerMessageId),
+            ));
+        },
+      },
+    );
     this.#outboundWorker = this.#deps.queue.process<OutboundJob>(
       OUTBOUND_QUEUE,
       async (job) => { await this.#deliver(job); },
@@ -446,6 +498,10 @@ export class EngineRuntime {
    */
   async #ingest(envelope: EventEnvelope): Promise<void> {
     try {
+      // El mapeo LID↔teléfono se aprende ANTES de persistir: si el mensaje se
+      // guarda primero y aquí falla algo, el chat queda con un LID que ya no
+      // se puede atar a nadie, porque el servidor solo lo dice esta vez.
+      await this.#aprenderIdentidad(envelope);
       if (envelope.event === "message.received") await this.#persistInbound(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
       if (envelope.event === "session.connected" || envelope.event === "session.status") {
@@ -474,6 +530,108 @@ export class EngineRuntime {
     }
   }
 
+  /**
+   * Aprende el mapeo LID↔teléfono de lo que venga en el evento.
+   *
+   * Baileys 7 direcciona con `@lid` de forma habitual y adjunta el teléfono en
+   * `remoteJidAlt`/`participantAlt` cuando WhatsApp lo da. Es la ÚNICA vez que
+   * lo dice: si no se guarda aquí, ese LID no se puede resolver nunca más, y
+   * como `sameAddress` no cruza tipos a propósito, la conversación queda
+   * separada para siempre de la persona que hay detrás.
+   */
+  async #aprenderIdentidad(envelope: EventEnvelope): Promise<void> {
+    const d = envelope.data as {
+      key?: {
+        remoteJid?: string; remoteJidAlt?: string;
+        participant?: string; participantAlt?: string;
+      };
+    };
+    if (!d.key) return;
+
+    const pares: { lid: string; phone: string }[] = [];
+    const anota = (lid?: string, phone?: string): void => {
+      if (!lid || !phone) return;
+      const a = tryParseAddress(lid);
+      const b = tryParseAddress(phone);
+      // Solo el par que de verdad es (LID, teléfono). WhatsApp a veces manda
+      // los dos campos con la misma forma, y guardar eso ensuciaría la tabla.
+      if (a?.kind === "lid" && b?.kind === "pn") pares.push({ lid: a.value, phone: b.value });
+    };
+    anota(d.key.remoteJid, d.key.remoteJidAlt);
+    anota(d.key.participant, d.key.participantAlt);
+    if (pares.length === 0) return;
+
+    await this.#deps.db
+      .insert(identityMapTable)
+      .values(pares.map((p) => ({
+        lineId: envelope.lineId, lid: p.lid, phone: p.phone, source: "server",
+      })))
+      .onConflictDoUpdate({
+        target: [identityMapTable.lineId, identityMapTable.lid],
+        set: { phone: sql`excluded.phone`, updatedAt: new Date() },
+      })
+      .catch(() => {
+        // Aprender una identidad no puede tumbar la ingesta del mensaje.
+      });
+  }
+
+  /** Trae el fichero de un mensaje entrante y lo guarda en el almacén. */
+  async #descargarMedio(job: InboundMediaJob): Promise<void> {
+    const line = await this.#line(job.lineId);
+    const driver = this.driverFor(line.channelKind);
+    if (!driver.downloadMedia) {
+      // El transporte no sabe traer medios. No es un fallo del trabajo: no
+      // tiene sentido reintentarlo cuatro veces ni mandarlo a la cola muerta.
+      return;
+    }
+
+    const medio = await driver.downloadMedia(job.lineId as LineId, job.raw);
+    if (!medio) return;
+
+    const key = mediaKey({
+      orgId: job.orgId, lineId: job.lineId, messageId: job.providerMessageId,
+      ...(medio.fileName ? { fileName: medio.fileName } : {}),
+    });
+    const guardado = await this.#deps.storage.put(key, medio.bytes, {
+      mimeType: medio.mimeType,
+      ...(medio.fileName ? { fileName: medio.fileName } : {}),
+    });
+
+    await this.#deps.db
+      .update(messageTable)
+      .set({
+        mediaKey: guardado.key,
+        mediaMime: medio.mimeType,
+        mediaSize: guardado.size,
+        mediaFileName: medio.fileName ?? null,
+        failureReason: null,
+      })
+      .where(and(
+        eq(messageTable.lineId, job.lineId),
+        eq(messageTable.providerMessageId, job.providerMessageId),
+      ));
+  }
+
+  /** El teléfono detrás de un LID, o `null` si no lo sabemos. `null` no es "no tiene". */
+  async phoneForLid(lineId: string, lid: Address): Promise<Address | null> {
+    const filas = await this.#deps.db
+      .select({ phone: identityMapTable.phone })
+      .from(identityMapTable)
+      .where(and(eq(identityMapTable.lineId, lineId), eq(identityMapTable.lid, lid.value)))
+      .limit(1);
+    return filas[0] ? tryParseAddress(filas[0].phone) : null;
+  }
+
+  /** El LID de un teléfono, si alguna vez lo hemos visto. */
+  async lidForPhone(lineId: string, phone: Address): Promise<Address | null> {
+    const filas = await this.#deps.db
+      .select({ lid: identityMapTable.lid })
+      .from(identityMapTable)
+      .where(and(eq(identityMapTable.lineId, lineId), eq(identityMapTable.phone, phone.value)))
+      .limit(1);
+    return filas[0] ? tryParseAddress(filas[0].lid) : null;
+  }
+
   async #persistInbound(envelope: EventEnvelope): Promise<void> {
     const d = envelope.data as {
       key: { id: string; remoteJid: string; participant?: string };
@@ -492,6 +650,31 @@ export class EngineRuntime {
         raw: envelope.data as never,
       })
       .onConflictDoNothing();
+
+    /*
+     * El medio se encola DESPUÉS de tener la fila.
+     *
+     * Al revés, el trabajador podría llegar a actualizar un mensaje que
+     * todavía no existe y la descarga se perdería sin dejar rastro.
+     */
+    if (MEDIA_KINDS.has(d.kind ?? "text")) {
+      await this.#deps.queue.enqueue<InboundMediaJob>(
+        INBOUND_MEDIA_QUEUE,
+        {
+          lineId: envelope.lineId, orgId: envelope.orgId,
+          messageId: `m-${envelope.lineId}-${d.key.id}`,
+          providerMessageId: d.key.id,
+          timestamp: when.getTime(),
+          raw: envelope.data,
+        },
+        {
+          partitionKey: `line:${envelope.lineId}`,
+          idempotencyKey: `media:${envelope.lineId}:${d.key.id}`,
+          maxAttempts: 4,
+          backoffMs: 5000,
+        },
+      );
+    }
 
     await this.#deps.db
       .insert(chatTable)
@@ -524,6 +707,7 @@ export class EngineRuntime {
   }
 
   async stop(): Promise<void> {
+    await this.#mediaWorker?.stop();
     await this.#outboundWorker?.stop();
     for (const off of this.#unsubscribes) off();
     this.#unsubscribes.length = 0;

@@ -110,6 +110,46 @@ export interface ChannelDriverOptional {
   clearChat?(lineId: LineId, chat: Address, anchor: readonly ChatAnchorMessage[]): Promise<void>;
 
   /**
+   * Descarga y descifra el medio de un mensaje entrante.
+   *
+   * WhatsApp NO manda el fichero: manda una referencia cifrada que solo el
+   * cliente enlazado puede resolver, y que caduca. Sin esto, una foto que
+   * llega es una fila en la base sin ninguna forma de ver la foto.
+   *
+   * Devuelve `null` cuando el mensaje sencillamente no lleva medio; los fallos
+   * de descarga se lanzan, para que el reintento los vea.
+   */
+  downloadMedia?(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null>;
+
+  /**
+   * Comunidades: grupos de grupos.
+   *
+   * Enlazar un grupo a una comunidad NO es añadir un participante, y por eso
+   * no se cuelga de `group.*`: son dos pertenencias distintas que se pueden
+   * cambiar por separado.
+   */
+  communityMetadata?(lineId: LineId, community: Address): Promise<CommunityMetadata>;
+  listCommunities?(lineId: LineId): Promise<readonly CommunityMetadata[]>;
+  createCommunity?(lineId: LineId, subject: string, description: string): Promise<CommunityMetadata>;
+  linkGroupToCommunity?(lineId: LineId, group: Address, community: Address): Promise<void>;
+  unlinkGroupFromCommunity?(lineId: LineId, group: Address, community: Address): Promise<void>;
+  leaveCommunity?(lineId: LineId, community: Address): Promise<void>;
+
+  /**
+   * Catálogo de WhatsApp Business.
+   *
+   * Solo existe en cuentas de empresa. Leerlo de OTRA cuenta es legítimo —es
+   * público—, así que las lecturas admiten de quién.
+   */
+  listProducts?(lineId: LineId, de: Address | null, limite: number): Promise<readonly Product[]>;
+  listCollections?(lineId: LineId, de: Address | null, limite: number): Promise<readonly Collection[]>;
+  createProduct?(lineId: LineId, input: ProductInput): Promise<Product>;
+  updateProduct?(lineId: LineId, productId: string, input: ProductInput): Promise<Product>;
+  deleteProducts?(lineId: LineId, productIds: readonly string[]): Promise<number>;
+  /** Un pedido llega dentro de un mensaje, con un testigo de un solo uso. */
+  orderDetails?(lineId: LineId, orderId: string, token: string): Promise<OrderDetails>;
+
+  /**
    * Canales (newsletters). Son de UNA dirección: el dueño publica y el resto
    * lee, así que leer y publicar son capacidades distintas —`newsletter.read`
    * y `newsletter.send`— y casi ningún transporte tiene la segunda.
@@ -121,6 +161,71 @@ export interface ChannelDriverOptional {
   unfollowNewsletter?(lineId: LineId, newsletter: Address): Promise<void>;
   rejectCall?(lineId: LineId, callId: string, from: Address): Promise<void>;
   fetchHistory?(lineId: LineId, chat: Address, before: number, count: number): Promise<void>;
+}
+
+export interface DownloadedMedia {
+  readonly bytes: Uint8Array;
+  readonly mimeType: string;
+  readonly fileName?: string;
+}
+
+export interface CommunityMetadata {
+  readonly address: Address;
+  readonly subject: string;
+  readonly description?: string;
+  readonly owner?: Address;
+  /**
+   * Los grupos que cuelgan de ella.
+   *
+   * Vacío significa "ninguno", no "no lo sabemos": quien no pueda enumerarlos
+   * no debe declarar `community.read`.
+   */
+  readonly linkedGroups: readonly { address: Address; subject: string; size?: number }[];
+  readonly size?: number;
+}
+
+export interface Product {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  /** En la unidad menor de la moneda: céntimos, no euros. */
+  readonly price: number;
+  readonly currency: string;
+  readonly retailerId?: string;
+  readonly url?: string;
+  readonly imageUrls: readonly string[];
+  readonly hidden?: boolean;
+  readonly availability?: string;
+  /** WhatsApp revisa cada producto; hasta que lo aprueba no se ve. */
+  readonly reviewStatus?: string;
+}
+
+export interface ProductInput {
+  readonly name: string;
+  readonly description: string;
+  readonly price: number;
+  readonly currency: string;
+  readonly imageUrls: readonly string[];
+  readonly retailerId?: string;
+  readonly url?: string;
+  readonly hidden?: boolean;
+  /** Código ISO del país de origen. Ausente = sin país. */
+  readonly originCountryCode?: string;
+}
+
+export interface Collection {
+  readonly id: string;
+  readonly name: string;
+  readonly products: readonly Product[];
+  readonly status?: string;
+}
+
+export interface OrderDetails {
+  readonly currency: string;
+  readonly total: number;
+  readonly products: readonly {
+    id: string; name: string; quantity: number; price: number; currency: string; imageUrl?: string;
+  }[];
 }
 
 export interface ForwardSource {

@@ -6,8 +6,10 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type ContactProfile, type ForwardSource, type GroupMetadata, type GroupPatch,
-  type LineStatus, type NetworkLabel, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
+  type Collection, type CommunityMetadata, type ContactProfile, type DownloadedMedia,
+  type ForwardSource,
+  type GroupMetadata, type GroupPatch, type LineStatus, type NetworkLabel,
+  type NewsletterMetadata, type OrderDetails, type Product, type ProductInput, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 
 /**
@@ -54,6 +56,9 @@ interface LineState {
   readonly silenciados: Map<string, number>;
   readonly efimeros: Map<string, number>;
   readonly bloqueados: Set<string>;
+  readonly comunidades: Map<string, CommunityMetadata>;
+  readonly productos: Map<string, Product>;
+  readonly pedidos: Map<string, { token: string; detalles: OrderDetails }>;
   readonly known: Set<string>;
   pendingQr: string | null;
   /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
@@ -76,6 +81,7 @@ export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
     "message.edit", "message.delete", "message.receipts",
     "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
     "chat.clear", "send.forward", "contact.profile", "contact.block",
+    "community.read", "community.manage", "catalog.read", "catalog.manage",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
@@ -116,6 +122,9 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       silenciados: new Map(),
       efimeros: new Map(),
       bloqueados: new Set(),
+      comunidades: new Map(),
+      productos: new Map(),
+      pedidos: new Map(),
       known: new Set(),
       pendingQr: null,
       saveCredentials: null,
@@ -428,6 +437,171 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
    * canal de alguien, no el propio. Sin esto no había forma de probar seguir y
    * dejar de seguir, porque del canal propio uno es dueño y no seguidor.
    */
+  async downloadMedia(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const sobre = raw as { kind?: string } | null;
+    const tipos = ["image", "video", "audio", "document", "sticker"];
+    if (!sobre?.kind || !tipos.includes(sobre.kind)) return null;
+    return {
+      bytes: new TextEncoder().encode(`medio simulado de tipo ${sobre.kind}`),
+      mimeType: sobre.kind === "image" ? "image/jpeg" : "application/octet-stream",
+      ...(sobre.kind === "document" ? { fileName: "documento.pdf" } : {}),
+    };
+  }
+
+  // ---------------------------------------------------------------- comunidades
+
+  async createCommunity(
+    lineId: LineId, subject: string, description: string,
+  ): Promise<CommunityMetadata> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const address = parseAddress(`${this.#nextId()}-${this.#now()}@g.us`);
+    const meta: CommunityMetadata = {
+      address, subject,
+      ...(description ? { description } : {}),
+      owner: parseAddress(this.#selfOf(line)),
+      linkedGroups: [],
+      size: 1,
+    };
+    line.comunidades.set(address.value, meta);
+    await this.emit("community.updated", line.orgId, lineId, {
+      community: address.value, subject, created: true,
+    });
+    return meta;
+  }
+
+  async communityMetadata(lineId: LineId, community: Address): Promise<CommunityMetadata> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const meta = line.comunidades.get(community.value);
+    if (!meta) throw new OmniError("not_found", `la comunidad "${community.value}" no existe`);
+    return meta;
+  }
+
+  async listCommunities(lineId: LineId): Promise<readonly CommunityMetadata[]> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    return [...line.comunidades.values()];
+  }
+
+  async linkGroupToCommunity(lineId: LineId, group: Address, community: Address): Promise<void> {
+    const line = this.#require(lineId);
+    const meta = await this.communityMetadata(lineId, community);
+    const grupo = line.groups.get(group.value);
+    if (!grupo) throw new OmniError("not_found", `el grupo "${group.value}" no existe`);
+    // Enlazar dos veces no lo duplica: el segundo enlace es una confirmación.
+    if (meta.linkedGroups.some((g) => g.address.value === group.value)) return;
+    line.comunidades.set(community.value, {
+      ...meta,
+      linkedGroups: [
+        ...meta.linkedGroups,
+        { address: group, subject: grupo.subject, size: grupo.participants.length },
+      ],
+    });
+    await this.emit("community.updated", line.orgId, lineId, {
+      community: community.value, linked: group.value,
+    });
+  }
+
+  async unlinkGroupFromCommunity(lineId: LineId, group: Address, community: Address): Promise<void> {
+    const line = this.#require(lineId);
+    const meta = await this.communityMetadata(lineId, community);
+    line.comunidades.set(community.value, {
+      ...meta,
+      linkedGroups: meta.linkedGroups.filter((g) => g.address.value !== group.value),
+    });
+    await this.emit("community.updated", line.orgId, lineId, {
+      community: community.value, unlinked: group.value,
+    });
+  }
+
+  async leaveCommunity(lineId: LineId, community: Address): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    line.comunidades.delete(community.value);
+    await this.emit("community.updated", line.orgId, lineId, {
+      community: community.value, left: true,
+    });
+  }
+
+  // ---------------------------------------------------------------- catálogo
+
+  async listProducts(lineId: LineId, _de: Address | null, limite: number): Promise<readonly Product[]> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    return [...line.productos.values()].slice(0, limite);
+  }
+
+  async listCollections(lineId: LineId, _de: Address | null, limite: number): Promise<readonly Collection[]> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    return [{
+      id: "sbx-todo", name: "Todos",
+      products: [...line.productos.values()].slice(0, limite),
+      status: "APPROVED",
+    }];
+  }
+
+  async createProduct(lineId: LineId, input: ProductInput): Promise<Product> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const producto: Product = {
+      id: `sbx-p${this.#nextId()}`,
+      name: input.name, description: input.description,
+      price: input.price, currency: input.currency,
+      ...(input.retailerId ? { retailerId: input.retailerId } : {}),
+      ...(input.url ? { url: input.url } : {}),
+      imageUrls: [...input.imageUrls],
+      hidden: input.hidden ?? false,
+      availability: "in stock",
+      // Como en WhatsApp de verdad: nace pendiente de revisión, no visible.
+      reviewStatus: "PENDING",
+    };
+    line.productos.set(producto.id, producto);
+    return producto;
+  }
+
+  async updateProduct(lineId: LineId, productId: string, input: ProductInput): Promise<Product> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const actual = line.productos.get(productId);
+    if (!actual) throw new OmniError("not_found", `el producto "${productId}" no existe`);
+    const producto: Product = {
+      ...actual,
+      name: input.name, description: input.description,
+      price: input.price, currency: input.currency,
+      imageUrls: [...input.imageUrls],
+      ...(input.hidden !== undefined ? { hidden: input.hidden } : {}),
+      // Editar vuelve a mandarlo a revisión, igual que en WhatsApp.
+      reviewStatus: "PENDING",
+    };
+    line.productos.set(productId, producto);
+    return producto;
+  }
+
+  async deleteProducts(lineId: LineId, productIds: readonly string[]): Promise<number> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    let borrados = 0;
+    for (const id of productIds) if (line.productos.delete(id)) borrados++;
+    return borrados;
+  }
+
+  async orderDetails(lineId: LineId, orderId: string, token: string): Promise<OrderDetails> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const pedido = line.pedidos.get(orderId);
+    if (!pedido) throw new OmniError("not_found", `el pedido "${orderId}" no existe`);
+    // El testigo es de un solo uso también aquí: si el sandbox lo aceptara
+    // siempre, una integración que lo perdiera parecería correcta en pruebas.
+    if (pedido.token !== token) {
+      throw new OmniError("validation_failed", "el testigo de ese pedido no sirve");
+    }
+    return pedido.detalles;
+  }
+
   async listNetworkLabels(lineId: LineId): Promise<readonly NetworkLabel[]> {
     const line = this.#require(lineId);
     this.#requireConnected(line, lineId);

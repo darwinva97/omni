@@ -47,6 +47,14 @@ export const capabilities = [
   "chat.clear",
   // grupos
   "group.read", "group.create", "group.manage", "group.invite", "group.participants",
+  /*
+   * Comunidades. Son grupos de grupos, con su propio anuncio y su propia
+   * pertenencia, y NO se pueden tratar como un grupo más: enlazar un grupo a
+   * una comunidad no es añadir un participante.
+   */
+  "community.read", "community.manage",
+  // catálogo de WhatsApp Business
+  "catalog.read", "catalog.manage",
   // contactos e identidad
   "contact.check", "contact.block", "contact.profile", "identity.lid",
   // llamadas

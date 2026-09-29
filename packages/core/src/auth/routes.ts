@@ -48,6 +48,8 @@ export const ROUTES = {
   "chat.list": { id: "chat.list", permission: "message.read", scope: "line", chatSafe: true },
   "chat.markRead": { id: "chat.markRead", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.archive": { id: "chat.archive", permission: "chat.manage", scope: "chat", chatSafe: true },
+  "identity.read": { id: "identity.read", permission: "contact.read", scope: "chat", chatSafe: true },
+  "history.sync": { id: "history.sync", permission: "message.read", scope: "chat", chatSafe: true },
   "chat.mute": { id: "chat.mute", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.ephemeral": { id: "chat.ephemeral", permission: "chat.manage", scope: "chat", chatSafe: true },
   /*
@@ -110,6 +112,17 @@ export const ROUTES = {
   "conversation.list": { id: "conversation.list", permission: "message.read", scope: "line", chatSafe: true },
   "conversation.update": { id: "conversation.update", permission: "chat.manage", scope: "chat", chatSafe: true },
   "automation.manage": { id: "automation.manage", permission: "org.manage", scope: "org" },
+
+  /*
+   * --- comunidades y catálogo
+   *
+   * Ninguna es segura para una clave acotada a chats: una comunidad abarca
+   * grupos enteros y el catálogo es de la cuenta, no de una conversación.
+   */
+  "community.read": { id: "community.read", permission: "group.read", scope: "line" },
+  "community.manage": { id: "community.manage", permission: "group.manage", scope: "line" },
+  "catalog.read": { id: "catalog.read", permission: "contact.read", scope: "line" },
+  "catalog.manage": { id: "catalog.manage", permission: "org.manage", scope: "line" },
 
   // --- contactos
   "contact.list": { id: "contact.list", permission: "contact.read", scope: "line" },

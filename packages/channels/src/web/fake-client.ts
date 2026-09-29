@@ -120,7 +120,12 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
       getAbout: async () => "disponible",
     }),
     getMessageById: async (mid: string) => ({
+      hasMedia: true,
       forward: async (a: string) => { control.reenviados.push({ id: mid, a }); },
+      downloadMedia: async () => ({
+        data: Buffer.from("medio falso").toString("base64"),
+        mimetype: "image/jpeg",
+      }),
     }),
     getLabels: async () => [{ id: "1", name: "Nuevo cliente", hexColor: "#ff0000" }],
   } as WebClient & Record<string, unknown>;

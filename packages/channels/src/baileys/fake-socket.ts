@@ -25,6 +25,8 @@ export interface FakeSocketControl {
   readonly groupLeaves: string[];
   readonly modificaciones: { jid: string; mod: Record<string, unknown> }[];
   readonly bloqueos: { jid: string; action: string }[];
+  readonly enlaces: { grupo: string; comunidad: string; enlazado: boolean }[];
+  readonly comunidadesDejadas: string[];
   readonly efimeros: { jid: string; segundos: number }[];
   readonly newsletterSeguidos: string[];
   readonly newsletterDejados: string[];
@@ -45,6 +47,8 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     groupLeaves: [],
     modificaciones: [],
     bloqueos: [],
+    enlaces: [],
+    comunidadesDejadas: [],
     efimeros: [],
     newsletterSeguidos: [],
     newsletterDejados: [],
@@ -124,6 +128,60 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     groupToggleEphemeral: async (jid: string, segundos: number) => {
       control.efimeros.push({ jid, segundos });
     },
+    communityMetadata: async (jid: string) => ({
+      id: jid, subject: "Comunidad falsa", desc: "una comunidad de prueba",
+      owner: "51999888777@s.whatsapp.net", size: 2,
+      participants: [{ id: "51999888777@s.whatsapp.net", admin: "superadmin" }],
+    }),
+    communityFetchAllParticipating: async () => ({
+      "200@g.us": { id: "200@g.us", subject: "Comunidad falsa", participants: [] },
+    }),
+    communityFetchLinkedGroups: async (jid: string) => ({
+      communityJid: jid, isCommunity: true,
+      linkedGroups: [
+        { id: "120@g.us", subject: "Uno", creation: 1_700_000_000, owner: undefined, size: 3 },
+      ],
+    }),
+    communityCreate: async (subject: string, body: string) => ({
+      id: "201@g.us", subject, desc: body, participants: [],
+    }),
+    communityLinkGroup: async (grupo: string, comunidad: string) => {
+      control.enlaces.push({ grupo, comunidad, enlazado: true });
+    },
+    communityUnlinkGroup: async (grupo: string, comunidad: string) => {
+      control.enlaces.push({ grupo, comunidad, enlazado: false });
+    },
+    communityLeave: async (jid: string) => { control.comunidadesDejadas.push(jid); },
+    getCatalog: async () => ({
+      products: [{
+        id: "p1", name: "Camiseta", description: "de algodón",
+        price: 2500, currency: "PEN", retailerId: "SKU-1",
+        imageUrls: { requested: "https://falso.test/p1.jpg" },
+        reviewStatus: { whatsapp: "APPROVED" }, availability: "in stock",
+      }],
+      nextPageCursor: undefined,
+    }),
+    getCollections: async () => ({
+      collections: [{
+        id: "c1", name: "Verano", products: [], status: { status: "APPROVED", canAppeal: false },
+      }],
+    }),
+    productCreate: async (create: Record<string, unknown>) => ({
+      id: "p2", ...create, imageUrls: { requested: "https://falso.test/p2.jpg" },
+      reviewStatus: { whatsapp: "PENDING" }, availability: "in stock",
+    }),
+    productUpdate: async (id: string, update: Record<string, unknown>) => ({
+      id, ...update, imageUrls: {}, reviewStatus: { whatsapp: "PENDING" },
+      availability: "in stock",
+    }),
+    productDelete: async (ids: string[]) => ({ deleted: ids.length }),
+    getOrderDetails: async () => ({
+      price: { currency: "PEN", total: 5000 },
+      products: [{
+        id: "p1", name: "Camiseta", quantity: 2, currency: "PEN", price: 2500,
+        imageUrl: "https://falso.test/p1.jpg",
+      }],
+    }),
     newsletterCreate: async (name: string, description?: string) => ({
       id: "130@newsletter", name, description,
       invite: "CANALNUEVO1", subscribers: 0, verification: "UNVERIFIED",

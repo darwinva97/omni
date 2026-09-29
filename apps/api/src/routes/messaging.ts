@@ -255,6 +255,76 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "get", path: "/v1/lines/{lineId}/identity/{address}",
+      tags: ["contactos"], summary: "El teléfono detrás de un LID, o el LID de un teléfono",
+      description:
+        "`null` significa QUE NO LO SABEMOS, no que no exista. WhatsApp solo dice " +
+        "el par una vez, al entregar el mensaje; si no estaba allí, no hay forma " +
+        "de deducirlo, y adivinarlo por los dígitos confundiría a dos personas.",
+      request: { params: z.object({ lineId: z.string(), address: z.string() }) },
+      responses: {
+        200: json(z.object({ data: z.object({
+          address: z.string(), kind: z.string(),
+          phone: z.string().nullable(), lid: z.string().nullable(),
+        }) }), "lo que sabemos"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId, address } = c.req.valid("param");
+      const direccion = parseAddress(decodeURIComponent(address));
+      await authorize(c.get("principal"), routeOf("identity.read"), { lineId, chat: direccion });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "identity.lid");
+
+      if (direccion.kind === "lid") {
+        const telefono = await container.runtime.phoneForLid(lineId, direccion);
+        return c.json({ data: {
+          address: direccion.value, kind: direccion.kind,
+          phone: telefono?.value ?? null, lid: direccion.value,
+        } }, 200);
+      }
+      const lid = await container.runtime.lidForPhone(lineId, direccion);
+      return c.json({ data: {
+        address: direccion.value, kind: direccion.kind,
+        phone: direccion.value, lid: lid?.value ?? null,
+      } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/history",
+      tags: ["mensajes"], summary: "Pedir historial anterior de una conversación",
+      description:
+        "Es ASÍNCRONO: WhatsApp responde con eventos, no con los mensajes. La " +
+        "respuesta 202 dice que se ha pedido, no que ya esté; los mensajes " +
+        "aparecen luego por `/messages` y por el webhook `history.synced`.",
+      request: {
+        params: lineChat,
+        ...body(z.object({
+          before: z.string().datetime().optional(),
+          count: z.number().int().min(1).max(200).default(50),
+        })),
+      },
+      responses: { 202: json(Ok, "pedido"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, chatId } = c.req.valid("param");
+      const { before, count } = c.req.valid("json");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("history.sync"), { lineId, chat });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "history.sync");
+      await driver.fetchHistory!(
+        lineId as LineId, chat, before ? new Date(before).getTime() : Date.now(), count,
+      );
+      return c.json({ data: { ok: true } }, 202);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/mute",
       tags: ["chats"], summary: "Silenciar una conversación hasta un instante dado",
       description: "`until` nulo la desilencia. Es el silencio DE WHATSAPP, no un ajuste del panel.",

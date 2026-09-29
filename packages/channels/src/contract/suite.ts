@@ -55,6 +55,11 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "send.forward": "forwardMessage",
   "label.manage": "listNetworkLabels",
   "newsletter.send": "createNewsletter",
+  "community.read": "communityMetadata",
+  "community.manage": "createCommunity",
+  "catalog.read": "listProducts",
+  "catalog.manage": "createProduct",
+  "media.decrypt": "downloadMedia",
   /*
    * `call.receive` NO está, y no es un olvido: no es una operación que se
    * invoque, es la promesa de emitir `call.received`. Mapearla a un método

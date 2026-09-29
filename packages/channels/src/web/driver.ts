@@ -7,8 +7,8 @@ import type { Storage } from "@omni/storage";
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type ContactProfile, type ForwardSource, type GroupMetadata, type GroupPatch,
-  type LineStatus, type NetworkLabel, type OutboundCommand, type SendReceipt,
+  type ContactProfile, type DownloadedMedia, type ForwardSource, type GroupMetadata,
+  type GroupPatch, type LineStatus, type NetworkLabel, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { ObjectStorageSessionStore } from "./session-store.js";
 
@@ -453,6 +453,29 @@ export class WhatsappWebDriver extends EventEmitterBase implements ChannelDriver
     return etiquetas.map((l) => ({
       id: String(l.id), name: l.name, ...(l.hexColor ? { color: l.hexColor } : {}),
     }));
+  }
+
+  async downloadMedia(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null> {
+    const { cliente } = this.#require(lineId);
+    const sobre = raw as { key?: { id?: string } } | null;
+    const id = sobre?.key?.id;
+    if (!id) return null;
+
+    const m = await (cliente as unknown as {
+      getMessageById: (i: string) => Promise<{
+        hasMedia?: boolean;
+        downloadMedia: () => Promise<{ data: string; mimetype: string; filename?: string } | null>;
+      } | null>;
+    }).getMessageById(id);
+    if (!m?.hasMedia) return null;
+
+    const medio = await m.downloadMedia();
+    if (!medio) return null;
+    return {
+      bytes: new Uint8Array(Buffer.from(medio.data, "base64")),
+      mimeType: medio.mimetype,
+      ...(medio.filename ? { fileName: medio.filename } : {}),
+    };
   }
 
   async createGroup(

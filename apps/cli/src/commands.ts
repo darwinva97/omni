@@ -520,6 +520,184 @@ export const COMMANDS: readonly Command[] = [
       `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
   },
   {
+    name: "identidad",
+    summary: "El teléfono detrás de un LID, o el LID de un teléfono",
+    operation: "GET /v1/lines/{lineId}/identity/{address}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "direccion", required: true, description: "Un @lid o un teléfono" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/identity/${enc(req(a, 1, "direccion"))}`),
+  },
+  {
+    name: "chat:historial",
+    summary: "Pedir historial anterior; es asíncrono, llega por eventos",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/history",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    flags: [
+      { name: "antes", description: "Fecha ISO desde la que retroceder" },
+      { name: "cuantos", description: "Cuántos mensajes pedir" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/history`,
+      {
+        ...(flag(a, "antes") ? { before: flag(a, "antes") } : {}),
+        count: Number(flag(a, "cuantos") ?? 50),
+      }),
+  },
+  {
+    name: "comunidades",
+    summary: "Comunidades de la línea, con los grupos que cuelgan de cada una",
+    operation: "GET /v1/lines/{lineId}/communities",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/communities`),
+  },
+  {
+    name: "comunidad",
+    summary: "Datos de una comunidad y sus grupos",
+    operation: "GET /v1/lines/{lineId}/communities/{communityId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "comunidad", required: true, description: "Dirección de la comunidad" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/communities/${enc(req(a, 1, "comunidad"))}`),
+  },
+  {
+    name: "comunidad:crear",
+    summary: "Crear una comunidad",
+    operation: "POST /v1/lines/{lineId}/communities",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "nombre", required: true, description: "Nombre de la comunidad" },
+    ],
+    flags: [{ name: "descripcion", description: "Descripción de la comunidad" }],
+    run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/communities`, {
+      subject: req(a, 1, "nombre"), description: flag(a, "descripcion") ?? "",
+    }),
+  },
+  {
+    name: "comunidad:enlazar",
+    summary: "Enlazar un grupo a una comunidad, o desenlazarlo con --no",
+    operation: "POST /v1/lines/{lineId}/communities/{communityId}/groups",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "comunidad", required: true, description: "Dirección de la comunidad" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+    ],
+    flags: [{ name: "no", description: "Desenlazarlo en vez de enlazarlo" }],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/communities/${enc(req(a, 1, "comunidad"))}/groups`,
+      { groupId: req(a, 2, "grupo"), linked: a.flags["no"] !== true }),
+  },
+  {
+    name: "comunidad:salir",
+    summary: "Salir de una comunidad; los grupos enlazados siguen existiendo",
+    operation: "POST /v1/lines/{lineId}/communities/{communityId}/leave",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "comunidad", required: true, description: "Dirección de la comunidad" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/communities/${enc(req(a, 1, "comunidad"))}/leave`),
+  },
+  {
+    name: "productos",
+    summary: "Catálogo de la línea, o el de otra cuenta de empresa con --de",
+    operation: "GET /v1/lines/{lineId}/products",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    flags: [
+      { name: "de", description: "Dirección de otra cuenta de empresa" },
+      { name: "limite", description: "Cuántos devolver" },
+    ],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/products`, undefined, {
+      of: flag(a, "de"), limit: flag(a, "limite"),
+    }),
+  },
+  {
+    name: "colecciones",
+    summary: "Colecciones del catálogo",
+    operation: "GET /v1/lines/{lineId}/collections",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    flags: [
+      { name: "de", description: "Dirección de otra cuenta de empresa" },
+      { name: "limite", description: "Cuántas devolver" },
+    ],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/collections`, undefined, {
+      of: flag(a, "de"), limit: flag(a, "limite"),
+    }),
+  },
+  {
+    name: "producto:crear",
+    summary: "Publicar un producto desde un JSON; nace pendiente de revisión",
+    operation: "POST /v1/lines/{lineId}/products",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "json", required: true, description: "Objeto con name, description, price, currency e imageUrls" },
+    ],
+    run: (c, a) => {
+      let producto: unknown;
+      try {
+        producto = JSON.parse(req(a, 1, "json"));
+      } catch {
+        throw new Error("el producto tiene que ser un objeto JSON válido");
+      }
+      return c.request("POST", `/v1/lines/${req(a, 0, "linea")}/products`,
+        producto as Record<string, unknown>);
+    },
+  },
+  {
+    name: "producto:actualizar",
+    summary: "Reemplazar un producto; vuelve a revisión",
+    operation: "PUT /v1/lines/{lineId}/products/{productId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "producto", required: true, description: "Identificador del producto" },
+      { name: "json", required: true, description: "El producto entero, no solo lo que cambia" },
+    ],
+    run: (c, a) => {
+      let producto: unknown;
+      try {
+        producto = JSON.parse(req(a, 2, "json"));
+      } catch {
+        throw new Error("el producto tiene que ser un objeto JSON válido");
+      }
+      return c.request("PUT",
+        `/v1/lines/${req(a, 0, "linea")}/products/${enc(req(a, 1, "producto"))}`,
+        producto as Record<string, unknown>);
+    },
+  },
+  {
+    name: "producto:borrar",
+    summary: "Retirar un producto del catálogo",
+    operation: "DELETE /v1/lines/{lineId}/products/{productId}",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "producto", required: true, description: "Identificador del producto" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/products/${enc(req(a, 1, "producto"))}`),
+  },
+  {
+    name: "pedido",
+    summary: "Detalle de un pedido; el testigo viene en su mensaje",
+    operation: "GET /v1/lines/{lineId}/orders/{orderId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "pedido", required: true, description: "Identificador del pedido" },
+      { name: "testigo", required: true, description: "El token que venía en el mensaje" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/orders/${enc(req(a, 1, "pedido"))}`,
+      undefined, { token: req(a, 2, "testigo") }),
+  },
+  {
     name: "chat:silenciar",
     summary: "Silenciar una conversación en WhatsApp hasta una fecha",
     operation: "POST /v1/lines/{lineId}/chats/{chatId}/mute",
