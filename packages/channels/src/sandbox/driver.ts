@@ -70,6 +70,7 @@ export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
     "send.reply", "send.mentions", "send.viewOnce", "send.forward",
     "message.edit", "message.delete", "message.receipts",
     "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
+    "chat.clear",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
@@ -408,6 +409,15 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
    * canal de alguien, no el propio. Sin esto no había forma de probar seguir y
    * dejar de seguir, porque del canal propio uno es dueño y no seguidor.
    */
+  async clearChat(lineId: LineId, chat: Address): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const quedan = line.thread.filter((m) => m.chat !== chat.value);
+    line.thread.length = 0;
+    line.thread.push(...quedan);
+    await this.emit("chat.updated", line.orgId, lineId, { chat: chat.value, cleared: true });
+  }
+
   async simulateNewsletter(
     lineId: LineId, name: string, description?: string,
   ): Promise<NewsletterMetadata> {

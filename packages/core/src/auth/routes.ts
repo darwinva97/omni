@@ -46,7 +46,6 @@ export const ROUTES = {
 
   // --- chats y mensajes
   "chat.list": { id: "chat.list", permission: "message.read", scope: "line", chatSafe: true },
-  "chat.read": { id: "chat.read", permission: "message.read", scope: "chat", chatSafe: true },
   "chat.markRead": { id: "chat.markRead", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.archive": { id: "chat.archive", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.clear": { id: "chat.clear", permission: "chat.manage", scope: "chat", chatSafe: true },

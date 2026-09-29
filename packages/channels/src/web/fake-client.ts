@@ -18,6 +18,7 @@ export interface FakeWebControl {
   fallarAlEnviar: Error | null;
   readonly cambiosDeGrupo: { id: string; asunto?: string; desc?: string }[];
   readonly salidas: string[];
+  readonly vaciados: string[];
   readonly gruposCreados: string[];
   destruido: boolean;
 }
@@ -33,6 +34,7 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
     fallarAlEnviar: null,
     cambiosDeGrupo: [],
     salidas: [],
+    vaciados: [],
     gruposCreados: [],
     destruido: false,
     cliente: null as unknown as WebClient,
@@ -68,6 +70,7 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
     setSubject: async (asunto: string) => { control.cambiosDeGrupo.push({ id, asunto }); },
     setDescription: async (desc: string) => { control.cambiosDeGrupo.push({ id, desc }); },
     leave: async () => { control.salidas.push(id); },
+    clearMessages: async () => { control.vaciados.push(id); },
     getInviteCode: async () => "WEBINVITE1234",
     revokeInvite: async () => "WEBINVITE5678",
   });

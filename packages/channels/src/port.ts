@@ -80,6 +80,16 @@ export interface ChannelDriverOptional {
     action: "add" | "remove" | "promote" | "demote",
   ): Promise<readonly { address: Address; ok: boolean; reason?: string }[]>;
   /**
+   * Vacía una conversación en la red.
+   *
+   * `anchor` son los últimos mensajes conocidos. Suena a detalle ajeno, pero no
+   * lo es: WhatsApp no borra "hasta ahora", borra hasta un punto concreto del
+   * historial, y sin ese punto la operación no se puede expresar. Un driver que
+   * no lo necesite simplemente lo ignora.
+   */
+  clearChat?(lineId: LineId, chat: Address, anchor: readonly ChatAnchorMessage[]): Promise<void>;
+
+  /**
    * Canales (newsletters). Son de UNA dirección: el dueño publica y el resto
    * lee, así que leer y publicar son capacidades distintas —`newsletter.read`
    * y `newsletter.send`— y casi ningún transporte tiene la segunda.
@@ -92,6 +102,13 @@ export interface ChannelDriverOptional {
   createNewsletter?(lineId: LineId, name: string, description?: string): Promise<NewsletterMetadata>;
   rejectCall?(lineId: LineId, callId: string, from: Address): Promise<void>;
   fetchHistory?(lineId: LineId, chat: Address, before: number, count: number): Promise<void>;
+}
+
+export interface ChatAnchorMessage {
+  readonly providerMessageId: string;
+  readonly fromMe: boolean;
+  /** En milisegundos, como todo lo demás del sistema. */
+  readonly timestamp: number;
 }
 
 export interface NewsletterMetadata {

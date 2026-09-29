@@ -11,7 +11,8 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type GroupPatch, type LineStatus, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
+  type ChatAnchorMessage, type GroupMetadata, type GroupPatch, type LineStatus,
+  type NewsletterMetadata, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
@@ -38,6 +39,7 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
     "message.edit", "message.delete", "message.receipts",
     "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
+    "chat.clear",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
     "newsletter.read", "history.sync", "media.decrypt",
@@ -545,6 +547,28 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         ? { address, ok: true }
         : { address, ok: false, reason: `WhatsApp respondió ${r.status}` };
     });
+  }
+
+  async clearChat(
+    lineId: LineId, chat: Address, anchor: readonly ChatAnchorMessage[],
+  ): Promise<void> {
+    const { socket } = this.#require(lineId);
+    if (anchor.length === 0) {
+      throw new OmniError(
+        "validation_failed",
+        "no hay ningún mensaje conocido en esa conversación desde el que vaciar",
+      );
+    }
+    await socket.chatModify(
+      {
+        clear: true,
+        lastMessages: anchor.map((m) => ({
+          key: { id: m.providerMessageId, remoteJid: chat.value, fromMe: m.fromMe },
+          messageTimestamp: Math.floor(m.timestamp / 1000),
+        })),
+      },
+      chat.value,
+    );
   }
 
   async newsletterMetadata(lineId: LineId, newsletter: Address): Promise<NewsletterMetadata> {

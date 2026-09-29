@@ -23,6 +23,7 @@ export interface FakeSocketControl {
   readonly read: string[][];
   readonly groupUpdates: { jid: string; subject?: string; description?: string }[];
   readonly groupLeaves: string[];
+  readonly modificaciones: { jid: string; mod: Record<string, unknown> }[];
   readonly newsletterSeguidos: string[];
   readonly newsletterDejados: string[];
   nextMessageId: string;
@@ -40,6 +41,7 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     read: [],
     groupUpdates: [],
     groupLeaves: [],
+    modificaciones: [],
     newsletterSeguidos: [],
     newsletterDejados: [],
     nextMessageId: "FAKE-0001",
@@ -106,6 +108,9 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     groupInviteCode: async () => "ABCD1234EFGH",
     groupRevokeInvite: async () => "NUEVO5678CODE",
     groupAcceptInvite: async () => "122@g.us",
+    chatModify: async (mod: Record<string, unknown>, jid: string) => {
+      control.modificaciones.push({ jid, mod });
+    },
     newsletterMetadata: async (tipo: string, clave: string) => ({
       id: tipo === "invite" ? "120@newsletter" : clave,
       name: "Canal falso", description: "un canal de prueba",

@@ -1,7 +1,7 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, channelKinds } from "@omni/shared";
 import { authorize, filterLines, route as routeOf } from "@omni/core";
-import { apiKeyTable, auditEventTable, lineTable } from "@omni/db";
+import { apiKeyTable, auditEventTable, lineTable, orgTable } from "@omni/db";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Container } from "../container.js";
 import { mintApiKey } from "../keys.js";
@@ -29,6 +29,44 @@ export function registerLineAdminRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       userAgent: c.req.header("user-agent") ?? null,
     });
   };
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/org", tags: ["organización"],
+      summary: "La organización de esta credencial, con lo que hay dentro",
+      description:
+        "Sirve para saber contra qué organización se está hablando sin tener que " +
+        "deducirlo de otra ruta. Los recuentos son de lo que existe, no de cuota.",
+      responses: {
+        200: json(z.object({ data: z.object({
+          id: z.string(), name: z.string(), slug: z.string(), createdAt: z.string(),
+          lines: z.number(), linesByChannel: z.record(z.string(), z.number()),
+        }) }), "la organización"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      await authorize(principal, routeOf("org.read"));
+
+      const filas = await container.dbh.db.select()
+        .from(orgTable).where(eq(orgTable.id, principal.orgId)).limit(1);
+      const org = filas[0];
+      if (!org) throw new OmniError("not_found", "la organización de esta credencial ya no existe");
+
+      const lineas = await container.dbh.db
+        .select({ channelKind: lineTable.channelKind })
+        .from(lineTable).where(eq(lineTable.orgId, principal.orgId));
+      const porCanal: Record<string, number> = {};
+      for (const l of lineas) porCanal[l.channelKind] = (porCanal[l.channelKind] ?? 0) + 1;
+
+      return c.json({ data: {
+        id: org.id, name: org.name, slug: org.slug,
+        createdAt: org.createdAt.toISOString(),
+        lines: lineas.length, linesByChannel: porCanal,
+      } }, 200);
+    },
+  );
 
   app.openapi(
     createRoute({

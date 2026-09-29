@@ -125,6 +125,60 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "delete", path: "/v1/lines/{lineId}/chats/{chatId}/messages",
+      tags: ["chats"], summary: "Vaciar una conversación",
+      description:
+        "Vacía la conversación EN LA RED y borra nuestra copia. No es un borrado " +
+        "para el otro lado: quien esté al otro extremo sigue teniendo los suyos.",
+      request: { params: lineChat },
+      responses: { 200: json(z.object({ data: z.object({ deleted: z.number() }) }), "hecho"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, chatId } = c.req.valid("param");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("chat.clear"), { lineId, chat });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "chat.clear");
+
+      /*
+       * WhatsApp no borra "hasta ahora": borra hasta un punto del historial, y
+       * ese punto son los últimos mensajes que conocemos. Se sacan antes de
+       * borrar nada, porque después ya no estarían.
+       */
+      const ultimos = await container.dbh.db
+        .select({
+          providerMessageId: messageTable.providerMessageId,
+          fromMe: messageTable.fromMe,
+          timestamp: messageTable.timestamp,
+        })
+        .from(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.chatId, chat.value)))
+        .orderBy(desc(messageTable.timestamp))
+        .limit(5);
+
+      await driver.clearChat!(
+        lineId as LineId, chat,
+        ultimos
+          .filter((m) => m.providerMessageId !== null)
+          .map((m) => ({
+            providerMessageId: m.providerMessageId!,
+            fromMe: m.fromMe,
+            timestamp: m.timestamp.getTime(),
+          })),
+      );
+
+      // Solo después de que la red lo acepte: al revés, un fallo allí nos
+      // dejaría sin nuestra copia y con la conversación intacta en el teléfono.
+      const borrados = await container.dbh.db
+        .delete(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.chatId, chat.value)))
+        .returning({ id: messageTable.id });
+      return c.json({ data: { deleted: borrados.length } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/presence",
       tags: ["chats"], summary: "Mostrar que se está escribiendo o grabando",
       request: {

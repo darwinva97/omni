@@ -520,6 +520,25 @@ export const COMMANDS: readonly Command[] = [
       `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
   },
   {
+    name: "organizacion",
+    summary: "La organización de esta credencial y cuántas líneas tiene",
+    operation: "GET /v1/org",
+    args: [],
+    run: (c) => c.request("GET", "/v1/org"),
+  },
+  {
+    name: "chat:vaciar",
+    summary: "Vaciar una conversación en la red y borrar nuestra copia",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/messages",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages`),
+  },
+  {
     name: "canal",
     summary: "Datos de un canal, por dirección o por el código de su enlace",
     operation: "GET /v1/lines/{lineId}/newsletters/{newsletterId}",

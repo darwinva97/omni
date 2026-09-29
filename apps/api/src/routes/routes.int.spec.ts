@@ -241,6 +241,42 @@ run("grupos", () => {
   });
 });
 
+run("organización y limpieza", () => {
+  it("dice de qué organización es la credencial, con sus líneas por canal", async () => {
+    const { data } = await j<{ data: { slug: string; lines: number; linesByChannel: Record<string, number> } }>(
+      await call("/v1/org"));
+    expect(data.slug).toBe("rutas");
+    expect(data.lines).toBeGreaterThan(0);
+    expect(data.linesByChannel["sandbox"]).toBeGreaterThan(0);
+  });
+
+  it("vaciar una conversación la vacía en el transporte y borra nuestra copia", async () => {
+    const chat = "51900111222@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900111222", text: "uno" }),
+    });
+    // La ingesta es asíncrona; se espera a que la fila exista antes de borrarla.
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const filas = await dbh.sql`
+        SELECT 1 FROM message WHERE line_id = ${LINE} AND chat_id = ${chat}`;
+      if (filas.length > 0) break;
+      if (Date.now() > limite) throw new Error("el mensaje no llegó a la base");
+      await new Promise((r) => setTimeout(r, 60));
+    }
+
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const { data } = await j<{ data: { deleted: number } }>(res);
+    expect(data.deleted).toBeGreaterThan(0);
+
+    const quedan = await dbh.sql`
+      SELECT 1 FROM message WHERE line_id = ${LINE} AND chat_id = ${chat}`;
+    expect(quedan).toHaveLength(0);
+    expect(container.sandbox!.thread(LINE as never, chat)).toHaveLength(0);
+  });
+});
+
 run("canales", () => {
   let canal: string;
   let codigo: string;
