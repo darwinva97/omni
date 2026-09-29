@@ -241,6 +241,64 @@ run("grupos", () => {
   });
 });
 
+run("canales", () => {
+  let canal: string;
+  let codigo: string;
+
+  it("crea un canal y lo devuelve con su enlace", async () => {
+    const res = await call(`/v1/lines/${LINE}/newsletters`, {
+      method: "POST", body: JSON.stringify({ name: "Avisos", description: "solo lo importante" }),
+    });
+    expect(res.status).toBe(201);
+    const { data } = await j<{ data: { address: string; inviteCode: string; inviteUrl: string; role: string } }>(res);
+    expect(data.address).toContain("@newsletter");
+    expect(data.role).toBe("owner");
+    expect(data.inviteUrl).toContain(data.inviteCode);
+    canal = data.address;
+    codigo = data.inviteCode;
+  });
+
+  it("se puede leer por dirección o por el código del enlace", async () => {
+    // Los canales circulan como enlaces, no como direcciones: aceptar solo la
+    // dirección obligaría a todo el mundo a traducir a mano.
+    const porDireccion = await j<{ data: { name: string } }>(
+      await call(`/v1/lines/${LINE}/newsletters/${enc(canal)}`));
+    expect(porDireccion.data.name).toBe("Avisos");
+
+    const porCodigo = await j<{ data: { address: string } }>(
+      await call(`/v1/lines/${LINE}/newsletters/${enc(codigo)}`));
+    expect(porCodigo.data.address).toBe(canal);
+  });
+
+  it("un canal que no existe es 404, no un 500", async () => {
+    const res = await call(`/v1/lines/${LINE}/newsletters/${enc("999999@newsletter")}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("seguir y dejar de seguir cambia el papel y la cuenta", async () => {
+    // Uno AJENO: del propio se es dueño, no seguidor.
+    const otro = await j<{ data: { address: string } }>(
+      await call(`/v1/sandbox/lines/${LINE}/newsletters`, {
+        method: "POST", body: JSON.stringify({ name: "Ajeno" }),
+      }));
+
+    await call(`/v1/lines/${LINE}/newsletters/${enc(otro.data.address)}/follow`, {
+      method: "POST", body: JSON.stringify({ follow: true }),
+    });
+    const seguido = await j<{ data: { role: string; subscribers: number } }>(
+      await call(`/v1/lines/${LINE}/newsletters/${enc(otro.data.address)}`));
+    expect(seguido.data.role).toBe("subscriber");
+
+    await call(`/v1/lines/${LINE}/newsletters/${enc(otro.data.address)}/follow`, {
+      method: "POST", body: JSON.stringify({ follow: false }),
+    });
+    const dejado = await j<{ data: { role: string; subscribers: number } }>(
+      await call(`/v1/lines/${LINE}/newsletters/${enc(otro.data.address)}`));
+    expect(dejado.data.role).toBe("guest");
+    expect(dejado.data.subscribers).toBe(seguido.data.subscribers - 1);
+  });
+});
+
 run("administración de líneas y credenciales", () => {
   it("crea una línea y rechaza el identificador repetido", async () => {
     const res = await call("/v1/lines", {

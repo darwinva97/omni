@@ -31,6 +31,9 @@ export const eventNames = [
   "group.created",
   "group.updated",
   "group.participants",
+  // canales (newsletters)
+  "newsletter.created",
+  "newsletter.updated",
   // contactos
   "contact.updated",
   "contact.blocked",
@@ -46,7 +49,6 @@ export const eventNames = [
    *
    * `poll.vote` — WhatsApp cifra los votos y agregarlos es frágil; anunciarlo
    *   sin implementarlo dejaría a alguien esperando un evento que no llega.
-   * `newsletter.updated` — los canales aún no están.
    *
    * Un evento al que uno puede suscribirse y no recibir nunca es peor que su
    * ausencia: el webhook se configura, se da por bueno y falla en silencio.

@@ -23,6 +23,8 @@ export interface FakeSocketControl {
   readonly read: string[][];
   readonly groupUpdates: { jid: string; subject?: string; description?: string }[];
   readonly groupLeaves: string[];
+  readonly newsletterSeguidos: string[];
+  readonly newsletterDejados: string[];
   nextMessageId: string;
   /** Si se define, `sendMessage` lanza este error. */
   failWith: Error | null;
@@ -38,6 +40,8 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     read: [],
     groupUpdates: [],
     groupLeaves: [],
+    newsletterSeguidos: [],
+    newsletterDejados: [],
     nextMessageId: "FAKE-0001",
     failWith: null,
     socket: null as unknown as WASocket,
@@ -102,6 +106,15 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     groupInviteCode: async () => "ABCD1234EFGH",
     groupRevokeInvite: async () => "NUEVO5678CODE",
     groupAcceptInvite: async () => "122@g.us",
+    newsletterMetadata: async (tipo: string, clave: string) => ({
+      id: tipo === "invite" ? "120@newsletter" : clave,
+      name: "Canal falso", description: "un canal de prueba",
+      invite: "CANALFALSO1", subscribers: 42, verification: "VERIFIED",
+      creation_time: 1_700_000_000,
+      viewer_metadata: { role: "SUBSCRIBER" },
+    }),
+    newsletterFollow: async (jid: string) => { control.newsletterSeguidos.push(jid); },
+    newsletterUnfollow: async (jid: string) => { control.newsletterDejados.push(jid); },
     rejectCall: async () => {},
     fetchMessageHistory: async () => "ok",
   };

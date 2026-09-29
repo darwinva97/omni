@@ -11,7 +11,7 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type GroupPatch, type LineStatus, type OutboundCommand, type SendReceipt,
+  type GroupMetadata, type GroupPatch, type LineStatus, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
@@ -547,6 +547,30 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     });
   }
 
+  async newsletterMetadata(lineId: LineId, newsletter: Address): Promise<NewsletterMetadata> {
+    const { socket } = this.#require(lineId);
+    const meta = await socket.newsletterMetadata("jid", newsletter.value);
+    if (!meta) throw new OmniError("not_found", `el canal "${newsletter.value}" no existe`);
+    return toNewsletterMetadata(meta);
+  }
+
+  async newsletterByInvite(lineId: LineId, code: string): Promise<NewsletterMetadata> {
+    const { socket } = this.#require(lineId);
+    const meta = await socket.newsletterMetadata("invite", code);
+    if (!meta) throw new OmniError("not_found", "ese enlace de canal no lleva a ninguna parte");
+    return toNewsletterMetadata(meta);
+  }
+
+  async followNewsletter(lineId: LineId, newsletter: Address): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.newsletterFollow(newsletter.value);
+  }
+
+  async unfollowNewsletter(lineId: LineId, newsletter: Address): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.newsletterUnfollow(newsletter.value);
+  }
+
   async rejectCall(lineId: LineId, callId: string, from: Address): Promise<void> {
     const { socket } = this.#require(lineId);
     await socket.rejectCall(callId, from.value);
@@ -646,5 +670,26 @@ function toGroupMetadata(meta: {
       role: p.admin === "superadmin" ? "superadmin" : p.admin === "admin" ? "admin" : "member",
     })),
     ...(meta.creation ? { createdAt: meta.creation * 1000 } : {}),
+  };
+}
+
+/** La forma de Baileys para un canal, traducida a la nuestra. */
+function toNewsletterMetadata(m: {
+  id: string; name?: string; description?: string; invite?: string;
+  subscribers?: number; verification?: string; creation_time?: number;
+  viewer_metadata?: { role?: string };
+}): NewsletterMetadata {
+  const rol = m.viewer_metadata?.role?.toLowerCase();
+  return {
+    address: parseAddress(m.id),
+    name: m.name ?? "",
+    ...(m.description ? { description: m.description } : {}),
+    ...(m.invite ? { inviteCode: m.invite } : {}),
+    ...(typeof m.subscribers === "number" ? { subscribers: m.subscribers } : {}),
+    ...(m.verification ? { verified: m.verification === "VERIFIED" } : {}),
+    ...(rol === "owner" || rol === "admin" || rol === "subscriber" || rol === "guest"
+      ? { role: rol }
+      : {}),
+    ...(m.creation_time ? { createdAt: m.creation_time * 1000 } : {}),
   };
 }

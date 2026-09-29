@@ -6,7 +6,7 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type GroupPatch, type LineStatus, type OutboundCommand, type SendReceipt,
+  type GroupMetadata, type GroupPatch, type LineStatus, type NewsletterMetadata, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 
 /**
@@ -48,6 +48,7 @@ interface LineState {
   readonly groups: Map<string, GroupMetadata>;
   /** Códigos de invitación vigentes, por grupo. */
   readonly invites: Map<string, string>;
+  readonly newsletters: Map<string, NewsletterMetadata>;
   readonly known: Set<string>;
   pendingQr: string | null;
   /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
@@ -104,6 +105,7 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       thread: [],
       groups: new Map(),
       invites: new Map(),
+      newsletters: new Map(),
       known: new Set(),
       pendingQr: null,
       saveCredentials: null,
@@ -379,6 +381,82 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
     this.#requireConnected(line, lineId);
     line.groups.delete(group.value);
     await this.emit("group.updated", line.orgId, lineId, { group: group.value, left: true });
+  }
+
+  async createNewsletter(
+    lineId: LineId, name: string, description?: string,
+  ): Promise<NewsletterMetadata> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const address = parseAddress(`${this.#nextId()}-${this.#now()}@newsletter`);
+    const meta: NewsletterMetadata = {
+      address, name,
+      ...(description ? { description } : {}),
+      inviteCode: `SBXC${this.#nextId()}`,
+      subscribers: 0, verified: false, role: "owner",
+      createdAt: this.#now(),
+    };
+    line.newsletters.set(address.value, meta);
+    await this.emit("newsletter.created", line.orgId, lineId, {
+      newsletter: address.value, name,
+    });
+    return meta;
+  }
+
+  /**
+   * Fabrica un canal de OTRO, que es el caso normal: lo habitual es seguir el
+   * canal de alguien, no el propio. Sin esto no había forma de probar seguir y
+   * dejar de seguir, porque del canal propio uno es dueño y no seguidor.
+   */
+  async simulateNewsletter(
+    lineId: LineId, name: string, description?: string,
+  ): Promise<NewsletterMetadata> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const address = parseAddress(`${this.#nextId()}-${this.#now()}@newsletter`);
+    const meta: NewsletterMetadata = {
+      address, name,
+      ...(description ? { description } : {}),
+      inviteCode: `SBXC${this.#nextId()}`,
+      subscribers: 1200, verified: true, role: "guest",
+      createdAt: this.#now(),
+    };
+    line.newsletters.set(address.value, meta);
+    return meta;
+  }
+
+  async newsletterMetadata(lineId: LineId, newsletter: Address): Promise<NewsletterMetadata> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const meta = line.newsletters.get(newsletter.value);
+    if (!meta) throw new OmniError("not_found", `el canal "${newsletter.value}" no existe`);
+    return meta;
+  }
+
+  async newsletterByInvite(lineId: LineId, code: string): Promise<NewsletterMetadata> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    for (const meta of line.newsletters.values()) if (meta.inviteCode === code) return meta;
+    throw new OmniError("not_found", "ese enlace de canal no lleva a ninguna parte");
+  }
+
+  async followNewsletter(lineId: LineId, newsletter: Address): Promise<void> {
+    const meta = await this.newsletterMetadata(lineId, newsletter);
+    const line = this.#require(lineId);
+    // Seguir dos veces no suma dos: el segundo es una confirmación, no un alta.
+    if (meta.role === "subscriber" || meta.role === "owner") return;
+    line.newsletters.set(newsletter.value, {
+      ...meta, role: "subscriber", subscribers: (meta.subscribers ?? 0) + 1,
+    });
+  }
+
+  async unfollowNewsletter(lineId: LineId, newsletter: Address): Promise<void> {
+    const meta = await this.newsletterMetadata(lineId, newsletter);
+    const line = this.#require(lineId);
+    if (meta.role !== "subscriber") return;
+    line.newsletters.set(newsletter.value, {
+      ...meta, role: "guest", subscribers: Math.max(0, (meta.subscribers ?? 1) - 1),
+    });
   }
 
   async groupInviteCode(lineId: LineId, group: Address): Promise<string> {

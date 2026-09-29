@@ -14,6 +14,7 @@ import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
 import { registerLabelRoutes } from "./routes/labels.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
+import { registerNewsletterRoutes } from "./routes/newsletters.js";
 import { HOST_VERSION } from "./container.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
@@ -370,6 +371,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerGroupChatRoutes(app, container);
   registerLabelRoutes(app, container);
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
+  registerNewsletterRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);
   registerWebhookRoutes(app, container);
@@ -551,6 +553,38 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
         ...(input.pushName ? { pushName: input.pushName } : {}),
       });
       return c.json({ data: { id: msg.id, chat: msg.chat } }, 201);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/sandbox/lines/{lineId}/newsletters", tags: ["sandbox"],
+      summary: "Fabricar un canal AJENO, de los que se siguen",
+      description:
+        "Distinto de crear uno propio: del propio eres dueño, y probar seguir y " +
+        "dejar de seguir necesita uno que no sea tuyo.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        ...body(z.object({
+          name: z.string().min(1).max(100),
+          description: z.string().max(2048).optional(),
+        })),
+      },
+      responses: {
+        201: json(z.object({ data: z.object({ address: z.string(), inviteCode: z.string().optional() }) }), "creado"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = guard(c);
+      const { lineId } = c.req.valid("param");
+      const { name, description } = c.req.valid("json");
+      await authorize(principal, routeOf("line.connect"), { lineId });
+      const meta = await container.sandbox!.simulateNewsletter(lineId as LineId, name, description);
+      return c.json({ data: {
+        address: meta.address.value,
+        ...(meta.inviteCode ? { inviteCode: meta.inviteCode } : {}),
+      } }, 201);
     },
   );
 

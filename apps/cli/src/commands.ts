@@ -520,6 +520,44 @@ export const COMMANDS: readonly Command[] = [
       `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
   },
   {
+    name: "canal",
+    summary: "Datos de un canal, por dirección o por el código de su enlace",
+    operation: "GET /v1/lines/{lineId}/newsletters/{newsletterId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "canal", required: true, description: "Dirección @newsletter o código del enlace" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/newsletters/${enc(req(a, 1, "canal"))}`),
+  },
+  {
+    name: "canal:seguir",
+    summary: "Seguir un canal, o dejarlo con --no",
+    operation: "POST /v1/lines/{lineId}/newsletters/{newsletterId}/follow",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "canal", required: true, description: "Dirección del canal" },
+    ],
+    flags: [{ name: "no", description: "Dejar de seguirlo" }],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/newsletters/${enc(req(a, 1, "canal"))}/follow`,
+      { follow: a.flags["no"] !== true }),
+  },
+  {
+    name: "canal:crear",
+    summary: "Crear un canal; solo si el transporte sabe publicar en ellos",
+    operation: "POST /v1/lines/{lineId}/newsletters",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "nombre", required: true, description: "Nombre del canal" },
+    ],
+    flags: [{ name: "descripcion", description: "Descripción del canal" }],
+    run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/newsletters`, {
+      name: req(a, 1, "nombre"),
+      ...(flag(a, "descripcion") ? { description: flag(a, "descripcion") } : {}),
+    }),
+  },
+  {
     name: "plugins",
     summary: "Plugins instalados, con sus permisos y su estado",
     operation: "GET /v1/plugins",
@@ -615,6 +653,20 @@ export const COMMANDS: readonly Command[] = [
     run: (c, a) => c.request("POST", `/v1/sandbox/lines/${req(a, 0, "linea")}/inbound`, {
       from: req(a, 1, "de"), text: req(a, 2, "texto"),
       ...(flag(a, "chat") ? { chat: flag(a, "chat") } : {}),
+    }),
+  },
+  {
+    name: "sandbox:canal",
+    summary: "Fabricar un canal ajeno, de los que se siguen",
+    operation: "POST /v1/sandbox/lines/{lineId}/newsletters",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "nombre", required: true, description: "Nombre del canal" },
+    ],
+    flags: [{ name: "descripcion", description: "Descripción del canal" }],
+    run: (c, a) => c.request("POST", `/v1/sandbox/lines/${req(a, 0, "linea")}/newsletters`, {
+      name: req(a, 1, "nombre"),
+      ...(flag(a, "descripcion") ? { description: flag(a, "descripcion") } : {}),
     }),
   },
   {

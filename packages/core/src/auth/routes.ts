@@ -79,6 +79,17 @@ export const ROUTES = {
   "group.participants": { id: "group.participants", permission: "group.manage", scope: "chat" },
   "group.invite": { id: "group.invite", permission: "group.manage", scope: "chat" },
 
+  /*
+   * --- canales (newsletters)
+   *
+   * Leer uno es leer algo público, y por eso `newsletter.read` es seguro para
+   * una clave acotada a ese canal. Seguir, dejar de seguir y crear cambian a
+   * quién representa la línea ante WhatsApp, así que van por línea.
+   */
+  "newsletter.read": { id: "newsletter.read", permission: "group.read", scope: "chat", chatSafe: true },
+  "newsletter.follow": { id: "newsletter.follow", permission: "group.manage", scope: "line" },
+  "newsletter.create": { id: "newsletter.create", permission: "group.manage", scope: "line" },
+
   // --- contactos
   "contact.list": { id: "contact.list", permission: "contact.read", scope: "line" },
   "contact.block": { id: "contact.block", permission: "contact.manage", scope: "chat", chatSafe: true },

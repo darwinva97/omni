@@ -37,6 +37,7 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "group.create": "createGroup",
   "group.manage": "updateGroup",
   "group.invite": "groupInviteCode",
+  "newsletter.read": "newsletterMetadata",
   "group.participants": "updateParticipants",
   "call.reject": "rejectCall",
   "history.sync": "fetchHistory",

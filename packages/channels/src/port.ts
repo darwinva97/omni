@@ -79,8 +79,32 @@ export interface ChannelDriverOptional {
     lineId: LineId, group: Address, participants: readonly Address[],
     action: "add" | "remove" | "promote" | "demote",
   ): Promise<readonly { address: Address; ok: boolean; reason?: string }[]>;
+  /**
+   * Canales (newsletters). Son de UNA dirección: el dueño publica y el resto
+   * lee, así que leer y publicar son capacidades distintas —`newsletter.read`
+   * y `newsletter.send`— y casi ningún transporte tiene la segunda.
+   */
+  newsletterMetadata?(lineId: LineId, newsletter: Address): Promise<NewsletterMetadata>;
+  /** Por enlace de invitación, que es como circulan de verdad. */
+  newsletterByInvite?(lineId: LineId, code: string): Promise<NewsletterMetadata>;
+  followNewsletter?(lineId: LineId, newsletter: Address): Promise<void>;
+  unfollowNewsletter?(lineId: LineId, newsletter: Address): Promise<void>;
+  createNewsletter?(lineId: LineId, name: string, description?: string): Promise<NewsletterMetadata>;
   rejectCall?(lineId: LineId, callId: string, from: Address): Promise<void>;
   fetchHistory?(lineId: LineId, chat: Address, before: number, count: number): Promise<void>;
+}
+
+export interface NewsletterMetadata {
+  readonly address: Address;
+  readonly name: string;
+  readonly description?: string;
+  /** Código del enlace `whatsapp.com/channel/...`, cuando la red lo da. */
+  readonly inviteCode?: string;
+  readonly subscribers?: number;
+  readonly verified?: boolean;
+  /** Qué somos nosotros en ese canal. Decide si publicar es siquiera posible. */
+  readonly role?: "owner" | "admin" | "subscriber" | "guest";
+  readonly createdAt?: number;
 }
 
 export interface GroupPatch {
