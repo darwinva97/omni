@@ -241,6 +241,47 @@ run("grupos", () => {
   });
 });
 
+run("reintento de envíos", () => {
+  it("un mensaje entregado NO se puede reintentar", async () => {
+    // Reintentar uno entregado sería mandarlo dos veces al destinatario.
+    await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ to: CHAT, text: "va bien", clientMessageId: "ok-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    const res = await call(`/v1/lines/${LINE}/messages/m-ok-1/resend`, { method: "POST" });
+    expect(res.status).toBe(409);
+    expect((await j<{ detail: string }>(res)).detail).toContain("failed");
+  });
+
+  it("uno que falló se reencola con el MISMO identificador de cliente", async () => {
+    await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ to: CHAT, text: "falló", clientMessageId: "fallido-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    await dbh.sql`
+      UPDATE message SET state = 'failed', failure_reason = 'prueba'
+      WHERE line_id = ${LINE} AND client_message_id = 'fallido-1'`;
+
+    const res = await call(`/v1/lines/${LINE}/messages/m-fallido-1/resend`, { method: "POST" });
+    expect(res.status).toBe(202);
+    const { data } = await j<{ data: { clientMessageId: string } }>(res);
+    // El mismo: si el anterior llegó a salir, la idempotencia lo detiene.
+    expect(data.clientMessageId).toBe("fallido-1");
+
+    const filas = await dbh.sql`
+      SELECT state, failure_reason FROM message
+      WHERE line_id = ${LINE} AND client_message_id = 'fallido-1'`;
+    expect(filas[0]?.["failure_reason"]).toBeNull();
+  });
+
+  it("un mensaje que no existe es 404", async () => {
+    expect((await call(`/v1/lines/${LINE}/messages/no-existe/resend`, { method: "POST" })).status)
+      .toBe(404);
+  });
+});
+
 run("medios entrantes e identidad", () => {
   it("una foto que llega se descarga, se guarda y se puede descargar", async () => {
     /*

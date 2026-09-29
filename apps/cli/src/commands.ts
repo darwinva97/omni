@@ -520,6 +520,17 @@ export const COMMANDS: readonly Command[] = [
       `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
   },
   {
+    name: "mensaje:reintentar",
+    summary: "Reintentar un mensaje que falló, sin crear otro",
+    operation: "POST /v1/lines/{lineId}/messages/{messageId}/resend",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "mensaje", required: true, description: "Identificador interno del mensaje" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/messages/${enc(req(a, 1, "mensaje"))}/resend`),
+  },
+  {
     name: "identidad",
     summary: "El teléfono detrás de un LID, o el LID de un teléfono",
     operation: "GET /v1/lines/{lineId}/identity/{address}",

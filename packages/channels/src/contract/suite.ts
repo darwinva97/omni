@@ -40,6 +40,8 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "send.reaction": "react",
   "chat.read": "markRead",
   "chat.presence": "setPresence",
+  // Escribir es una presencia más: quien declare una tiene que tener el método.
+  "chat.typing": "setPresence",
   "contact.check": "checkContact",
   "group.read": "groupMetadata",
   "group.create": "createGroup",
@@ -61,9 +63,16 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "catalog.manage": "createProduct",
   "media.decrypt": "downloadMedia",
   /*
-   * `call.receive` NO está, y no es un olvido: no es una operación que se
-   * invoque, es la promesa de emitir `call.received`. Mapearla a un método
-   * obligaría a inventar uno que nadie llamaría.
+   * Lo que NO está mapeado, y por qué. La lista corta importa tanto como la
+   * larga, porque si no se explica alguien la "completa" con métodos falsos.
+   *
+   * `send.*` (tipos y modificadores) — las cubre la prueba de más abajo, que
+   *   construye un envío real de cada tipo declarado. Comprobar que existe un
+   *   método diría menos: `send` existe siempre.
+   * `message.receipts`, `call.receive` — no son operaciones que se invoquen,
+   *   son la promesa de EMITIR `message.receipt` y `call.received`.
+   * `identity.lid` — promesa de traer la dirección alternativa en los eventos;
+   *   el mapeo lo guarda el motor, no el driver.
    */
   "call.reject": "rejectCall",
   "group.participants": "updateParticipants",
@@ -156,6 +165,36 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
       const { driver, lineId, link, cleanup, sampleTo } = await make();
       const destino = sampleTo ?? DESTINO_POR_DEFECTO;
       await link();
+
+      /*
+       * También los modificadores, con un límite que conviene saber.
+       *
+       * Desde aquí solo se ve si el driver los RECHAZA, no si los ignora en
+       * silencio: un modificador que se cae por el camino no lanza nada. Que
+       * llegue de verdad al mensaje se comprueba en la prueba del constructor
+       * de cada driver —`content.spec.ts` en Baileys—, que es donde vive el
+       * conocimiento del formato. Se ha verificado que esa prueba falla si se
+       * deja de poner `viewOnce`.
+       */
+      const MODIFICADORES: Partial<Record<Capability, Partial<SendMessageInput>>> = {
+        "send.reply": { replyTo: "ABC123" },
+        "send.mentions": { mentions: ["51988777666@s.whatsapp.net"] },
+        "send.viewOnce": { viewOnce: true },
+      };
+      for (const [cap, extra] of Object.entries(MODIFICADORES) as [Capability, Partial<SendMessageInput>][]) {
+        if (!driver.descriptor.capabilities.has(cap)) continue;
+        const base = cap === "send.viewOnce" ? CONTENIDO.image : CONTENIDO.text;
+        const err = await driver
+          .send({
+            lineId, to: parseAddress(destino), clientMessageId: `mod-${cap}`,
+            kind: cap === "send.viewOnce" ? "image" : "text",
+            input: { to: destino, ...base, ...extra } as SendMessageInput,
+          })
+          .then(() => null)
+          .catch((e: unknown) => e as OmniError);
+        expect(err?.code, `declara "${cap}" y al construirlo dice que no lo admite`)
+          .not.toBe("capability_unsupported");
+      }
 
       for (const field of contentFields) {
         if (!driver.descriptor.capabilities.has(`send.${field}` as Capability)) continue;

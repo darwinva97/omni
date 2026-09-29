@@ -255,6 +255,30 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "post", path: "/v1/lines/{lineId}/messages/{messageId}/resend",
+      tags: ["mensajes"], summary: "Reintentar un mensaje que falló",
+      description:
+        "Solo los que están en `failed`. Se reencola con el MISMO identificador " +
+        "de cliente, así que si el anterior llegó a salir sin que nos enteráramos, " +
+        "la idempotencia del transporte evita la copia.",
+      request: {
+        params: z.object({ lineId: z.string(), messageId: z.string() }),
+      },
+      responses: {
+        202: json(z.object({ data: z.object({ clientMessageId: z.string() }) }), "reencolado"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId, messageId } = c.req.valid("param");
+      await authorize(c.get("principal"), routeOf("message.resend"), { lineId });
+      const res = await container.runtime.resend(lineId, decodeURIComponent(messageId));
+      return c.json({ data: res }, 202);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get", path: "/v1/lines/{lineId}/identity/{address}",
       tags: ["contactos"], summary: "El teléfono detrás de un LID, o el LID de un teléfono",
       description:
@@ -275,6 +299,12 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const direccion = parseAddress(decodeURIComponent(address));
       await authorize(c.get("principal"), routeOf("identity.read"), { lineId, chat: direccion });
       const driver = await driverOf(lineId);
+      /*
+       * Se comprueba la capacidad aunque el dato salga de NUESTRA tabla: solo
+       * los transportes que direccionan con LID pueden haber aprendido algo, y
+       * en los demás la respuesta sería un `null` que parecería un hueco de
+       * datos en vez de "esta red no usa LIDs".
+       */
       assertCapability(driver, "identity.lid");
 
       if (direccion.kind === "lid") {

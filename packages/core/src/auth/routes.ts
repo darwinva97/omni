@@ -48,6 +48,7 @@ export const ROUTES = {
   "chat.list": { id: "chat.list", permission: "message.read", scope: "line", chatSafe: true },
   "chat.markRead": { id: "chat.markRead", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.archive": { id: "chat.archive", permission: "chat.manage", scope: "chat", chatSafe: true },
+  "message.resend": { id: "message.resend", permission: "message.send", scope: "line" },
   "identity.read": { id: "identity.read", permission: "contact.read", scope: "chat", chatSafe: true },
   "history.sync": { id: "history.sync", permission: "message.read", scope: "chat", chatSafe: true },
   "chat.mute": { id: "chat.mute", permission: "chat.manage", scope: "chat", chatSafe: true },

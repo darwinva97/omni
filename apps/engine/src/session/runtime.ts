@@ -384,6 +384,68 @@ export class EngineRuntime {
     return out;
   }
 
+  /**
+   * Reintenta un mensaje que falló, sin crear otro.
+   *
+   * Se reconstruye la orden desde la fila guardada y se reencola con el MISMO
+   * `clientMessageId`: así, si el envío anterior llegó a salir sin que nos
+   * enteráramos, la idempotencia del transporte lo detiene y el destinatario
+   * no recibe dos copias. Solo vale para los que fallaron: reintentar uno
+   * entregado sería mandarlo otra vez.
+   */
+  async resend(lineId: string, messageId: string): Promise<{ clientMessageId: string }> {
+    const line = await this.#line(lineId);
+    const filas = await this.#deps.db
+      .select()
+      .from(messageTable)
+      .where(and(eq(messageTable.lineId, lineId), eq(messageTable.id, messageId)))
+      .limit(1);
+    const fila = filas[0];
+    if (!fila) throw new OmniError("not_found", `el mensaje "${messageId}" no existe en esta línea`);
+    if (!fila.fromMe) {
+      throw new OmniError("validation_failed", "solo se pueden reintentar los mensajes que enviamos");
+    }
+    if (fila.state !== "failed") {
+      throw new OmniError(
+        "conflict",
+        `ese mensaje está en "${fila.state}", no en "failed"; reintentarlo lo enviaría dos veces`,
+      );
+    }
+
+    const input: SendMessageInput = {
+      to: fila.chatId,
+      clientMessageId: fila.clientMessageId ?? messageId,
+      ...(fila.body ? { text: fila.body } : {}),
+      ...(fila.replyToId ? { replyTo: fila.replyToId } : {}),
+      ...(fila.mentions ? { mentions: fila.mentions } : {}),
+      ...(fila.mediaFileName ? { fileName: fila.mediaFileName } : {}),
+    };
+
+    await this.#deps.db
+      .update(messageTable)
+      .set({ state: "queued", failureReason: null })
+      .where(and(eq(messageTable.lineId, lineId), eq(messageTable.id, messageId)));
+
+    await this.#deps.queue.enqueue<OutboundJob>(
+      OUTBOUND_QUEUE,
+      {
+        lineId, orgId: line.orgId,
+        clientMessageId: input.clientMessageId!,
+        input, kind: fila.kind as MessageKind,
+        sentByUserId: fila.sentByUserId ?? null,
+        sentByConnectorId: fila.sentByConnectorId ?? null,
+        mediaKey: fila.mediaKey ?? null,
+      },
+      {
+        partitionKey: `line:${lineId}`,
+        idempotencyKey: `send:${lineId}:${input.clientMessageId!}`,
+        maxAttempts: 3,
+        backoffMs: 2000,
+      },
+    );
+    return { clientMessageId: input.clientMessageId! };
+  }
+
   // ------------------------------------------------------------------ trabajadores
 
   /**
