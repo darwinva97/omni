@@ -47,6 +47,18 @@ describe("manifiesto", () => {
     expect(() => parseManifest({ ...base, permissions: ["borrar:todo"] }, "0.1.0")).toThrow(ManifestError);
   });
 
+  it("el identificador necesita al menos dos caracteres", () => {
+    // Uno solo no distingue nada en una lista de plugins ni en un prefijo de KV.
+    expect(() => parseManifest({ ...base, id: "p" }, "0.1.0")).toThrow(ManifestError);
+    expect(parseManifest({ ...base, id: "pl" }, "0.1.0").id).toBe("pl");
+  });
+
+  it("rechaza mayúsculas y espacios en el identificador", () => {
+    for (const id of ["MiPlugin", "mi plugin", "mi/plugin"]) {
+      expect(() => parseManifest({ ...base, id }, "0.1.0"), id).toThrow(ManifestError);
+    }
+  });
+
   it("rechaza un gancho que no existe", () => {
     expect(() => parseManifest({ ...base, hooks: ["cuando.me.apetezca"] }, "0.1.0")).toThrow(ManifestError);
   });

@@ -10,3 +10,11 @@ if ! ./node_modules/.bin/tsc -p tsconfig.check.json >/tmp/omni-tsc.log 2>&1; the
   head -20 /tmp/omni-tsc.log >&2
   exit 1
 fi
+
+# Y las unitarias, que tardan segundos. Un fichero de prueba que ni siquiera
+# carga cuenta como verde en el resumen general, y así se me coló uno.
+if ! ./node_modules/.bin/vitest run --project unit >/tmp/omni-unit.log 2>&1; then
+  echo "Las pruebas unitarias fallan; no se comete:" >&2
+  grep -E "FAIL|Error:" /tmp/omni-unit.log | head -10 >&2
+  exit 1
+fi

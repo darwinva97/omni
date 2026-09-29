@@ -4,7 +4,7 @@ import { parseManifest, type Manifest } from "../manifest.js";
 
 const conPermisos = (permissions: string[], netAllow: string[] = []): Manifest =>
   parseManifest(
-    { id: "p", name: "P", version: "1.0.0", main: "i.js", permissions, netAllow },
+    { id: "pl", name: "P", version: "1.0.0", main: "i.js", permissions, netAllow },
     "1.0.0",
   );
 
@@ -22,7 +22,7 @@ describe("capacidades", () => {
     })();
     expect(err?.status).toBe(403);
     expect(err?.message).toContain("labels:manage");
-    expect(err?.details["pluginId"]).toBe("p");
+    expect(err?.details["pluginId"]).toBe("pl");
   });
 });
 
