@@ -497,6 +497,69 @@ export const COMMANDS: readonly Command[] = [
       { labelIds: (a.positional[2] ?? "").split(",").map((s) => s.trim()).filter(Boolean) }),
   },
   {
+    name: "plugins",
+    summary: "Plugins instalados, con sus permisos y su estado",
+    operation: "GET /v1/plugins",
+    args: [],
+    run: (c) => c.request("GET", "/v1/plugins"),
+  },
+  {
+    name: "plugin:instalar",
+    summary: "Instalar un plugin desde un directorio DEL SERVIDOR; nace apagado",
+    operation: "POST /v1/plugins",
+    args: [{
+      name: "directorio", required: true,
+      description: "Ruta en el servidor, no en tu máquina: no se sube nada",
+    }],
+    run: (c, a) => c.request("POST", "/v1/plugins", { directory: req(a, 0, "directorio") }),
+  },
+  {
+    name: "plugin:habilitar",
+    summary: "Arrancar un plugin en todos los nodos",
+    operation: "POST /v1/plugins/{pluginId}/enable",
+    args: [{ name: "plugin", required: true, description: "Identificador del plugin" }],
+    flags: [{ name: "no", description: "Deshabilitarlo en vez de habilitarlo" }],
+    run: (c, a) => c.request("POST", `/v1/plugins/${enc(req(a, 0, "plugin"))}/enable`, {
+      enabled: a.flags["no"] !== true,
+    }),
+  },
+  {
+    name: "plugin:config",
+    summary: "Cambiar la configuración de un plugin; entra sin reiniciarlo",
+    operation: "PUT /v1/plugins/{pluginId}/config",
+    args: [
+      { name: "plugin", required: true, description: "Identificador del plugin" },
+      { name: "json", required: true, description: "Objeto JSON con la configuración entera" },
+    ],
+    run: (c, a) => {
+      let config: unknown;
+      try {
+        config = JSON.parse(req(a, 1, "json"));
+      } catch {
+        throw new Error("la configuración tiene que ser un objeto JSON válido");
+      }
+      if (config === null || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error("la configuración tiene que ser un objeto JSON, no otra cosa");
+      }
+      return c.request("PUT", `/v1/plugins/${enc(req(a, 0, "plugin"))}/config`, { config });
+    },
+  },
+  {
+    name: "plugin:salud",
+    summary: "Preguntar a un plugin si está bien",
+    operation: "GET /v1/plugins/{pluginId}/health",
+    args: [{ name: "plugin", required: true, description: "Identificador del plugin" }],
+    run: (c, a) => c.request("GET", `/v1/plugins/${enc(req(a, 0, "plugin"))}/health`),
+  },
+  {
+    name: "plugin:desinstalar",
+    summary: "Detener un plugin y olvidarlo; no borra sus ficheros",
+    operation: "DELETE /v1/plugins/{pluginId}",
+    destructive: true,
+    args: [{ name: "plugin", required: true, description: "Identificador del plugin" }],
+    run: (c, a) => c.request("DELETE", `/v1/plugins/${enc(req(a, 0, "plugin"))}`),
+  },
+  {
     name: "auditoria",
     summary: "Quién hizo qué, con qué credencial y desde dónde",
     operation: "GET /v1/audit",

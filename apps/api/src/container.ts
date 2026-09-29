@@ -9,8 +9,13 @@ import {
 import { createDatabase, migrate, webhookDeliveryTable, webhookEndpointTable, type DbHandle } from "@omni/db";
 import { EngineRuntime, SecretBox } from "@omni/engine";
 import { LocalStorage, S3Storage, type Storage } from "@omni/storage";
+import { PluginRegistry } from "./plugins/registry.js";
+import { hostApiPara } from "./plugins/api.js";
 import { and, eq, or, isNull } from "drizzle-orm";
 import type { Config } from "./config.js";
+
+/** Versión del anfitrión, contra la que se valida `minHostVersion`. */
+export const HOST_VERSION = "0.1.0";
 
 export interface Container {
   readonly config: Config;
@@ -23,6 +28,7 @@ export interface Container {
   readonly dispatcher: WebhookDispatcher;
   readonly sandbox: SandboxDriver | null;
   readonly drivers: readonly ChannelDriver[];
+  readonly plugins: PluginRegistry;
   shutdown(): Promise<void>;
 }
 
@@ -154,6 +160,28 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    */
   runtime.start();
 
+  /*
+   * Los plugins se enganchan a la ingesta DESPUÉS del webhook y del bus: un
+   * plugin lento o colgado no puede retrasar lo que ya estaba garantizado.
+   */
+  const plugins = new PluginRegistry({
+    db: dbh.db,
+    hostVersion: HOST_VERSION,
+    api: (orgId) => hostApiPara(orgId, dbh.db, runtime, kv),
+    bus,
+    onLog: (nivel, mensaje) => {
+      if (nivel === "error" || nivel === "warn") console.warn(mensaje);
+    },
+  });
+  runtime.onEvent((envelope) => plugins.despachar(envelope));
+
+  if (config.PLUGINS_ENABLED) {
+    await plugins.escuchar();
+    const { arrancados, fallidos } = await plugins.arrancarTodos();
+    if (arrancados.length > 0) console.log(`plugins arrancados: ${arrancados.join(", ")}`);
+    for (const f of fallidos) console.warn(`el plugin "${f.id}" no arrancó: ${f.razon}`);
+  }
+
   const workers: Subscription[] = [];
   if (config.RUN_WORKERS_IN_API) workers.push(dispatcher.startWorker());
 
@@ -166,8 +194,9 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
   }
 
   return {
-    config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage, drivers,
+    config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage, drivers, plugins,
     shutdown: async () => {
+      await plugins.detenerTodos().catch(() => {});
       await Promise.all(workers.map((w) => w.stop().catch(() => {})));
       await runtime.stop();
       await queue.close().catch(() => {});

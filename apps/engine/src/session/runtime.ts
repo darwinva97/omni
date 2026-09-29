@@ -69,12 +69,23 @@ export class EngineRuntime {
   readonly #now: () => number;
   readonly #newId: () => string;
   #outboundWorker: Subscription | null = null;
+  readonly #oyentes: ((e: EventEnvelope) => Promise<void> | void)[] = [];
 
   constructor(deps: RuntimeDeps) {
     this.#deps = deps;
     this.#pacer = new SendPacer(deps.kv);
     this.#now = deps.now ?? (() => Date.now());
     this.#newId = deps.newId ?? (() => crypto.randomUUID());
+  }
+
+  /**
+   * Se avisa a estos DESPUÉS de persistir, publicar y despachar webhooks.
+   *
+   * El orden importa: lo que ya estaba garantizado no puede esperar a un
+   * oyente lento. Un fallo aquí tampoco puede tumbar la ingesta.
+   */
+  onEvent(oyente: (e: EventEnvelope) => Promise<void> | void): void {
+    this.#oyentes.push(oyente);
   }
 
   registerDriver(driver: ChannelDriver): void {
@@ -450,6 +461,14 @@ export class EngineRuntime {
        */
       await this.#deps.bus.publish(`org:${envelope.orgId}`, envelope);
       await this.#deps.dispatcher.dispatch(envelope);
+
+      for (const oyente of this.#oyentes) {
+        try {
+          await oyente(envelope);
+        } catch {
+          // Un oyente roto no puede impedir que lleguen los siguientes eventos.
+        }
+      }
     } catch {
       // Un fallo ingiriendo un evento no puede tumbar la conexión de la línea.
     }

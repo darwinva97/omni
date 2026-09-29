@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { OmniError } from "@omni/shared";
@@ -20,10 +21,21 @@ import type { HookPayload, PluginHostApi } from "./context.js";
  * su aislamiento es parcial porque «el worker sigue teniendo APIs de Node».
  */
 
-/** El arranque empaquetado vive junto al código compilado del paquete. */
-const RUTA_ARRANQUE = resolve(
-  dirname(fileURLToPath(import.meta.url)), "..", "plugin-host.mjs",
-);
+/**
+ * El arranque empaquetado vive junto al código compilado del paquete.
+ *
+ * Se buscan dos sitios porque en las pruebas este fichero se carga desde
+ * `src/` con un alias, y desde ahí el hermano `dist/` es el que tiene el
+ * paquete. Buscar mal aquí da un fallo de arranque sin causa aparente.
+ */
+const RUTA_ARRANQUE = ((): string => {
+  const aqui = dirname(fileURLToPath(import.meta.url));
+  const candidatos = [
+    resolve(aqui, "..", "plugin-host.mjs"),
+    resolve(aqui, "..", "..", "dist", "plugin-host.mjs"),
+  ];
+  return candidatos.find((c) => existsSync(c)) ?? candidatos[0]!;
+})();
 
 export interface SupervisorOptions {
   readonly manifest: Manifest;

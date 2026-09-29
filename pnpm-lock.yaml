@@ -53,6 +53,9 @@ importers:
       '@omni/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@omni/plugins':
+        specifier: workspace:*
+        version: link:../../packages/plugins
       '@omni/shared':
         specifier: workspace:*
         version: link:../../packages/shared

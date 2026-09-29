@@ -26,3 +26,4 @@ cada fichero se aplica **en una transacción**: o entra entero o no entra.
 | `0000_init.sql` | Esquema completo. `message` particionada desde el principio. |
 | `0001_partitions.sql` | Funciones que garantizan particiones mensuales por delante. |
 | `0002_etiquetas_unicas.sql` | Nombre de etiqueta único por línea. |
+| `0003_plugins.sql` | Plugins instalados, su manifiesto validado y su configuración. |

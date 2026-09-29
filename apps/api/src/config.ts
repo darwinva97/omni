@@ -67,6 +67,11 @@ export const Config = z.object({
    */
   WHATSAPP_WEB_ENABLED: envBoolean(false),
   CHROMIUM_PATH: z.string().optional(),
+  /**
+   * Plugins. Apagados por defecto: ejecutan código de terceros, aunque sea en
+   * un proceso con permisos recortados, y eso quiere una decisión explícita.
+   */
+  PLUGINS_ENABLED: envBoolean(false),
   MCP_ENABLED: envBoolean(false),
   /** Con `true` (el defecto) solo se ofrecen herramientas de lectura. */
   MCP_READONLY: envBoolean(true),
