@@ -89,6 +89,17 @@ export const ROUTES = {
   "newsletter.follow": { id: "newsletter.follow", permission: "group.manage", scope: "line" },
   "newsletter.create": { id: "newsletter.create", permission: "group.manage", scope: "line" },
 
+  /*
+   * --- conversaciones y automatizaciones
+   *
+   * Ver y mover una conversación es trabajo de agente y va acotado al chat.
+   * Las reglas NO: una regla actúa sobre toda la organización y puede mandar
+   * mensajes, así que una clave acotada a un chat no puede tocarlas.
+   */
+  "conversation.list": { id: "conversation.list", permission: "message.read", scope: "line", chatSafe: true },
+  "conversation.update": { id: "conversation.update", permission: "chat.manage", scope: "chat", chatSafe: true },
+  "automation.manage": { id: "automation.manage", permission: "org.manage", scope: "org" },
+
   // --- contactos
   "contact.list": { id: "contact.list", permission: "contact.read", scope: "line" },
   "contact.block": { id: "contact.block", permission: "contact.manage", scope: "chat", chatSafe: true },

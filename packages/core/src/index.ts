@@ -6,3 +6,5 @@ export * from "./webhooks/signature.js";
 export * from "./webhooks/filter.js";
 export * from "./webhooks/dispatcher.js";
 export * from "./identity/passwords.js";
+export * from "./automation/evaluar.js";
+export * from "./automation/motor.js";

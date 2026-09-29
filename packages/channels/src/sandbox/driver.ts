@@ -256,6 +256,16 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
     const payload = {
       key: { id: msg.id, remoteJid: msg.chat, fromMe: true },
       kind: msg.kind, text: msg.text, timestamp: msg.timestamp,
+      /*
+       * El identificador que puso el cliente viaja con el evento.
+       *
+       * Sin él, correlacionar un envío con su evento de salida obliga a esperar
+       * a que la fila del mensaje tenga ya el identificador del proveedor, y
+       * ese instante llega DESPUÉS de que el evento haya salido. Quien
+       * necesite saber que un mensaje es suyo —el corte de bucles de las
+       * automatizaciones, por ejemplo— llegaría tarde.
+       */
+      clientMessageId: cmd.clientMessageId,
     };
     await this.emit("message.sent", line.orgId, cmd.lineId, payload);
     await this.emit("message.upsert", line.orgId, cmd.lineId, payload);

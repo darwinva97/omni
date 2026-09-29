@@ -1,3 +1,4 @@
+import type { EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, CloudDriver, EmailDriver, SandboxDriver, TelegramDriver,
   WhatsappWebDriver, type ChannelDriver,
@@ -14,6 +15,8 @@ import { createDatabase, migrate, webhookDeliveryTable, webhookEndpointTable, ty
 import { EngineRuntime, SecretBox } from "@omni/engine";
 import { LocalStorage, S3Storage, type Storage } from "@omni/storage";
 import { PluginRegistry } from "./plugins/registry.js";
+import { Conversaciones } from "./crm/conversaciones.js";
+import { Automatizaciones } from "./crm/automatizaciones.js";
 import { hostApiPara } from "./plugins/api.js";
 import { and, eq, or, isNull } from "drizzle-orm";
 import type { Config } from "./config.js";
@@ -33,6 +36,8 @@ export interface Container {
   readonly sandbox: SandboxDriver | null;
   readonly drivers: readonly ChannelDriver[];
   readonly plugins: PluginRegistry;
+  readonly conversaciones: Conversaciones;
+  readonly automatizaciones: Automatizaciones;
   shutdown(): Promise<void>;
 }
 
@@ -183,6 +188,24 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
   runtime.start();
 
   /*
+   * Conversaciones y automatizaciones, enganchadas a la ingesta.
+   *
+   * El orden dentro del oyente importa: primero se abre o se actualiza la
+   * conversación y después se evalúan las reglas, para que una condición sobre
+   * el estado vea el estado de AHORA y no el de antes del mensaje.
+   */
+  const conversaciones = new Conversaciones(dbh.db);
+  const automatizaciones = new Automatizaciones({
+    db: dbh.db, runtime, conversaciones, kv,
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  });
+
+  runtime.onEvent(async (envelope) => {
+    await anotarConversacion(conversaciones, envelope).catch(() => {});
+    await automatizaciones.despachar(envelope).catch(() => {});
+  });
+
+  /*
    * Los plugins se enganchan a la ingesta DESPUÉS del webhook y del bus: un
    * plugin lento o colgado no puede retrasar lo que ya estaba garantizado.
    */
@@ -217,6 +240,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
 
   return {
     config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage, drivers, plugins,
+    conversaciones, automatizaciones,
     shutdown: async () => {
       await plugins.detenerTodos().catch(() => {});
       await Promise.all(workers.map((w) => w.stop().catch(() => {})));
@@ -226,4 +250,24 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
       await dbh.close().catch(() => {});
     },
   };
+}
+
+/**
+ * Abre la conversación de un chat con su primer mensaje y anota los siguientes.
+ *
+ * Vive aquí, y no dentro de la ingesta del motor, porque una conversación es
+ * un concepto de atención y no de transporte: el motor no debería saber que
+ * existe.
+ */
+async function anotarConversacion(
+  conversaciones: Conversaciones, e: EventEnvelope,
+): Promise<void> {
+  if (e.event !== "message.received" && e.event !== "message.sent") return;
+  const data = e.data as { key?: { remoteJid?: string; fromMe?: boolean } };
+  const chat = data.key?.remoteJid;
+  if (!chat) return;
+
+  const cuando = new Date(e.timestamp);
+  const conv = await conversaciones.abrirOEncontrar(e.orgId, e.lineId, chat, cuando);
+  await conversaciones.anotarMensaje(conv.id, cuando, data.key?.fromMe === true);
 }

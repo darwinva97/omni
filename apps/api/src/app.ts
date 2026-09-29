@@ -15,6 +15,7 @@ import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js
 import { registerLabelRoutes } from "./routes/labels.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
+import { registerCrmRoutes } from "./routes/crm.js";
 import { HOST_VERSION } from "./container.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
@@ -372,6 +373,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerLabelRoutes(app, container);
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
   registerNewsletterRoutes(app, container);
+  registerCrmRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);
   registerWebhookRoutes(app, container);

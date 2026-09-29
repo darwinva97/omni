@@ -520,6 +520,91 @@ export const COMMANDS: readonly Command[] = [
       `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
   },
   {
+    name: "conversaciones",
+    summary: "La bandeja: conversaciones por estado",
+    operation: "GET /v1/conversations",
+    args: [],
+    flags: [
+      { name: "estado", description: "open, pending, snoozed o resolved" },
+      { name: "linea", description: "Acotar a una línea" },
+      { name: "limite", description: "Cuántas devolver" },
+    ],
+    run: (c, a) => c.request("GET", "/v1/conversations", undefined, {
+      status: flag(a, "estado"), lineId: flag(a, "linea"), limit: flag(a, "limite"),
+    }),
+  },
+  {
+    name: "conversacion:actualizar",
+    summary: "Cambiar estado, prioridad o responsable de una conversación",
+    operation: "PATCH /v1/conversations/{conversationId}",
+    args: [{ name: "conversacion", required: true, description: "Identificador de la conversación" }],
+    flags: [
+      { name: "estado", description: "open, pending, snoozed o resolved" },
+      { name: "prioridad", description: "low, normal, high o urgent" },
+      { name: "responsable", description: "Identificador de la persona" },
+      { name: "asunto", description: "Título de la conversación" },
+    ],
+    run: (c, a) => c.request("PATCH", `/v1/conversations/${enc(req(a, 0, "conversacion"))}`, {
+      ...(flag(a, "estado") ? { status: flag(a, "estado") } : {}),
+      ...(flag(a, "prioridad") ? { priority: flag(a, "prioridad") } : {}),
+      ...(flag(a, "responsable") ? { assigneeId: flag(a, "responsable") } : {}),
+      ...(flag(a, "asunto") ? { subject: flag(a, "asunto") } : {}),
+    }),
+  },
+  {
+    name: "automatizaciones",
+    summary: "Reglas de la organización, en el orden en que se ejecutan",
+    operation: "GET /v1/automations",
+    args: [],
+    run: (c) => c.request("GET", "/v1/automations"),
+  },
+  {
+    name: "automatizacion:crear",
+    summary: "Crear una regla desde un JSON; nace apagada",
+    operation: "POST /v1/automations",
+    args: [{ name: "json", required: true, description: "Objeto con name, trigger, conditions y actions" }],
+    run: (c, a) => {
+      let regla: unknown;
+      try {
+        regla = JSON.parse(req(a, 0, "json"));
+      } catch {
+        throw new Error("la regla tiene que ser un objeto JSON válido");
+      }
+      return c.request("POST", "/v1/automations", regla as Record<string, unknown>);
+    },
+  },
+  {
+    name: "automatizacion:encender",
+    summary: "Encender una regla, o apagarla con --no",
+    operation: "PATCH /v1/automations/{ruleId}",
+    args: [{ name: "regla", required: true, description: "Identificador de la regla" }],
+    flags: [{ name: "no", description: "Apagarla en vez de encenderla" }],
+    run: (c, a) => c.request("PATCH", `/v1/automations/${enc(req(a, 0, "regla"))}`, {
+      enabled: a.flags["no"] !== true,
+    }),
+  },
+  {
+    name: "automatizacion:borrar",
+    summary: "Borrar una regla y su historial de disparos",
+    operation: "DELETE /v1/automations/{ruleId}",
+    destructive: true,
+    args: [{ name: "regla", required: true, description: "Identificador de la regla" }],
+    run: (c, a) => c.request("DELETE", `/v1/automations/${enc(req(a, 0, "regla"))}`),
+  },
+  {
+    name: "automatizacion:disparos",
+    summary: "Qué ha hecho una regla, incluido lo que falló",
+    operation: "GET /v1/automations/{ruleId}/runs",
+    args: [{ name: "regla", required: true, description: "Identificador de la regla" }],
+    flags: [
+      { name: "resultado", description: "matched, skipped o failed" },
+      { name: "limite", description: "Cuántos devolver" },
+    ],
+    run: (c, a) => c.request("GET", `/v1/automations/${enc(req(a, 0, "regla"))}/runs`, undefined, {
+      outcome: flag(a, "resultado"), limit: flag(a, "limite"),
+    }),
+  },
+  {
     name: "organizacion",
     summary: "La organización de esta credencial y cuántas líneas tiene",
     operation: "GET /v1/org",
