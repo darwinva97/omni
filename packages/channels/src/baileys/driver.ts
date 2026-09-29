@@ -11,7 +11,7 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type LineStatus, type OutboundCommand, type SendReceipt,
+  type GroupMetadata, type GroupPatch, type LineStatus, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
@@ -486,10 +486,47 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     return Object.values(all).map(toGroupMetadata);
   }
 
-  async createGroup(lineId: LineId, subject: string, participants: readonly string[]): Promise<GroupMetadata> {
+  async createGroup(
+    lineId: LineId, subject: string, participants: readonly Address[],
+  ): Promise<GroupMetadata> {
     const { socket } = this.#require(lineId);
-    const meta = await socket.groupCreate(subject, participants.map((p) => parseAddress(p).value));
+    const meta = await socket.groupCreate(subject, participants.map((p) => p.value));
     return toGroupMetadata(meta);
+  }
+
+  async updateGroup(lineId: LineId, group: Address, patch: GroupPatch): Promise<void> {
+    const { socket } = this.#require(lineId);
+    if (patch.subject !== undefined) await socket.groupUpdateSubject(group.value, patch.subject);
+    if (patch.description !== undefined) {
+      await socket.groupUpdateDescription(group.value, patch.description);
+    }
+  }
+
+  async leaveGroup(lineId: LineId, group: Address): Promise<void> {
+    const { socket } = this.#require(lineId);
+    await socket.groupLeave(group.value);
+  }
+
+  async groupInviteCode(lineId: LineId, group: Address): Promise<string> {
+    const { socket } = this.#require(lineId);
+    const code = await socket.groupInviteCode(group.value);
+    if (!code) throw new OmniError("upstream_failed", "WhatsApp no devolvió código de invitación");
+    return code;
+  }
+
+  async revokeGroupInvite(lineId: LineId, group: Address): Promise<string> {
+    const { socket } = this.#require(lineId);
+    const code = await socket.groupRevokeInvite(group.value);
+    if (!code) throw new OmniError("upstream_failed", "WhatsApp no devolvió el código nuevo");
+    return code;
+  }
+
+  async joinGroupWithCode(lineId: LineId, code: string): Promise<Address> {
+    const { socket } = this.#require(lineId);
+    const jid = await socket.groupAcceptInvite(code);
+    const address = jid ? tryParseAddress(String(jid)) : null;
+    if (!address) throw new OmniError("upstream_failed", "el código de invitación no sirvió");
+    return address;
   }
 
   async updateParticipants(

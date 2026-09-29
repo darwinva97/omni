@@ -65,6 +65,15 @@ export interface ChannelDriverOptional {
   setPresence?(lineId: LineId, chat: Address, presence: "composing" | "recording" | "paused"): Promise<void>;
   checkContact?(lineId: LineId, address: Address): Promise<{ exists: boolean; address: Address | null }>;
   groupMetadata?(lineId: LineId, group: Address): Promise<GroupMetadata>;
+  createGroup?(lineId: LineId, subject: string, participants: readonly Address[]): Promise<GroupMetadata>;
+  /** Cambia asunto y/o descripción EN LA RED, no en nuestro espejo. */
+  updateGroup?(lineId: LineId, group: Address, patch: GroupPatch): Promise<void>;
+  leaveGroup?(lineId: LineId, group: Address): Promise<void>;
+  /** Código de invitación vigente; lo devuelve, no lo rota. */
+  groupInviteCode?(lineId: LineId, group: Address): Promise<string>;
+  /** Rota el código: el anterior deja de servir. Devuelve el nuevo. */
+  revokeGroupInvite?(lineId: LineId, group: Address): Promise<string>;
+  joinGroupWithCode?(lineId: LineId, code: string): Promise<Address>;
   listGroups?(lineId: LineId): Promise<readonly GroupMetadata[]>;
   updateParticipants?(
     lineId: LineId, group: Address, participants: readonly Address[],
@@ -72,6 +81,11 @@ export interface ChannelDriverOptional {
   ): Promise<readonly { address: Address; ok: boolean; reason?: string }[]>;
   rejectCall?(lineId: LineId, callId: string, from: Address): Promise<void>;
   fetchHistory?(lineId: LineId, chat: Address, before: number, count: number): Promise<void>;
+}
+
+export interface GroupPatch {
+  readonly subject?: string;
+  readonly description?: string;
 }
 
 export interface GroupMetadata {

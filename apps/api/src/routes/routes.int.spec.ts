@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { parseAddress } from "@omni/shared";
 import { apiKeyTable, createDatabase, lineTable, migrate, orgTable, type DbHandle } from "@omni/db";
 import { loadConfig } from "../config.js";
 import { buildContainer, type Container } from "../container.js";
@@ -193,6 +194,50 @@ run("grupos", () => {
       method: "POST", body: JSON.stringify({ action: "remove", participants: ["51900000000"] }),
     }, s.plaintext);
     expect(res.status).toBe(403);
+  });
+
+  it("cambiar el asunto llega al transporte, no solo a nuestro espejo", async () => {
+    const res = await call(`/v1/lines/${LINE}/groups/${enc(grupo)}`, {
+      method: "PATCH", body: JSON.stringify({ subject: "Equipo nuevo", description: "otra cosa" }),
+    });
+    expect(res.status).toBe(200);
+
+    // Lo que cuenta es lo que ve el transporte: escribir solo en nuestra tabla
+    // enseñaría un asunto que el grupo real no tiene.
+    const meta = await container.sandbox!.groupMetadata(LINE as never, parseAddress(grupo));
+    expect(meta.subject).toBe("Equipo nuevo");
+    expect(meta.description).toBe("otra cosa");
+
+    const filas = await dbh.sql`SELECT subject FROM group_info WHERE address = ${grupo}`;
+    expect(filas[0]?.["subject"]).toBe("Equipo nuevo");
+  });
+
+  it("da el código de invitación y lo rota cuando se pide", async () => {
+    const primero = await j<{ data: { code: string; url: string } }>(
+      await call(`/v1/lines/${LINE}/groups/${enc(grupo)}/invite`));
+    expect(primero.data.code).toBeTruthy();
+    expect(primero.data.url).toContain(primero.data.code);
+
+    // Leerlo dos veces da el mismo: leer no es rotar.
+    const otra = await j<{ data: { code: string } }>(
+      await call(`/v1/lines/${LINE}/groups/${enc(grupo)}/invite`));
+    expect(otra.data.code).toBe(primero.data.code);
+
+    const rotado = await j<{ data: { code: string } }>(
+      await call(`/v1/lines/${LINE}/groups/${enc(grupo)}/invite`, { method: "POST" }));
+    expect(rotado.data.code).not.toBe(primero.data.code);
+  });
+
+  it("salir del grupo lo hace en el transporte y luego lo olvida", async () => {
+    const res = await call(`/v1/lines/${LINE}/groups/${enc(grupo)}/leave`, { method: "POST" });
+    expect(res.status).toBe(200);
+
+    await expect(
+      container.sandbox!.groupMetadata(LINE as never, parseAddress(grupo)),
+    ).rejects.toThrow();
+
+    const filas = await dbh.sql`SELECT 1 FROM group_info WHERE address = ${grupo}`;
+    expect(filas).toHaveLength(0);
   });
 });
 

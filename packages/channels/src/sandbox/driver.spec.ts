@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { asLineId, type EventEnvelope } from "@omni/shared";
+import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import { SandboxDriver } from "./driver.js";
 
 const LINE = asLineId("l1");
@@ -119,7 +119,7 @@ describe("sandbox: grupos", () => {
   beforeEach(async () => { ({ d } = await connected()); });
 
   it("crea un grupo con el dueño como superadmin", async () => {
-    const g = await d.createGroup(LINE, "Equipo", ["51988777666"]);
+    const g = await d.createGroup(LINE, "Equipo", [parseAddress("51988777666")]);
     expect(g.subject).toBe("Equipo");
     expect(g.participants[0]!.role).toBe("superadmin");
     expect(g.participants).toHaveLength(2);
@@ -127,7 +127,7 @@ describe("sandbox: grupos", () => {
 
   it("informa por participante en vez de fallar entero", async () => {
     // WhatsApp real acepta unos y rechaza otros; la API debe decir cuál fue cuál.
-    const g = await d.createGroup(LINE, "Equipo", ["51988777666"]);
+    const g = await d.createGroup(LINE, "Equipo", [parseAddress("51988777666")]);
     const res = await d.updateParticipants(
       LINE, g.address,
       [{ kind: "pn", local: "51988777666", value: "51988777666@s.whatsapp.net" },

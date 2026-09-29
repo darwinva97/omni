@@ -119,13 +119,9 @@ export function registerGroupRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
       await authorize(c.get("principal"), routeOf("group.create"), { lineId });
       const driver = await driverOf(lineId);
       assertCapability(driver, "group.create");
-      const creador = driver as unknown as {
-        createGroup?: (l: LineId, s: string, p: readonly string[]) => Promise<GroupMetadata>;
-      };
-      if (!creador.createGroup) {
-        throw new OmniError("capability_unsupported", "este transporte no sabe crear grupos");
-      }
-      const meta = await creador.createGroup(lineId as LineId, subject, participants);
+      const meta = await driver.createGroup!(
+        lineId as LineId, subject, participants.map((p) => parseAddress(p)),
+      );
       await persist(lineId, meta);
       return c.json({ data: present(meta) }, 201);
     },
@@ -180,6 +176,7 @@ export function registerGroupChatRoutes(app: OpenAPIHono<ApiEnv>, container: Con
     return container.runtime.driverFor(rows[0].kind);
   };
   const Ok = z.object({ data: z.object({ ok: z.boolean() }) });
+  const Invite = z.object({ data: z.object({ code: z.string(), url: z.string() }) });
 
   app.openapi(
     createRoute({
@@ -201,6 +198,15 @@ export function registerGroupChatRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       await authorize(c.get("principal"), routeOf("group.update"), { lineId, chat: group });
       const driver = await driverOf(lineId);
       assertCapability(driver, "group.manage");
+
+      /*
+       * Primero WhatsApp, después nuestro espejo.
+       *
+       * Al revés —o solo el espejo, como estaba— el panel enseñaría el asunto
+       * nuevo mientras el grupo sigue llamándose como antes. Una mentira
+       * silenciosa es peor que un 422: nadie va a ir a comprobarla.
+       */
+      await driver.updateGroup!(lineId as LineId, group, patch);
 
       await container.dbh.db.update(groupInfoTable)
         .set({
@@ -226,10 +232,52 @@ export function registerGroupChatRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       await authorize(c.get("principal"), routeOf("group.leave"), { lineId, chat: group });
       const driver = await driverOf(lineId);
       assertCapability(driver, "group.manage");
+      // Salir de verdad primero: borrar solo nuestras filas dejaba al usuario
+      // dentro del grupo y fuera de su propia lista.
+      await driver.leaveGroup!(lineId as LineId, group);
       await container.dbh.db.delete(groupInfoTable).where(eq(groupInfoTable.address, group.value));
       await container.dbh.db.delete(groupParticipantTable)
         .where(eq(groupParticipantTable.groupAddress, group.value));
       return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/groups/{groupId}/invite", tags: ["grupos"],
+      summary: "Código de invitación vigente de un grupo",
+      description:
+        "Lo LEE, no lo rota: pedirlo dos veces devuelve el mismo. Para invalidar " +
+        "el anterior está el POST, que devuelve uno nuevo.",
+      request: { params: z.object({ lineId: z.string(), groupId: z.string() }) },
+      responses: { 200: json(Invite, "código"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, groupId } = c.req.valid("param");
+      const group = parseAddress(decodeURIComponent(groupId));
+      await authorize(c.get("principal"), routeOf("group.invite"), { lineId, chat: group });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "group.invite");
+      const code = await driver.groupInviteCode!(lineId as LineId, group);
+      return c.json({ data: { code, url: `https://chat.whatsapp.com/${code}` } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/groups/{groupId}/invite", tags: ["grupos"],
+      summary: "Rotar el código de invitación; el anterior deja de servir",
+      request: { params: z.object({ lineId: z.string(), groupId: z.string() }) },
+      responses: { 200: json(Invite, "código nuevo"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, groupId } = c.req.valid("param");
+      const group = parseAddress(decodeURIComponent(groupId));
+      await authorize(c.get("principal"), routeOf("group.invite"), { lineId, chat: group });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "group.invite");
+      const code = await driver.revokeGroupInvite!(lineId as LineId, group);
+      return c.json({ data: { code, url: `https://chat.whatsapp.com/${code}` } }, 200);
     },
   );
 

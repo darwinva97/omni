@@ -497,6 +497,29 @@ export const COMMANDS: readonly Command[] = [
       { labelIds: (a.positional[2] ?? "").split(",").map((s) => s.trim()).filter(Boolean) }),
   },
   {
+    name: "grupo:invitacion",
+    summary: "Código de invitación vigente de un grupo; lo lee, no lo rota",
+    operation: "GET /v1/lines/{lineId}/groups/{groupId}/invite",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
+  },
+  {
+    name: "grupo:invitacion:rotar",
+    summary: "Rotar el código de invitación; el anterior deja de servir",
+    operation: "POST /v1/lines/{lineId}/groups/{groupId}/invite",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "grupo", required: true, description: "Dirección del grupo" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/groups/${enc(req(a, 1, "grupo"))}/invite`),
+  },
+  {
     name: "plugins",
     summary: "Plugins instalados, con sus permisos y su estado",
     operation: "GET /v1/plugins",

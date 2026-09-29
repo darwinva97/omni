@@ -7,7 +7,7 @@ import type { Storage } from "@omni/storage";
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type LineStatus, type OutboundCommand, type SendReceipt,
+  type GroupMetadata, type GroupPatch, type LineStatus, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { ObjectStorageSessionStore } from "./session-store.js";
 
@@ -360,6 +360,73 @@ export class WhatsappWebDriver extends EventEmitterBase implements ChannelDriver
     return chats
       .filter((c) => c.isGroup)
       .map((c) => toGroupMetadata(parseAddress(c.id?._serialized ?? ""), c));
+  }
+
+  async createGroup(
+    lineId: LineId, subject: string, participants: readonly Address[],
+  ): Promise<GroupMetadata> {
+    const { cliente } = this.#require(lineId);
+    const res = await (cliente as unknown as {
+      createGroup: (s: string, p: string[]) => Promise<{ gid?: { _serialized?: string } } | string>;
+    }).createGroup(subject, participants.map(toWebId));
+
+    /*
+     * Devuelve el identificador de dos formas según la versión: una cadena o
+     * un objeto con `gid`. Adivinar mal aquí daría un grupo creado de verdad
+     * con un identificador inventado, que es la peor combinación posible.
+     */
+    const bruto = typeof res === "string" ? res : res?.gid?._serialized;
+    const address = bruto ? tryParseAddress(String(bruto)) : null;
+    if (!address) {
+      throw new OmniError("upstream_failed", "el grupo se creó pero no se pudo leer su identificador");
+    }
+    return {
+      address, subject,
+      participants: participants.map((p) => ({ address: p, role: "member" as const })),
+    };
+  }
+
+  async updateGroup(lineId: LineId, group: Address, patch: GroupPatch): Promise<void> {
+    const { cliente } = this.#require(lineId);
+    const c = (await cliente.getChatById(toWebId(group))) as unknown as {
+      isGroup?: boolean;
+      setSubject: (s: string) => Promise<unknown>;
+      setDescription: (s: string) => Promise<unknown>;
+    };
+    if (patch.subject !== undefined) await c.setSubject(patch.subject);
+    if (patch.description !== undefined) await c.setDescription(patch.description);
+  }
+
+  async leaveGroup(lineId: LineId, group: Address): Promise<void> {
+    const { cliente } = this.#require(lineId);
+    const c = (await cliente.getChatById(toWebId(group))) as unknown as { leave: () => Promise<unknown> };
+    await c.leave();
+  }
+
+  async groupInviteCode(lineId: LineId, group: Address): Promise<string> {
+    const { cliente } = this.#require(lineId);
+    const c = (await cliente.getChatById(toWebId(group))) as unknown as {
+      getInviteCode: () => Promise<string>;
+    };
+    return c.getInviteCode();
+  }
+
+  async revokeGroupInvite(lineId: LineId, group: Address): Promise<string> {
+    const { cliente } = this.#require(lineId);
+    const c = (await cliente.getChatById(toWebId(group))) as unknown as {
+      revokeInvite: () => Promise<string>;
+    };
+    return c.revokeInvite();
+  }
+
+  async joinGroupWithCode(lineId: LineId, code: string): Promise<Address> {
+    const { cliente } = this.#require(lineId);
+    const res = await (cliente as unknown as {
+      acceptInvite: (c: string) => Promise<string>;
+    }).acceptInvite(code);
+    const address = res ? tryParseAddress(String(res)) : null;
+    if (!address) throw new OmniError("upstream_failed", "el código de invitación no sirvió");
+    return address;
   }
 
   async updateParticipants(

@@ -45,6 +45,25 @@ export const ListSectionPayload = z.object({
     .max(10),
 });
 
+/**
+ * Plantilla aprobada previamente.
+ *
+ * Es la ÚNICA forma de escribir primero a alguien fuera de la ventana de 24
+ * horas en la API oficial, así que no es un tipo de mensaje más: es la puerta
+ * de entrada legítima a una conversación. Los transportes no oficiales no la
+ * tienen, y ahí está media diferencia de riesgo entre unos y otros.
+ */
+export const TemplatePayload = z.object({
+  name: z.string().min(1).max(512),
+  /** Código de idioma tal cual lo aprobó Meta: `es`, `es_MX`, `en_US`. */
+  languageCode: z.string().min(2).max(10),
+  /** Valores para los `{{1}}`, `{{2}}`… del cuerpo, en orden. */
+  bodyParameters: z.array(z.string().max(1024)).max(20).optional(),
+  headerParameters: z.array(z.string().max(1024)).max(10).optional(),
+  /** Un valor por botón de URL dinámica, en orden. */
+  buttonParameters: z.array(z.string().max(1024)).max(10).optional(),
+});
+
 /** Una fuente de medio: URL remota, clave ya subida a nuestro almacén, o bytes en base64. */
 export const MediaSource = z.union([
   z.object({ url: z.string().url() }),
@@ -68,6 +87,7 @@ export const SendMessageInput = z
     location: LocationPayload.optional(),
     poll: PollPayload.optional(),
     buttons: z.array(ButtonPayload).min(1).max(3).optional(),
+    template: TemplatePayload.optional(),
     list: z
       .object({
         title: z.string().min(1).max(64),
@@ -83,6 +103,9 @@ export const SendMessageInput = z
     mentions: z.array(z.string()).max(64).optional(),
     viewOnce: z.boolean().optional(),
     ptt: z.boolean().optional(),
+    /** Texto que acompaña a `buttons` o a `list`; su cuerpo, no un pie de foto. */
+    bodyText: z.string().max(1024).optional(),
+    footerText: z.string().max(60).optional(),
     /** Antepone un retardo simulando escritura. El motor lo respeta si el canal lo permite. */
     typingMs: z.number().int().min(0).max(30000).optional(),
   })
@@ -93,13 +116,13 @@ export type SendMessageInput = z.infer<typeof SendMessageInput>;
 /** Los campos que deciden QUÉ se envía. Exactamente uno debe estar presente. */
 export const contentFields = [
   "text", "image", "video", "audio", "document",
-  "sticker", "contact", "location", "poll", "buttons", "list",
+  "sticker", "contact", "location", "poll", "buttons", "list", "template",
 ] as const;
 export type ContentField = (typeof contentFields)[number];
 
 export const messageKinds = [
   "text", "image", "video", "audio", "document",
-  "sticker", "contact", "location", "poll", "buttons", "list",
+  "sticker", "contact", "location", "poll", "buttons", "list", "template",
   "reaction", "system", "unknown",
 ] as const;
 export const MessageKind = z.enum(messageKinds);

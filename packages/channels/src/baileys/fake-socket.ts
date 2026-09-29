@@ -21,6 +21,8 @@ export interface FakeSocketControl {
   readonly sent: { jid: string; content: unknown; options?: unknown }[];
   readonly presence: { presence: string; jid: string }[];
   readonly read: string[][];
+  readonly groupUpdates: { jid: string; subject?: string; description?: string }[];
+  readonly groupLeaves: string[];
   nextMessageId: string;
   /** Si se define, `sendMessage` lanza este error. */
   failWith: Error | null;
@@ -34,6 +36,8 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     sent: [],
     presence: [],
     read: [],
+    groupUpdates: [],
+    groupLeaves: [],
     nextMessageId: "FAKE-0001",
     failWith: null,
     socket: null as unknown as WASocket,
@@ -88,6 +92,16 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
     }),
     groupParticipantsUpdate: async (_jid: string, participants: string[]) =>
       participants.map((p, i) => ({ jid: p, status: i === 0 ? "200" : "403" })),
+    groupUpdateSubject: async (jid: string, subject: string) => {
+      control.groupUpdates.push({ jid, subject });
+    },
+    groupUpdateDescription: async (jid: string, description: string) => {
+      control.groupUpdates.push({ jid, description });
+    },
+    groupLeave: async (jid: string) => { control.groupLeaves.push(jid); },
+    groupInviteCode: async () => "ABCD1234EFGH",
+    groupRevokeInvite: async () => "NUEVO5678CODE",
+    groupAcceptInvite: async () => "122@g.us",
     rejectCall: async () => {},
     fetchMessageHistory: async () => "ok",
   };

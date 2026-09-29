@@ -6,7 +6,7 @@ import {
 import {
   EventEmitterBase,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
-  type GroupMetadata, type LineStatus, type OutboundCommand, type SendReceipt,
+  type GroupMetadata, type GroupPatch, type LineStatus, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 
 /**
@@ -46,6 +46,8 @@ interface LineState {
   orgId: string;
   readonly thread: SandboxMessage[];
   readonly groups: Map<string, GroupMetadata>;
+  /** Códigos de invitación vigentes, por grupo. */
+  readonly invites: Map<string, string>;
   readonly known: Set<string>;
   pendingQr: string | null;
   /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
@@ -101,6 +103,7 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       orgId,
       thread: [],
       groups: new Map(),
+      invites: new Map(),
       known: new Set(),
       pendingQr: null,
       saveCredentials: null,
@@ -338,7 +341,9 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
   }
 
   /** Alta de grupo simulada, para ejercitar la API de grupos sin un WhatsApp real. */
-  async createGroup(lineId: LineId, subject: string, participants: readonly string[]): Promise<GroupMetadata> {
+  async createGroup(
+    lineId: LineId, subject: string, participants: readonly Address[],
+  ): Promise<GroupMetadata> {
     const line = this.#require(lineId);
     this.#requireConnected(line, lineId);
     const address = parseAddress(`${this.#nextId()}-${this.#now()}@g.us`);
@@ -347,13 +352,60 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       owner: parseAddress(this.#selfOf(line)),
       participants: [
         { address: parseAddress(this.#selfOf(line)), role: "superadmin" as const },
-        ...participants.map((p) => ({ address: parseAddress(p), role: "member" as const })),
+        ...participants.map((p) => ({ address: p, role: "member" as const })),
       ],
       createdAt: this.#now(),
     };
     line.groups.set(address.value, meta);
     await this.emit("group.created", line.orgId, lineId, { group: address.value, subject });
     return meta;
+  }
+
+  async updateGroup(lineId: LineId, group: Address, patch: GroupPatch): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const actual = line.groups.get(group.value);
+    if (!actual) throw new OmniError("not_found", `el grupo "${group.value}" no existe`);
+    line.groups.set(group.value, {
+      ...actual,
+      ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+    });
+    await this.emit("group.updated", line.orgId, lineId, { group: group.value, ...patch });
+  }
+
+  async leaveGroup(lineId: LineId, group: Address): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    line.groups.delete(group.value);
+    await this.emit("group.updated", line.orgId, lineId, { group: group.value, left: true });
+  }
+
+  async groupInviteCode(lineId: LineId, group: Address): Promise<string> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    // Estable mientras no se revoque: un código que cambiara en cada lectura
+    // no se parecería en nada al de verdad.
+    const ya = line.invites.get(group.value);
+    if (ya) return ya;
+    const code = `SBX${this.#nextId()}`;
+    line.invites.set(group.value, code);
+    return code;
+  }
+
+  async revokeGroupInvite(lineId: LineId, group: Address): Promise<string> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    const code = `SBX${this.#nextId()}`;
+    line.invites.set(group.value, code);
+    return code;
+  }
+
+  async joinGroupWithCode(lineId: LineId, code: string): Promise<Address> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    for (const [jid, c] of line.invites) if (c === code) return parseAddress(jid);
+    throw new OmniError("not_found", "ese código de invitación no existe");
   }
 
   async updateParticipants(

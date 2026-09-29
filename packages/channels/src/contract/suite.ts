@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { OmniError, CapabilityError, capabilities, parseAddress, type Capability, type EventEnvelope, type LineId } from "@omni/shared";
+import {
+  OmniError, CapabilityError, capabilities, contentFields, parseAddress,
+  type Capability, type ContentField, type EventEnvelope, type LineId, type SendMessageInput,
+} from "@omni/shared";
 import type { ChannelDriver } from "../port.js";
 
 /**
@@ -31,9 +34,37 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "chat.presence": "setPresence",
   "contact.check": "checkContact",
   "group.read": "groupMetadata",
+  "group.create": "createGroup",
+  "group.manage": "updateGroup",
+  "group.invite": "groupInviteCode",
   "group.participants": "updateParticipants",
   "call.reject": "rejectCall",
   "history.sync": "fetchHistory",
+};
+
+/**
+ * Un contenido mínimo válido por cada tipo, para probar que lo declarado se
+ * puede enviar de verdad.
+ */
+const CONTENIDO: Record<ContentField, Partial<SendMessageInput>> = {
+  text: { text: "hola" },
+  image: { image: { url: "https://ejemplo.test/a.jpg" }, caption: "pie" },
+  video: { video: { url: "https://ejemplo.test/a.mp4" } },
+  audio: { audio: { url: "https://ejemplo.test/a.ogg" } },
+  document: { document: { url: "https://ejemplo.test/a.pdf" }, fileName: "a.pdf" },
+  sticker: { sticker: { url: "https://ejemplo.test/a.webp" } },
+  contact: { contact: { fullName: "Ada Lovelace", phone: "+51999000111" } },
+  location: { location: { latitude: -12.04, longitude: -77.04 } },
+  poll: { poll: { question: "¿Sí?", options: ["sí", "no"], allowMultipleAnswers: false } },
+  buttons: { buttons: [{ id: "a", title: "Sí" }], bodyText: "¿Confirmas?" },
+  list: {
+    list: {
+      title: "Menú", buttonText: "Ver",
+      sections: [{ title: "Platos", rows: [{ id: "1", title: "Ceviche" }] }],
+    },
+    bodyText: "Elige uno",
+  },
+  template: { template: { name: "saludo", languageCode: "es" } },
 };
 
 export function runChannelContract(name: string, make: () => Promise<DriverUnderTest>): void {
@@ -76,6 +107,37 @@ export function runChannelContract(name: string, make: () => Promise<DriverUnder
         const err = new CapabilityError(cap, driver.descriptor.kind);
         expect(err.status).toBe(422);
         expect(err.message).toContain(cap);
+      }
+      await cleanup?.();
+    });
+
+    it("declarar que sabe enviar algo implica saber construirlo", async () => {
+      /*
+       * Esta es la que impide que el catálogo de capacidades se vuelva
+       * decorativo. Declarar `send.buttons` y luego lanzar
+       * `capability_unsupported` al construir el cuerpo es peor que no
+       * declararlo: la API acepta el envío con un 202 y el mensaje muere
+       * después, en silencio, donde el cliente ya no está mirando.
+       *
+       * Otros fallos SÍ valen —una URL inalcanzable, una línea sin conectar—:
+       * lo único inaceptable es que la capacidad declarada no exista.
+       */
+      const { driver, lineId, link, cleanup } = await make();
+      await link();
+
+      for (const field of contentFields) {
+        if (!driver.descriptor.capabilities.has(`send.${field}` as Capability)) continue;
+
+        const input = { to: "51999000111", ...CONTENIDO[field] } as SendMessageInput;
+        const err = await driver
+          .send({ lineId, to: parseAddress("51999000111"), clientMessageId: `cap-${field}`, kind: field as never, input })
+          .then(() => null)
+          .catch((e: unknown) => e as OmniError);
+
+        expect(
+          err?.code,
+          `declara "send.${field}" pero al construirlo dice que no lo admite`,
+        ).not.toBe("capability_unsupported");
       }
       await cleanup?.();
     });

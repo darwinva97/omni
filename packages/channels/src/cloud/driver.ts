@@ -249,6 +249,94 @@ export class CloudDriver extends EventEmitterBase implements ChannelDriver {
           }],
         };
       }
+      case "buttons": {
+        /*
+         * Botones de respuesta rápida. Meta permite tres como mucho y exige un
+         * cuerpo de texto: un mensaje con botones y sin texto no se acepta, así
+         * que se pide explícitamente en vez de mandar uno inventado.
+         */
+        const cuerpo = input.bodyText ?? input.text ?? input.caption;
+        if (!cuerpo) {
+          throw new OmniError(
+            "validation_failed",
+            "un mensaje con botones necesita `bodyText`: la API oficial no acepta botones sin texto",
+          );
+        }
+        return {
+          ...base, type: "interactive",
+          interactive: {
+            type: "button",
+            body: { text: cuerpo },
+            ...(input.footerText ? { footer: { text: input.footerText } } : {}),
+            action: {
+              buttons: input.buttons!.map((b) => ({
+                type: "reply", reply: { id: b.id, title: b.title },
+              })),
+            },
+          },
+        };
+      }
+      case "list": {
+        const cuerpo = input.bodyText ?? input.text ?? input.caption;
+        if (!cuerpo) {
+          throw new OmniError(
+            "validation_failed",
+            "una lista necesita `bodyText`: la API oficial no acepta listas sin texto",
+          );
+        }
+        const lista = input.list!;
+        return {
+          ...base, type: "interactive",
+          interactive: {
+            type: "list",
+            header: { type: "text", text: lista.title },
+            body: { text: cuerpo },
+            ...(input.footerText ? { footer: { text: input.footerText } } : {}),
+            action: {
+              button: lista.buttonText,
+              sections: lista.sections.map((sec) => ({
+                title: sec.title,
+                rows: sec.rows.map((r) => ({
+                  id: r.id, title: r.title,
+                  ...(r.description ? { description: r.description } : {}),
+                })),
+              })),
+            },
+          },
+        };
+      }
+      case "template": {
+        const t = input.template!;
+        /*
+         * Los parámetros van por POSICIÓN, no por nombre: Meta los sustituye en
+         * los `{{1}}`, `{{2}}`… en el orden en que llegan. Un componente vacío
+         * hace que Meta rechace el envío entero, así que solo se incluye el que
+         * tenga valores.
+         */
+        const texto = (valores: readonly string[]) =>
+          valores.map((v) => ({ type: "text", text: v }));
+        const componentes: Record<string, unknown>[] = [];
+        if (t.headerParameters?.length) {
+          componentes.push({ type: "header", parameters: texto(t.headerParameters) });
+        }
+        if (t.bodyParameters?.length) {
+          componentes.push({ type: "body", parameters: texto(t.bodyParameters) });
+        }
+        t.buttonParameters?.forEach((v, i) => {
+          componentes.push({
+            type: "button", sub_type: "url", index: String(i),
+            parameters: [{ type: "text", text: v }],
+          });
+        });
+        return {
+          ...base, type: "template",
+          template: {
+            name: t.name,
+            language: { code: t.languageCode },
+            ...(componentes.length > 0 ? { components: componentes } : {}),
+          },
+        };
+      }
       default:
         throw new OmniError(
           "capability_unsupported",
