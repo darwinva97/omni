@@ -14,7 +14,15 @@ import { z } from "zod";
  * y `555000111@s.whatsapp.net` son dos personas distintas mientras la tabla de
  * mapeo no diga lo contrario, y un LID sin mapear se RECHAZA, no se adivina.
  */
-export const AddressKind = z.enum(["pn", "lid", "group", "newsletter", "broadcast", "email", "handle"]);
+/**
+ * `telegram` es su propio tipo y no `handle` a propósito. Un identificador de
+ * chat de Telegram es un número, igual que un teléfono, y meterlos en el mismo
+ * saco haría que dos conversaciones de redes distintas pudieran parecer la
+ * misma. Es la misma regla que separa `pn` de `lid`.
+ */
+export const AddressKind = z.enum([
+  "pn", "lid", "group", "newsletter", "broadcast", "email", "handle", "telegram",
+]);
 export type AddressKind = z.infer<typeof AddressKind>;
 
 export interface Address {
@@ -33,6 +41,7 @@ const SUFFIX: Record<AddressKind, string> = {
   broadcast: "broadcast",
   email: "email",
   handle: "handle",
+  telegram: "telegram",
 };
 
 /** `@c.us` es la forma de whatsapp-web.js para un individuo; equivale a `@s.whatsapp.net`. */
@@ -45,6 +54,7 @@ const PARSE: Record<string, AddressKind> = {
   "broadcast": "broadcast",
   "email": "email",
   "handle": "handle",
+  "telegram": "telegram",
 };
 
 export class AddressError extends Error {}

@@ -1,4 +1,4 @@
-import { BaileysDriver, CloudDriver, SandboxDriver, WhatsappWebDriver, type ChannelDriver } from "@omni/channels";
+import { BaileysDriver, CloudDriver, SandboxDriver, TelegramDriver, WhatsappWebDriver, type ChannelDriver } from "@omni/channels";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
   MemoryBus, MemoryJobQueue, MemoryKv,
@@ -144,6 +144,12 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
       ...(config.CHROMIUM_PATH ? { executablePath: config.CHROMIUM_PATH } : {}),
     }));
   }
+
+  /*
+   * Telegram: el primer canal que no es WhatsApp. Sondea con espera larga en
+   * vez de mantener un socket, así que cuesta poco tenerlo encendido.
+   */
+  if (config.TELEGRAM_ENABLED) drivers.push(new TelegramDriver());
 
   drivers.push(...(opts.drivers ?? []));
   for (const d of drivers) runtime.registerDriver(d);

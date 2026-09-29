@@ -66,6 +66,11 @@ export const Config = z.object({
    * de un Chromium real— a cambio de unos 400 MB por línea. Apagado por defecto.
    */
   WHATSAPP_WEB_ENABLED: envBoolean(false),
+  /**
+   * Telegram. Encendido: no mantiene sesión de cifrado, no arriesga baneo y
+   * una línea solo lo usa si su configuración trae el token del bot.
+   */
+  TELEGRAM_ENABLED: envBoolean(true),
   CHROMIUM_PATH: z.string().optional(),
   /**
    * Plugins. Apagados por defecto: ejecutan código de terceros, aunque sea en

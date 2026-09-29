@@ -11,3 +11,5 @@ export type { CloudWebhookPayload, CloudInboundMessage, CloudStatus } from "./cl
 export { WhatsappWebDriver, WEB_DESCRIPTOR, webKind, toWebContent } from "./web/driver.js";
 export { ObjectStorageSessionStore } from "./web/session-store.js";
 export { createFakeWebClient, type FakeWebControl } from "./web/fake-client.js";
+export { TelegramDriver, TELEGRAM_DESCRIPTOR, telegramKind } from "./telegram/driver.js";
+export { createFakeTelegram, type FakeTelegram } from "./telegram/fake-api.js";

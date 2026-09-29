@@ -135,6 +135,12 @@ export interface GroupMetadata {
   readonly description?: string;
   readonly owner?: Address;
   readonly participants: readonly { address: Address; role: "member" | "admin" | "superadmin" }[];
+  /**
+   * Cuántos miembros tiene, cuando la red lo dice sin dar la lista. Telegram
+   * da el número pero solo enumera a los administradores, así que `participants`
+   * vacío con `size` puesto es un estado legítimo, no un fallo.
+   */
+  readonly size?: number;
   readonly createdAt?: number;
 }
 
