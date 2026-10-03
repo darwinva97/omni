@@ -21,7 +21,16 @@ async function reenviar(req: Request, ruta: string[]): Promise<Response> {
       ...(cookie ? { cookie: `${SESSION_COOKIE}=${cookie}` } : {}),
       ...(req.headers.get("content-type") ? { "content-type": req.headers.get("content-type")! } : {}),
     },
-    ...(req.method === "GET" || req.method === "HEAD" ? {} : { body: await req.text() }),
+    /*
+     * El cuerpo se reenvía en BINARIO.
+     *
+     * Con `req.text()` cualquier subida de fichero se decodificaba como UTF-8
+     * y llegaba corrompida al otro lado: una foto subida por el panel no era
+     * la foto. `arrayBuffer` sirve igual para JSON y para multipart.
+     */
+    ...(req.method === "GET" || req.method === "HEAD"
+      ? {}
+      : { body: await req.arrayBuffer() }),
     redirect: "manual",
   });
 
@@ -32,7 +41,9 @@ async function reenviar(req: Request, ruta: string[]): Promise<Response> {
       cabeceras.append(k, v);
     }
   }
-  return new Response(await res.text(), { status: res.status, headers: cabeceras });
+  // La respuesta también en binario, por el mismo motivo: por aquí pasa JSON
+  // hoy, y en cuanto pase un fichero el `text()` lo rompería sin avisar.
+  return new Response(await res.arrayBuffer(), { status: res.status, headers: cabeceras });
 }
 
 const manejador = async (req: Request, ctx: { params: Promise<{ ruta: string[] }> }) =>

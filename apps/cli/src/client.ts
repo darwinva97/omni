@@ -67,4 +67,31 @@ export class OmniClient {
     }
     return { status: res.status, data: (parsed as { data?: T }).data ?? (parsed as T) };
   }
+
+  /**
+   * Como `request`, pero con un cuerpo multipart.
+   *
+   * No se le pone `content-type`: lo tiene que poner `fetch` para incluir el
+   * `boundary`, y fijarlo a mano rompe la subida sin decir por qué.
+   */
+  async requestForm<T>(method: string, path: string, form: FormData): Promise<Respuesta<T>> {
+    const res = await this.#fetch(new URL(this.#base + path), {
+      method,
+      headers: { authorization: `Bearer ${this.#key}` },
+      body: form,
+      signal: AbortSignal.timeout(this.#timeout),
+    });
+
+    const texto = await res.text();
+    const parsed: unknown = texto ? JSON.parse(texto) : {};
+    if (!res.ok) {
+      const problema = parsed as { detail?: string; title?: string };
+      throw new OmniError(
+        "upstream_failed",
+        problema.detail ?? problema.title ?? `${method} ${path} respondió ${res.status}`,
+        { status: res.status },
+      );
+    }
+    return { status: res.status, data: (parsed as { data?: T }).data ?? (parsed as T) };
+  }
 }

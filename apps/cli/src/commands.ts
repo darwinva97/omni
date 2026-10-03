@@ -30,6 +30,19 @@ const req = (a: Args, i: number, nombre: string): string => {
   return v;
 };
 
+/** Tipo MIME por extensión, para los pocos que de verdad importan. */
+const TIPOS: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
+  webp: "image/webp", mp4: "video/mp4", mov: "video/quicktime",
+  ogg: "audio/ogg", opus: "audio/ogg", mp3: "audio/mpeg", m4a: "audio/mp4",
+  pdf: "application/pdf", zip: "application/zip",
+};
+
+function tipoPorExtension(nombre: string): string {
+  const ext = nombre.includes(".") ? nombre.split(".").pop()!.toLowerCase() : "";
+  return TIPOS[ext] ?? "application/octet-stream";
+}
+
 /** Las direcciones llevan `@`: sin escapar, la ruta se parte donde no debe. */
 const enc = encodeURIComponent;
 
@@ -547,6 +560,31 @@ export const COMMANDS: readonly Command[] = [
     ],
     run: (c, a) => c.request("GET",
       `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}`),
+  },
+  {
+    name: "medio:subir",
+    summary: "Subir un fichero del disco y obtener su clave de almacén",
+    operation: "POST /v1/media",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "fichero", required: true, description: "Ruta en el disco" },
+    ],
+    run: async (c, a) => {
+      const { readFile } = await import("node:fs/promises");
+      const { basename } = await import("node:path");
+      const ruta = req(a, 1, "fichero");
+      const bytes = await readFile(ruta);
+      /*
+       * El tipo se deduce de la extensión y NO se adivina de los bytes. Un
+       * tipo equivocado en un sticker se entrega y llega roto, así que es mejor
+       * que el nombre del fichero sea la fuente: quien lo nombró sabe qué es.
+       */
+      const nombre = basename(ruta);
+      const cuerpo = new FormData();
+      cuerpo.append("file", new File([bytes], nombre, { type: tipoPorExtension(nombre) }));
+      cuerpo.append("lineId", req(a, 0, "linea"));
+      return c.requestForm("POST", "/v1/media", cuerpo);
+    },
   },
   {
     name: "identidad",

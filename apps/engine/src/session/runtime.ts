@@ -18,6 +18,35 @@ import { SendPacer } from "../outbound/pacer.js";
 export const OUTBOUND_QUEUE = "outbound";
 
 /**
+ * Formatos que WhatsApp exige de verdad, comprobados ANTES de aceptar.
+ *
+ * Un sticker tiene que ser WebP: mandar un JPEG en ese campo no da error, se
+ * entrega y al destinatario le llega un cuadrado roto. Es el tipo de fallo que
+ * hay que convertir en un 422 inmediato, porque el silencio lo descubre el
+ * cliente final y no quien envía.
+ */
+export function exigirFormatoDelMedio(campo: string, mimeType: string): void {
+  const tipo = mimeType.split(";")[0]!.trim().toLowerCase();
+
+  if (campo === "sticker" && tipo !== "image/webp") {
+    throw new OmniError(
+      "validation_failed",
+      `un sticker tiene que ser WebP y este es "${tipo}"; WhatsApp acepta el envío y entrega algo que no se ve`,
+      { campo: "sticker", esperado: "image/webp", recibido: tipo },
+    );
+  }
+  if (campo === "image" && !tipo.startsWith("image/")) {
+    throw new OmniError("validation_failed", `"${tipo}" no es una imagen`, { campo: "image" });
+  }
+  if (campo === "video" && !tipo.startsWith("video/")) {
+    throw new OmniError("validation_failed", `"${tipo}" no es un vídeo`, { campo: "video" });
+  }
+  if (campo === "audio" && !tipo.startsWith("audio/")) {
+    throw new OmniError("validation_failed", `"${tipo}" no es un audio`, { campo: "audio" });
+  }
+}
+
+/**
  * Los medios entrantes se descargan en su propia cola.
  *
  * WhatsApp no manda el fichero: manda una referencia cifrada que solo el
@@ -313,6 +342,7 @@ export class EngineRuntime {
     const media = await resolveMedia(input, { orgId: line.orgId, lineId, messageId }, {
       storage: this.#deps.storage,
     });
+    if (media) exigirFormatoDelMedio(content.field, media.mimeType);
 
     const inserted = await this.#deps.db
       .insert(messageTable)

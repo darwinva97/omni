@@ -36,9 +36,6 @@ afterAll(async () => { await container?.shutdown(); await dbh?.close(); });
  * script. Lo que se excluye se excluye a mano y con motivo escrito.
  */
 const SIN_COMANDO = new Map<string, string>([
-  // Se sube un fichero con multipart; un comando útil necesita leer del disco
-  // y aún no está hecho.
-  ["POST /v1/media", "pendiente: subida de ficheros desde el disco"],
   // Se descarga por URL firmada, que ya devuelve la API. Un comando sería un
   // envoltorio de `curl` sin valor añadido.
   ["GET /v1/media/{key}", "se accede por la URL firmada que ya devuelve la API; un comando sería un envoltorio de curl"],

@@ -45,6 +45,42 @@ export default async function Chat({
     };
   }
 
+  /**
+   * Envía un fichero ya subido.
+   *
+   * Se manda la `storageKey` que devolvió la subida, no los bytes: el fichero
+   * ya está en nuestro almacén, y volver a mandarlo por aquí lo subiría dos
+   * veces y lo metería entero en memoria del servidor del panel.
+   */
+  async function enviarMedio(
+    campo: string, storageKey: string, pie: string, fileName: string,
+  ): Promise<Mensaje | null> {
+    "use server";
+    const clientMessageId = `panel-${crypto.randomUUID()}`;
+    const res = await apiFetch<{ messageId: string; state: string }>(
+      `/v1/lines/${lineId}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          to: chat,
+          [campo]: { storageKey },
+          ...(pie ? { caption: pie } : {}),
+          ...(campo === "document" && fileName ? { fileName } : {}),
+          // Una nota de voz y un fichero de audio son cosas distintas para
+          // WhatsApp; desde el panel se manda como fichero, que es lo que uno
+          // adjunta. Grabar una nota es otra función.
+          clientMessageId,
+        }),
+      },
+    );
+    return {
+      id: res.messageId, providerMessageId: null, fromMe: true,
+      kind: campo, body: pie || null, state: res.state,
+      timestamp: new Date().toISOString(),
+      media: null,
+    };
+  }
+
   return (
     <>
       <Cabecera
@@ -57,6 +93,7 @@ export default async function Chat({
         chat={chat}
         iniciales={[...mensajes].reverse()}
         enviar={enviar}
+        enviarMedio={enviarMedio}
       />
     </>
   );

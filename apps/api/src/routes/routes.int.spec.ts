@@ -241,6 +241,87 @@ run("grupos", () => {
   });
 });
 
+run("enviar de todo", () => {
+  const CHAT_MEDIOS = "51900888999@s.whatsapp.net";
+
+  /** Sube un fichero como lo haría el panel y devuelve su clave. */
+  async function subir(nombre: string, tipo: string, texto: string): Promise<string> {
+    const cuerpo = new FormData();
+    cuerpo.append("file", new File([texto], nombre, { type: tipo }));
+    cuerpo.append("lineId", LINE);
+    const res = await app.request("/v1/media", {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminKey}` },
+      body: cuerpo,
+    });
+    expect(res.status).toBe(201);
+    const { data } = await j<{ data: { storageKey: string } }>(res);
+    return data.storageKey;
+  }
+
+  const enviarCampo = (campo: string, storageKey: string, extra: Record<string, unknown> = {}) =>
+    call(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        to: CHAT_MEDIOS, [campo]: { storageKey },
+        clientMessageId: `medio-${campo}-${Date.now()}`,
+        ...extra,
+      }),
+    });
+
+  it("envía foto, vídeo, audio, documento y sticker", async () => {
+    const casos: { campo: string; nombre: string; tipo: string }[] = [
+      { campo: "image", nombre: "foto.jpg", tipo: "image/jpeg" },
+      { campo: "video", nombre: "clip.mp4", tipo: "video/mp4" },
+      { campo: "audio", nombre: "nota.ogg", tipo: "audio/ogg" },
+      { campo: "document", nombre: "factura.pdf", tipo: "application/pdf" },
+      { campo: "sticker", nombre: "pegatina.webp", tipo: "image/webp" },
+    ];
+
+    for (const caso of casos) {
+      const clave = await subir(caso.nombre, caso.tipo, `bytes de ${caso.campo}`);
+      const res = await enviarCampo(caso.campo, clave, caso.campo === "document" ? { fileName: caso.nombre } : {});
+      expect(res.status, `no se pudo enviar ${caso.campo}`).toBe(202);
+    }
+
+    // Y quedan guardados con su fichero, para poder repintarlos al recargar.
+    const limite = Date.now() + 8000;
+    for (;;) {
+      const filas = await dbh.sql`
+        SELECT kind FROM message
+        WHERE line_id = ${LINE} AND chat_id = ${CHAT_MEDIOS} AND from_me = true
+          AND media_key IS NOT NULL`;
+      if (filas.length >= casos.length) break;
+      if (Date.now() > limite) throw new Error(`solo ${filas.length} de ${casos.length} con fichero`);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  });
+
+  it("un sticker que no es WebP se rechaza ANTES de enviarlo", async () => {
+    /*
+     * WhatsApp acepta el envío y entrega un cuadrado roto: el fallo lo
+     * descubre el destinatario, no quien envía. Por eso es 422 aquí.
+     */
+    const clave = await subir("falso.png", "image/png", "no soy webp");
+    const res = await enviarCampo("sticker", clave);
+    expect(res.status).toBe(422);
+    expect((await j<{ detail: string }>(res)).detail).toContain("WebP");
+  });
+
+  it("un vídeo en el campo de la foto se rechaza", async () => {
+    const clave = await subir("clip.mp4", "video/mp4", "vídeo");
+    const res = await enviarCampo("image", clave);
+    expect(res.status).toBe(422);
+  });
+
+  it("el medio enviado se devuelve en el listado con su URL", async () => {
+    const { data } = await j<{ data: { fromMe: boolean; kind: string; media: { url: string } | null }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT_MEDIOS)}/messages?limit=20`));
+    const propios = data.filter((m) => m.fromMe && m.media);
+    expect(propios.length).toBeGreaterThanOrEqual(5);
+  });
+});
+
 run("nombres de conversaciones", () => {
   it("aprende el nombre con el PRIMER mensaje de una conversación nueva", async () => {
     /*
