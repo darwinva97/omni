@@ -2,6 +2,7 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { apiFetch, apiFetchAuth, type Chat, type Linea } from "@/lib/api";
 import { Cabecera, Estado, Vacio } from "@/lib/ui";
+import { Qr } from "@/componentes/qr";
 
 /**
  * Detalle de una línea: su estado, su QR si toca enlazar, y sus conversaciones.
@@ -60,10 +61,19 @@ export default async function DetalleLinea({ params }: { params: Promise<{ lineI
             <p className="mt-1 text-xs text-(--color-tenue)">
               WhatsApp → Dispositivos vinculados → Vincular un dispositivo.
             </p>
-            {/* El QR se pinta en el cliente: es una cadena, no una imagen. */}
-            <pre className="mt-3 overflow-x-auto rounded bg-(--color-ajeno) p-3 text-[10px] leading-tight break-all whitespace-pre-wrap">
-              {estado.qr}
-            </pre>
+            <Qr valor={estado.qr} />
+            <p className="mt-2 text-xs text-(--color-tenue)">
+              Caduca en unos segundos y se regenera solo: si no te da tiempo,
+              recarga la página.
+            </p>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-(--color-tenue)">
+                Ver la cadena en crudo
+              </summary>
+              <pre className="mt-2 overflow-x-auto rounded bg-(--color-ajeno) p-3 text-[10px] leading-tight break-all whitespace-pre-wrap">
+                {estado.qr}
+              </pre>
+            </details>
           </section>
         )}
 
