@@ -1,0 +1,26 @@
+[Unit]
+Description=Omni — panel web
+# El panel sin API no sirve para nada, pero tampoco hace daño: arranca igual y
+# enseña el error, que es mejor que no arrancar y no decir nada.
+After=omni-api.service
+Wants=omni-api.service
+
+# Un arranque en bucle no debe rebotar para siempre sin que se note.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+WorkingDirectory=/home/maka/projects/omni/apps/web
+Environment=OMNI_API_URL=http://127.0.0.1:4010
+# El panel habla con la API por dentro; lo público lo resuelve Caddy.
+Environment=OMNI_PUBLIC_URL=https://omni.bezenti.com
+Environment=PORT=4011
+ExecStart=/home/maka/projects/omni/apps/web/node_modules/.bin/next start -p 4011
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/maka/projects/omni/.data/web.log
+StandardError=append:/home/maka/projects/omni/.data/web.log
+
+[Install]
+WantedBy=default.target

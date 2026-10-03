@@ -1,0 +1,23 @@
+[Unit]
+Description=Omni — API y motor de canales
+# La base tiene que estar ARRIBA, no solo arrancada: `After` sola no basta
+# porque el proceso se cae al instante si no puede conectar.
+Requires=omni-pg.service
+After=omni-pg.service network-online.target
+
+# Un arranque en bucle no debe rebotar para siempre sin que se note.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+WorkingDirectory=/home/maka/projects/omni
+EnvironmentFile=/home/maka/projects/omni/.data/entorno
+ExecStart=/usr/bin/node apps/api/dist/main.js
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/maka/projects/omni/.data/api.log
+StandardError=append:/home/maka/projects/omni/.data/api.log
+
+[Install]
+WantedBy=default.target

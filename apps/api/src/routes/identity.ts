@@ -10,6 +10,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Container } from "../container.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
+import { anotarFallo, exigirIntentoPermitido, olvidarFallos, origenDe } from "../intentos.js";
 
 /**
  * Identidad de personas.
@@ -106,6 +107,16 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
     }),
     async (c) => {
       const { email, password } = c.req.valid("json");
+
+      /*
+       * El freno va ANTES de tocar la base y antes del hash. Si fuera después,
+       * un bloqueo costaría lo mismo que un intento legítimo y seguiría
+       * sirviendo para consumir CPU del servidor.
+       */
+      const origen = origenDe(c.req.raw.headers as unknown as { get(n: string): string | undefined });
+      const freno = { kv: container.kv };
+      await exigirIntentoPermitido(freno, email, origen);
+
       const filas = await db.select().from(userTable)
         .where(eq(userTable.email, email.toLowerCase())).limit(1);
       const user = filas[0];
@@ -115,17 +126,24 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
        * responder rápido revelaría que esa cuenta no está dada de alta, y eso
        * permite enumerar quién tiene acceso.
        */
+      // Un correo que no existe también cuenta como fallo: si no, se podría
+      // recorrer una lista de correos sin gastar intentos y averiguar cuáles
+      // están dados de alta por la diferencia.
       if (!user?.passwordHash) {
         await fakeVerify();
+        await anotarFallo(freno, email, origen);
         throw new OmniError("unauthenticated", "correo o contraseña incorrectos");
       }
       if (user.disabledAt) {
         await fakeVerify();
+        await anotarFallo(freno, email, origen);
         throw new OmniError("unauthenticated", "correo o contraseña incorrectos");
       }
       if (!(await verifyPassword(password, user.passwordHash))) {
+        await anotarFallo(freno, email, origen);
         throw new OmniError("unauthenticated", "correo o contraseña incorrectos");
       }
+      await olvidarFallos(freno, email);
 
       const pertenencia = await db.select().from(orgMemberTable)
         .where(eq(orgMemberTable.userId, user.id)).limit(1);
