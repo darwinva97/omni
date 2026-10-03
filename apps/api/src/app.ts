@@ -15,6 +15,30 @@ import type { Container } from "./container.js";
  * que no se parece a un teléfono, así que sin nombre resuelto la lista de
  * conversaciones no se puede leer.
  */
+/** Cuánto vale una URL de medio. Lo justo para abrir la conversación y verla. */
+const MEDIA_URL_TTL = 3600;
+
+/** Los tipos de mensaje que llevan fichero; para saber si un hueco es un fallo. */
+const MEDIA_KINDS_API = new Set(["image", "video", "audio", "document", "sticker"]);
+
+const MensajeSchema = z.object({
+  id: z.string(),
+  providerMessageId: z.string().nullable(),
+  fromMe: z.boolean(),
+  kind: z.string(),
+  body: z.string().nullable(),
+  state: z.string(),
+  timestamp: z.string(),
+  media: z.object({
+    url: z.string(),
+    mimeType: z.string(),
+    fileName: z.string().nullable(),
+    size: z.number().nullable(),
+  }).nullable(),
+  /** Por qué no hay fichero, cuando debería haberlo. */
+  mediaError: z.string().nullable(),
+}).openapi("Mensaje");
+
 const ChatSchema = z.object({
   address: z.string(),
   kind: z.string(),
@@ -435,10 +459,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         }),
       },
       responses: { 200: json(z.object({
-        data: z.array(z.object({
-          id: z.string(), providerMessageId: z.string().nullable(), fromMe: z.boolean(),
-          kind: z.string(), body: z.string().nullable(), state: z.string(), timestamp: z.string(),
-        })),
+        data: z.array(MensajeSchema),
         meta: z.object({ nextBefore: z.string().nullable() }),
       }), "ok"), ...errors },
     }),
@@ -456,11 +477,31 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .orderBy(desc(messageTable.timestamp), desc(messageTable.id))
         .limit(limit);
 
+      /*
+       * Las URLs se firman aquí, no se guardan: caducan, y una URL caducada
+       * guardada en la base es una imagen rota semanas después.
+       */
+      const data = await Promise.all(rows.map(async (r) => ({
+        id: r.id, providerMessageId: r.providerMessageId, fromMe: r.fromMe,
+        kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
+        media: r.mediaKey
+          ? {
+              url: await container.storage.signedUrl(r.mediaKey, MEDIA_URL_TTL),
+              mimeType: r.mediaMime ?? "application/octet-stream",
+              fileName: r.mediaFileName,
+              size: r.mediaSize,
+            }
+          : null,
+        /*
+         * Un medio que no se pudo traer se dice. Sin esto, una imagen que
+         * falló y una que todavía se está descargando se ven igual: un hueco,
+         * y nadie sabe si esperar o no.
+         */
+        mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
+      })));
+
       return c.json({
-        data: rows.map((r) => ({
-          id: r.id, providerMessageId: r.providerMessageId, fromMe: r.fromMe,
-          kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
-        })),
+        data,
         meta: { nextBefore: rows.length === limit ? rows.at(-1)!.timestamp.toISOString() : null },
       }, 200);
     },

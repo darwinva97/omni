@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useOptimistic, useRef, useState, startTransition } from "react";
-import type { Mensaje } from "@/lib/api";
+import type { Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
+import { Medio } from "@/componentes/medio";
 
 /**
  * La conversación, con los mensajes que llegan en vivo.
@@ -11,6 +12,9 @@ import { useEventos } from "@/lib/eventos";
  * página para ver si alguien ha contestado es exactamente lo que un panel de
  * mensajería no debe obligar a hacer.
  */
+/** Los tipos que se pintan como fichero y no como texto. */
+const MEDIOS = new Set(["image", "sticker", "video", "audio", "document"]);
+
 export function Conversacion({
   lineId,
   chat,
@@ -58,6 +62,20 @@ export function Conversacion({
       const estado = String(data["state"] ?? "");
       setMensajes((prev) =>
         prev.map((x) => (x.providerMessageId === key.id ? { ...x, state: estado } : x)));
+      return;
+    }
+
+    /*
+     * El fichero de un medio llega DESPUÉS del mensaje: la descarga va en una
+     * cola, así que el mensaje ya se pintó con un hueco. Este aviso lo rellena
+     * sin recargar.
+     */
+    if (evento === "message.updated") {
+      const medio = data["media"] as TipoMedio | undefined;
+      if (!medio) return;
+      setMensajes((prev) =>
+        prev.map((x) =>
+          x.providerMessageId === key.id ? { ...x, media: medio, mediaError: null } : x));
       return;
     }
 
@@ -118,7 +136,18 @@ export function Conversacion({
                 m.fromMe ? "bg-(--color-propio)" : "bg-(--color-ajeno)"
               }`}
             >
-              <p className="whitespace-pre-wrap break-words">{m.body ?? <em className="text-(--color-tenue)">{m.kind}</em>}</p>
+              {MEDIOS.has(m.kind) ? (
+                <div className="space-y-1">
+                  <Medio kind={m.kind} medio={m.media} error={m.mediaError} />
+                  {/* El pie, cuando lo trae: en WhatsApp una foto puede venir
+                      con texto y perderlo sería perder la mitad del mensaje. */}
+                  {m.body && <p className="whitespace-pre-wrap break-words">{m.body}</p>}
+                </div>
+              ) : (
+                <p className="whitespace-pre-wrap break-words">
+                  {m.body ?? <em className="text-(--color-tenue)">{m.kind}</em>}
+                </p>
+              )}
               <p className="mt-1 text-[10px] text-(--color-tenue)">
                 {new Date(m.timestamp).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}
                 {m.fromMe && ` · ${m.state}`}

@@ -113,6 +113,12 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
         // La clave maestra ya es un secreto de despliegue; reutilizarla evita
         // una variable más que alguien olvidaría rotar.
         signingSecret: config.OMNI_MASTER_KEY,
+        /*
+         * Las URLs firmadas salen ABSOLUTAS. La ruta las documenta como algo
+         * que se puede pegar en un `<img>` o pasar a un tercero, y una URL
+         * relativa solo vale dentro de nuestra propia página.
+         */
+        publicBase: `${config.PUBLIC_URL.replace(/\/+$/, "")}/v1/media`,
       });
 
   const runtime = new EngineRuntime({

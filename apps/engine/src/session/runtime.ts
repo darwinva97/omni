@@ -749,6 +749,28 @@ export class EngineRuntime {
         eq(messageTable.lineId, job.lineId),
         eq(messageTable.providerMessageId, job.providerMessageId),
       ));
+
+    /*
+     * Se avisa de que el fichero ya está.
+     *
+     * El mensaje llegó antes que su imagen —la descarga va en una cola—, así
+     * que quien esté mirando la conversación en vivo ya pintó un hueco. Sin
+     * este aviso, el hueco se queda hasta que alguien recarga.
+     */
+    const sobre = job.raw as { key?: { remoteJid?: string; fromMe?: boolean } } | null;
+    await this.publish("message.updated", job.lineId, {
+      key: {
+        id: job.providerMessageId,
+        remoteJid: sobre?.key?.remoteJid ?? null,
+        fromMe: sobre?.key?.fromMe ?? false,
+      },
+      media: {
+        url: await this.#deps.storage.signedUrl(guardado.key, 3600),
+        mimeType: medio.mimeType,
+        fileName: medio.fileName ?? null,
+        size: guardado.size,
+      },
+    });
   }
 
   /**

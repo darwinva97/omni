@@ -70,9 +70,16 @@ export interface Chat {
   lastMessageAt: string | null; unreadCount: number;
 }
 
+export interface Medio {
+  url: string; mimeType: string; fileName: string | null; size: number | null;
+}
+
 export interface Mensaje {
   id: string; providerMessageId: string | null; fromMe: boolean;
   kind: string; body: string | null; state: string; timestamp: string;
+  media?: Medio | null;
+  /** Por qué no hay fichero, cuando debería haberlo. */
+  mediaError?: string | null;
 }
 
 export interface Yo {

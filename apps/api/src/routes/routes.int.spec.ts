@@ -410,6 +410,37 @@ run("medios entrantes e identidad", () => {
     expect(fila["failure_reason"]).toBeNull();
   });
 
+  it("el listado devuelve el medio con una URL firmada que sirve de verdad", async () => {
+    /*
+     * El fichero estaba en disco y la API no lo exponía: el panel pintaba la
+     * palabra "image" en cursiva. Sin la URL aquí no hay nada que enseñar.
+     */
+    const chat = "51900222333@s.whatsapp.net";
+    const limite = Date.now() + 8000;
+    let medio: { url: string; mimeType: string } | null = null;
+    for (;;) {
+      const { data } = await j<{ data: { kind: string; media: { url: string; mimeType: string } | null }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=20`));
+      medio = data.find((m) => m.kind === "image")?.media ?? null;
+      if (medio) break;
+      if (Date.now() > limite) throw new Error("el listado no trae el medio");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    expect(medio.mimeType).toBe("image/jpeg");
+
+    // La URL lleva su propia credencial: la firma y la caducidad. Tiene que
+    // servir el fichero SIN cabecera de autorización, que es lo que permite
+    // pegarla en un `<img>`.
+    const ruta = medio.url.slice(medio.url.indexOf("/v1/media"));
+    const res = await app.request(ruta);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+
+    // Y con la firma tocada, no.
+    const falsa = await app.request(ruta.replace(/signature=./, "signature=0"));
+    expect(falsa.status).toBe(403);
+  });
+
   it("un mensaje de texto no encola ninguna descarga", async () => {
     // Encolar un trabajo por cada mensaje de texto llenaría la cola de nada.
     const antes = await dbh.sql`SELECT count(*)::int AS n FROM omni_job WHERE queue = 'inbound-media'`;
