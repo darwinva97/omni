@@ -3,6 +3,7 @@ export * from "./sandbox/driver.js";
 export { runChannelContract, type DriverUnderTest } from "./contract/suite.js";
 export { BaileysDriver, BAILEYS_DESCRIPTOR, ackToState, extractText, messageKind, type RegistroBaileys } from "./baileys/driver.js";
 export { BlobAuthStore } from "./baileys/auth-store.js";
+export { comprobarOpcionales, PARES_OPCIONALES, type FaltaOpcional } from "./baileys/opcionales.js";
 export { toBaileysContent } from "./baileys/content.js";
 export { createFakeSocket, type FakeSocketControl } from "./baileys/fake-socket.js";
 export { CloudDriver, CLOUD_DESCRIPTOR, cloudKind, cloudText, statusToState } from "./cloud/driver.js";

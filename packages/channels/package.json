@@ -19,10 +19,12 @@
     "@hapi/boom": "^10.0.1",
     "@omni/shared": "workspace:*",
     "@omni/storage": "workspace:*",
+    "audio-decode": "^2.2.3",
     "baileys": "7.0.0-rc14",
     "imapflow": "^2.1.2",
     "mailparser": "^3.9.31",
     "nodemailer": "^10.0.12",
+    "sharp": "^0.35.5",
     "whatsapp-web.js": "^1.34.7"
   },
   "devDependencies": {

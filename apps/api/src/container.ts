@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, CloudDriver, EmailDriver, SandboxDriver, TelegramDriver,
-  WhatsappWebDriver, type ChannelDriver,
+  WhatsappWebDriver, comprobarOpcionales, type ChannelDriver,
 } from "@omni/channels";
 import { Conversor } from "@omni/media";
 import { makeImap, makeSmtp } from "./email-transport.js";
@@ -158,6 +158,17 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    * aparece al arrancar y en el panel antes de enlazar cualquier número.
    */
   if (config.WHATSAPP_BAILEYS_ENABLED) {
+    /*
+     * Los pares opcionales de Baileys se comprueban AL ARRANCAR.
+     *
+     * Sin `audio-decode` las notas de voz se envían y no aparecen en ningún
+     * cliente, sin más rastro que una línea de registro en `debug`. Costó una
+     * tarde encontrarlo; que avise aquí cuesta un segundo.
+     */
+    const faltan = await comprobarOpcionales();
+    for (const f of faltan) {
+      console.warn(`falta "${f.paquete}": se romperá ${f.para} (${f.motivo})`);
+    }
     drivers.push(new BaileysDriver({ logger: registroBaileys(config.LOG_LEVEL) }));
   }
 

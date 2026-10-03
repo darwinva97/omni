@@ -71,8 +71,15 @@ export function Grabadora({
     setGrabando(false);
     try {
       const { file, segundos: dur } = await g.detener();
-      // Menos de un segundo es un toque sin querer, no una nota de voz.
-      if (dur < 1 || file.size === 0) return;
+      /*
+       * Un toque sin querer no es una nota de voz.
+       *
+       * Se mira el tamaño ADEMÁS del tiempo: el cronómetro cuenta desde que se
+       * pulsa, pero el micrófono tarda en arrancar, así que un toque de medio
+       * segundo puede marcar «1 s» y traer sesenta milisegundos de audio. Así
+       * se coló una nota de 0,06 s que se enviaba y no se oía.
+       */
+      if (dur < 1 || file.size < 2048) return;
       await onGrabado(file);
     } catch (e) {
       onError((e as Error).message);
