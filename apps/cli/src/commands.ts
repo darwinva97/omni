@@ -531,6 +531,24 @@ export const COMMANDS: readonly Command[] = [
       `/v1/lines/${req(a, 0, "linea")}/messages/${enc(req(a, 1, "mensaje"))}/resend`),
   },
   {
+    name: "grupos:sincronizar",
+    summary: "Traer los nombres de todos los grupos de una línea",
+    operation: "POST /v1/lines/{lineId}/groups/sync",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/groups/sync`),
+  },
+  {
+    name: "chat",
+    summary: "Una conversación con su nombre ya resuelto",
+    operation: "GET /v1/lines/{lineId}/chats/{chatId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}`),
+  },
+  {
     name: "identidad",
     summary: "El teléfono detrás de un LID, o el LID de un teléfono",
     operation: "GET /v1/lines/{lineId}/identity/{address}",

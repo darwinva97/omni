@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { apiFetch, apiFetchAuth, type Chat, type Linea } from "@/lib/api";
-import { Cabecera, Estado, Vacio } from "@/lib/ui";
+import { Cabecera, Estado } from "@/lib/ui";
 import { Qr } from "@/componentes/qr";
+import { ListaChats } from "./lista-chats";
 
 /**
  * Detalle de una línea: su estado, su QR si toca enlazar, y sus conversaciones.
@@ -79,33 +80,7 @@ export default async function DetalleLinea({ params }: { params: Promise<{ lineI
 
         <section>
           <h2 className="mb-2 text-sm font-medium">Conversaciones</h2>
-          {chats.length === 0 ? (
-            <Vacio>Sin conversaciones todavía.</Vacio>
-          ) : (
-            <ul className="divide-y divide-(--color-borde) overflow-hidden rounded-lg border border-(--color-borde) bg-(--color-panel)">
-              {chats.map((c) => (
-                <li key={c.address}>
-                  <Link
-                    href={`/lineas/${lineId}/chats/${encodeURIComponent(c.address)}`}
-                    className="flex items-center gap-3 px-4 py-3 hover:bg-(--color-ajeno)"
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm">{c.title ?? c.address}</span>
-                      <span className="block text-xs text-(--color-tenue)">
-                        {c.kind === "group" ? "grupo" : "contacto"}
-                        {c.lastMessageAt && ` · ${new Date(c.lastMessageAt).toLocaleString("es")}`}
-                      </span>
-                    </span>
-                    {c.unreadCount > 0 && (
-                      <span className="rounded-full bg-(--color-acento) px-2 py-0.5 text-xs text-white">
-                        {c.unreadCount}
-                      </span>
-                    )}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ListaChats lineId={lineId} iniciales={chats} />
         </section>
       </main>
     </>

@@ -45,6 +45,7 @@ export const ROUTES = {
   "webhook.manage": { id: "webhook.manage", permission: "webhook.manage", scope: "line" },
 
   // --- chats y mensajes
+  "chat.get": { id: "chat.get", permission: "message.read", scope: "chat", chatSafe: true },
   "chat.list": { id: "chat.list", permission: "message.read", scope: "line", chatSafe: true },
   "chat.markRead": { id: "chat.markRead", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.archive": { id: "chat.archive", permission: "chat.manage", scope: "chat", chatSafe: true },

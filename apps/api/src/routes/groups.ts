@@ -102,6 +102,29 @@ export function registerGroupRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
 
   app.openapi(
     createRoute({
+      method: "post", path: "/v1/lines/{lineId}/groups/sync", tags: ["grupos"],
+      summary: "Traer los nombres de todos los grupos",
+      description:
+        "Se hace sola al conectar. Está aquí para los grupos que cambiaron de " +
+        "nombre mientras la línea estaba desconectada, sin tener que reconectarla.",
+      request: { params: z.object({ lineId: z.string() }) },
+      responses: {
+        200: json(z.object({ data: z.object({ synced: z.number() }) }), "sincronizados"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId } = c.req.valid("param");
+      await authorize(c.get("principal"), routeOf("group.read"), { lineId });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "group.read");
+      const synced = await container.runtime.sincronizarGrupos(lineId);
+      return c.json({ data: { synced } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "post", path: "/v1/lines/{lineId}/groups", tags: ["grupos"],
       summary: "Crear un grupo",
       request: {

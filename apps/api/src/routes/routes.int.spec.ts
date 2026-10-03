@@ -241,6 +241,103 @@ run("grupos", () => {
   });
 });
 
+run("nombres de conversaciones", () => {
+  it("aprende el nombre con el PRIMER mensaje de una conversación nueva", async () => {
+    /*
+     * El título vive en la fila de la conversación, que la crea la propia
+     * ingesta. Aprender el nombre antes de crearla perdía justo el mensaje que
+     * lo trae, y el nombre no aparecía hasta el segundo.
+     */
+    const chat = "51900777888@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST",
+      body: JSON.stringify({ from: "51900777888", text: "hola", pushName: "Grace Hopper" }),
+    });
+
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const { data } = await j<{ data: { displayName: string; address: string } }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+      if (data.displayName === "Grace Hopper") break;
+      if (Date.now() > limite) throw new Error(`no aprendió el nombre: ${data.displayName}`);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  });
+
+  it("de un LID sin nombre enseña el TELÉFONO, no el número opaco", async () => {
+    /*
+     * Un LID son quince cifras que no se parecen a un teléfono. Enseñarlo solo
+     * deja la conversación sin identificar; el teléfono, cuando lo sabemos,
+     * sí se reconoce.
+     */
+    await container.runtime.publish("message.received", LINE, {
+      key: {
+        id: "SBX-nombre-lid", remoteJid: "555000777@lid",
+        remoteJidAlt: "51900666777@s.whatsapp.net", fromMe: false,
+      },
+      kind: "text", text: "desde un lid", timestamp: Date.now(),
+    });
+
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const res = await call(`/v1/lines/${LINE}/chats/${enc("555000777@lid")}`);
+      if (res.status === 200) {
+        const { data } = await j<{ data: { displayName: string; phone: string | null } }>(res);
+        if (data.phone) {
+          expect(data.displayName).toBe("+51900666777");
+          break;
+        }
+      }
+      if (Date.now() > limite) throw new Error("no resolvió el teléfono del LID");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  });
+
+  it("los estados se llaman Estados, no como el último que publicó", async () => {
+    // En `status@broadcast` el remitente es quien publicó: usarlo como título
+    // enseñaba el nombre de un contacto cualquiera donde debe decir "Estados".
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "SBX-estado-1", remoteJid: "status@broadcast", fromMe: false },
+      pushName: "Quien Publicó",
+      kind: "text", text: "un estado", timestamp: Date.now(),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+
+    const res = await call(`/v1/lines/${LINE}/chats/${enc("status@broadcast")}`);
+    if (res.status === 200) {
+      const { data } = await j<{ data: { displayName: string } }>(res);
+      expect(data.displayName).toBe("Estados");
+    }
+  });
+
+  it("en un grupo, el nombre de quien habla NO se pone como título del grupo", async () => {
+    // Poner el nombre del último que habló como título del grupo es el error
+    // obvio y deja el grupo renombrándose solo con cada mensaje.
+    const grupo = "120999@g.us";
+    await container.runtime.publish("message.received", LINE, {
+      key: {
+        id: "SBX-grupo-1", remoteJid: grupo,
+        participant: "51900555444@s.whatsapp.net", fromMe: false,
+      },
+      pushName: "Alan Turing",
+      kind: "text", text: "hola grupo", timestamp: Date.now(),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(grupo)}`);
+    if (res.status === 200) {
+      const { data } = await j<{ data: { displayName: string } }>(res);
+      expect(data.displayName).not.toBe("Alan Turing");
+    }
+
+    // Pero sí se guarda como nombre del PARTICIPANTE.
+    const filas = await dbh.sql`
+      SELECT push_name FROM contact
+      WHERE line_id = ${LINE} AND address = '51900555444@s.whatsapp.net'`;
+    expect(filas[0]?.["push_name"]).toBe("Alan Turing");
+  });
+});
+
 run("reintento de envíos", () => {
   it("un mensaje entregado NO se puede reintentar", async () => {
     // Reintentar uno entregado sería mandarlo dos veces al destinatario.

@@ -1,6 +1,13 @@
 import Link from "next/link";
 
-export function Cabecera({ titulo, volver }: { titulo: string; volver?: { href: string; texto: string } }) {
+export function Cabecera({
+  titulo, detalle, volver,
+}: {
+  titulo: string;
+  /** La dirección y el teléfono: hacen falta, pero no identifican a nadie. */
+  detalle?: string;
+  volver?: { href: string; texto: string };
+}) {
   return (
     <header className="border-b border-(--color-borde) bg-(--color-panel)">
       <div className="mx-auto flex max-w-5xl items-baseline gap-4 px-5 py-4">
@@ -10,7 +17,12 @@ export function Cabecera({ titulo, volver }: { titulo: string; volver?: { href: 
             ← {volver.texto}
           </Link>
         )}
-        <h1 className="ml-auto text-sm text-(--color-tenue)">{titulo}</h1>
+        <div className="ml-auto min-w-0 text-right">
+          <h1 className="truncate text-sm">{titulo}</h1>
+          {detalle && (
+            <p className="truncate text-[11px] text-(--color-tenue)">{detalle}</p>
+          )}
+        </div>
       </div>
     </header>
   );

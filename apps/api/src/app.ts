@@ -1,11 +1,63 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, lineTable, messageTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, lt } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
+
+/**
+ * Una conversación tal y como se enseña.
+ *
+ * `displayName` es lo que se pinta y `address` el detalle. Con el
+ * direccionamiento por LID la dirección es un número opaco de quince cifras
+ * que no se parece a un teléfono, así que sin nombre resuelto la lista de
+ * conversaciones no se puede leer.
+ */
+const ChatSchema = z.object({
+  address: z.string(),
+  kind: z.string(),
+  displayName: z.string(),
+  title: z.string().nullable(),
+  /** El teléfono detrás de un LID, cuando lo sabemos. */
+  phone: z.string().nullable(),
+  lastMessageAt: z.string().nullable(),
+  unreadCount: z.number(),
+}).openapi("Chat");
+
+interface FilaDeChat {
+  address: string; kind: string; title: string | null;
+  lastMessageAt: Date | null; unreadCount: number;
+  pushName: string | null; savedName: string | null; phone: string | null;
+}
+
+/**
+ * Qué nombre gana, de mejor a peor.
+ *
+ * El nombre guardado en la agenda manda sobre el que el contacto se ha puesto
+ * a sí mismo; el asunto de un grupo sobre cualquier otra cosa; y si no hay
+ * nada, el teléfono antes que el LID, porque un teléfono sí se reconoce.
+ */
+function presentarChat(r: FilaDeChat) {
+  const telefono = r.phone ? r.phone.split("@")[0]! : null;
+  const displayName =
+    r.title?.trim() ||
+    r.savedName?.trim() ||
+    r.pushName?.trim() ||
+    (telefono ? `+${telefono}` : null) ||
+    (r.kind === "group" ? "Grupo sin nombre" : r.address.split("@")[0]!);
+
+  return {
+    address: r.address,
+    kind: r.kind,
+    displayName,
+    title: r.title,
+    phone: r.phone,
+    lastMessageAt: r.lastMessageAt?.toISOString() ?? null,
+    unreadCount: r.unreadCount,
+  };
+}
 import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
 import { getCookie } from "hono/cookie";
 import { problem } from "./http.js";
@@ -290,26 +342,84 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       method: "get", path: "/v1/lines/{lineId}/chats", tags: ["mensajes"],
       summary: "Listar conversaciones",
       request: { params: z.object({ lineId: z.string() }), query: z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }) },
-      responses: { 200: json(z.object({ data: z.array(z.object({
-        address: z.string(), kind: z.string(), title: z.string().nullable(),
-        lastMessageAt: z.string().nullable(), unreadCount: z.number(),
-      })) }), "ok"), ...errors },
+      responses: { 200: json(z.object({ data: z.array(ChatSchema) }), "ok"), ...errors },
     }),
     async (c) => {
       const principal = c.get("principal");
       const { lineId } = c.req.valid("param");
       const { limit } = c.req.valid("query");
       await authorize(principal, routeOf("chat.list"), { lineId });
-      const rows = await container.dbh.db.select().from(chatTable)
+
+      /*
+       * Se trae el nombre del contacto y el teléfono del LID en la MISMA
+       * consulta. Resolverlos luego, uno por conversación, son cincuenta
+       * viajes a la base para pintar una lista de cincuenta filas.
+       */
+      const rows = await container.dbh.db
+        .select({
+          address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
+          lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
+          pushName: contactTable.pushName, savedName: contactTable.savedName,
+          phone: identityMapTable.phone,
+        })
+        .from(chatTable)
+        .leftJoin(contactTable, and(
+          eq(contactTable.lineId, chatTable.lineId),
+          eq(contactTable.address, chatTable.address),
+        ))
+        .leftJoin(identityMapTable, and(
+          eq(identityMapTable.lineId, chatTable.lineId),
+          eq(identityMapTable.lid, chatTable.address),
+        ))
         .where(eq(chatTable.lineId, lineId))
         .orderBy(desc(chatTable.lastMessageAt)).limit(limit);
+
       const visible = principal.kind === "api-key" && principal.allowedChats.length > 0
         ? rows.filter((r) => principal.allowedChats.includes(r.address))
         : rows;
-      return c.json({ data: visible.map((r) => ({
-        address: r.address, kind: r.kind, title: r.title,
-        lastMessageAt: r.lastMessageAt?.toISOString() ?? null, unreadCount: r.unreadCount,
-      })) }, 200);
+      return c.json({ data: visible.map(presentarChat) }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/chats/{chatId}", tags: ["mensajes"],
+      summary: "Una conversación, con su nombre ya resuelto",
+      description:
+        "`displayName` es lo que hay que enseñar y `address` el detalle. Con el " +
+        "direccionamiento por LID de WhatsApp, la dirección es un número opaco de " +
+        "quince cifras que no se parece a un teléfono: enseñarla sola deja la " +
+        "conversación sin identificar.",
+      request: { params: z.object({ lineId: z.string(), chatId: z.string() }) },
+      responses: { 200: json(z.object({ data: ChatSchema }), "ok"), ...errors },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const { lineId, chatId } = c.req.valid("param");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(principal, routeOf("chat.get"), { lineId, chat });
+
+      const rows = await container.dbh.db
+        .select({
+          address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
+          lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
+          pushName: contactTable.pushName, savedName: contactTable.savedName,
+          phone: identityMapTable.phone,
+        })
+        .from(chatTable)
+        .leftJoin(contactTable, and(
+          eq(contactTable.lineId, chatTable.lineId),
+          eq(contactTable.address, chatTable.address),
+        ))
+        .leftJoin(identityMapTable, and(
+          eq(identityMapTable.lineId, chatTable.lineId),
+          eq(identityMapTable.lid, chatTable.address),
+        ))
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)))
+        .limit(1);
+
+      if (!rows[0]) throw new OmniError("not_found", "esa conversación no existe en esta línea");
+      return c.json({ data: presentarChat(rows[0]) }, 200);
     },
   );
 

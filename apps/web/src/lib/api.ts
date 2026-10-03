@@ -61,7 +61,12 @@ export interface Linea {
 }
 
 export interface Chat {
-  address: string; kind: string; title: string | null;
+  address: string; kind: string;
+  /** Lo que hay que ENSEÑAR. La dirección es el detalle. */
+  displayName: string;
+  title: string | null;
+  /** El teléfono detrás de un LID, cuando se sabe. */
+  phone: string | null;
   lastMessageAt: string | null; unreadCount: number;
 }
 

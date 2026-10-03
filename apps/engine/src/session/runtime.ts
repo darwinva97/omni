@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   OmniError, parseAddress, tryParseAddress, resolveContent, advanceState,
   type Address, type ChannelKind, type EventEnvelope, type LineId, type MessageKind,
@@ -9,7 +9,7 @@ import { assertCapability } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, identityMapTable, lineTable, messageTable } from "@omni/db";
+import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { SecretBox } from "../crypto/secret-box.js";
@@ -565,10 +565,47 @@ export class EngineRuntime {
       // se puede atar a nadie, porque el servidor solo lo dice esta vez.
       await this.#aprenderIdentidad(envelope);
       if (envelope.event === "message.received") await this.#persistInbound(envelope);
+      /*
+       * Los nombres se aprenden DESPUÉS de persistir.
+       *
+       * El título vive en la fila de la conversación, y esa fila la crea
+       * `#persistInbound`: hacerlo antes dejaba el primer mensaje de cada
+       * conversación nueva sin nombre, que es justo el que lo trae.
+       */
+      await this.#aprenderNombre(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
       if (envelope.event === "session.connected" || envelope.event === "session.status") {
-        const data = envelope.data as { state?: string };
+        const data = envelope.data as { state?: string; self?: string };
         if (data.state) await this.#setStatus(envelope.lineId, data.state);
+        /*
+         * La dirección propia venía en el evento y se tiraba. Sin ella la
+         * línea no sabe qué número es, y el panel no puede decir con qué
+         * cuenta está hablando.
+         */
+        /*
+         * Al conectar se traen los nombres de los grupos.
+         *
+         * Los que ya existían antes del enlace no generan ningún anuncio, así
+         * que sin esto se quedan como "Grupo sin nombre" para siempre: solo
+         * aprenderían su nombre si alguien escribiera en ellos, y un grupo
+         * silencioso no se identifica nunca.
+         *
+         * Va en segundo plano a propósito. Nada de lo que viene detrás depende
+         * de ello, y una cuenta con cien grupos tardaría lo suyo en responder;
+         * bloquear la ingesta por los nombres retrasaría los mensajes.
+         */
+        if (envelope.event === "session.connected") {
+          void this.sincronizarGrupos(envelope.lineId).catch(() => {});
+        }
+        if (data.self) {
+          const propia = tryParseAddress(data.self);
+          if (propia) {
+            await this.#deps.db
+              .update(lineTable)
+              .set({ address: propia.value })
+              .where(and(eq(lineTable.id, envelope.lineId), isNull(lineTable.address)));
+          }
+        }
       }
       /*
        * Se publica por ORGANIZACIÓN, no por línea.
@@ -637,6 +674,46 @@ export class EngineRuntime {
       });
   }
 
+  /**
+   * Trae los nombres de todos los grupos de una línea y los guarda.
+   *
+   * Es una sola llamada al transporte, no una por grupo: pedirlos de uno en
+   * uno en una cuenta con muchos grupos es lo que hace que WhatsApp empiece a
+   * limitar las peticiones.
+   */
+  async sincronizarGrupos(lineId: string): Promise<number> {
+    const line = await this.#line(lineId);
+    const driver = this.driverFor(line.channelKind);
+    if (!driver.listGroups) return 0;
+
+    const grupos = await driver.listGroups(lineId as LineId);
+    let guardados = 0;
+    for (const g of grupos) {
+      if (!g.subject) continue;
+      await this.#deps.db
+        .insert(groupInfoTable)
+        .values({
+          lineId, address: g.address.value, subject: g.subject,
+          description: g.description ?? null,
+          owner: g.owner?.value ?? null,
+          size: g.size ?? g.participants.length,
+          ...(g.createdAt ? { createdAt: new Date(g.createdAt) } : {}),
+        })
+        .onConflictDoUpdate({
+          target: [groupInfoTable.lineId, groupInfoTable.address],
+          set: {
+            subject: g.subject,
+            description: g.description ?? null,
+            size: g.size ?? g.participants.length,
+            syncedAt: new Date(),
+          },
+        });
+      await this.#ponerTitulo(lineId, g.address.value, g.subject);
+      guardados++;
+    }
+    return guardados;
+  }
+
   /** Trae el fichero de un mensaje entrante y lo guarda en el almacén. */
   async #descargarMedio(job: InboundMediaJob): Promise<void> {
     const line = await this.#line(job.lineId);
@@ -672,6 +749,118 @@ export class EngineRuntime {
         eq(messageTable.lineId, job.lineId),
         eq(messageTable.providerMessageId, job.providerMessageId),
       ));
+  }
+
+  /**
+   * Aprende cómo se llama la gente y los grupos.
+   *
+   * Sin esto una conversación se identifica por su dirección, y con el
+   * direccionamiento por LID de WhatsApp 7 eso es un número opaco de quince
+   * cifras que no se parece ni a un teléfono: la lista de conversaciones queda
+   * ilegible y no hay forma de saber a quién se está escribiendo.
+   *
+   * Hay tres fuentes y ninguna sola basta:
+   *
+   * - `pushName` de un mensaje entrante es el nombre de QUIEN ESCRIBE. En un
+   *   chat individual es también el de la conversación; en un grupo no, y
+   *   confundirlos pondría el nombre del último que habló como título del
+   *   grupo.
+   * - `group.updated` trae el asunto del grupo cuando WhatsApp lo anuncia.
+   * - Para un grupo que ya existía antes de que nos enlazáramos no llega
+   *   ningún anuncio, así que la primera vez se pregunta al transporte.
+   */
+  async #aprenderNombre(envelope: EventEnvelope): Promise<void> {
+    const d = envelope.data as {
+      key?: { remoteJid?: string; participant?: string; fromMe?: boolean };
+      pushName?: string | null;
+      group?: string; subject?: string;
+    };
+
+    try {
+      if (envelope.event === "group.updated" && d.group && d.subject) {
+        await this.#ponerTitulo(envelope.lineId, d.group, d.subject);
+        return;
+      }
+      if (envelope.event !== "message.received") return;
+
+      const bruto = d.key?.remoteJid;
+      if (!bruto) return;
+      const chat = tryParseAddress(bruto);
+      if (!chat) return;
+
+      const nombre = d.pushName?.trim();
+
+      if (chat.kind === "group") {
+        // El nombre va al participante, no al grupo.
+        const participante = d.key?.participant ? tryParseAddress(d.key.participant) : null;
+        if (participante && nombre) await this.#ponerNombreContacto(envelope.lineId, participante, nombre);
+        await this.#tituloDeGrupoSiFalta(envelope.lineId, chat);
+        return;
+      }
+
+      /*
+       * El `pushName` solo titula una conversación de UNA persona.
+       *
+       * En `status@broadcast` —los estados— el remitente es quien publicó el
+       * último, y usarlo como título hacía que la lista enseñara el nombre de
+       * un contacto cualquiera donde debería decir "Estados". Es el mismo
+       * error que en los grupos, por otra puerta.
+       */
+      if (chat.kind === "broadcast") {
+        await this.#ponerTitulo(envelope.lineId, chat.value, "Estados");
+        return;
+      }
+      if (chat.kind !== "pn" && chat.kind !== "lid") return;
+      if (!nombre) return;
+      await this.#ponerNombreContacto(envelope.lineId, chat, nombre);
+      await this.#ponerTitulo(envelope.lineId, chat.value, nombre);
+    } catch {
+      // Saber el nombre es una mejora, no un requisito: que falle no puede
+      // costar el mensaje.
+    }
+  }
+
+  async #ponerNombreContacto(lineId: string, address: Address, pushName: string): Promise<void> {
+    await this.#deps.db
+      .insert(contactTable)
+      .values({ id: `ct-${lineId}-${address.value}`, lineId, address: address.value, pushName })
+      .onConflictDoUpdate({
+        target: [contactTable.lineId, contactTable.address],
+        set: { pushName, updatedAt: new Date() },
+      });
+  }
+
+  /**
+   * Pone el título de una conversación.
+   *
+   * Solo si cambia: una escritura por mensaje entrante convertiría cada chat
+   * activo en una fila reescrita cien veces por minuto sin que nada cambie.
+   */
+  async #ponerTitulo(lineId: string, address: string, titulo: string): Promise<void> {
+    await this.#deps.db
+      .update(chatTable)
+      .set({ title: titulo })
+      .where(and(
+        eq(chatTable.lineId, lineId),
+        eq(chatTable.address, address),
+        ne(sql`coalesce(${chatTable.title}, '')`, titulo),
+      ));
+  }
+
+  /** Pregunta el asunto de un grupo la PRIMERA vez que hace falta, no en cada mensaje. */
+  async #tituloDeGrupoSiFalta(lineId: string, group: Address): Promise<void> {
+    const filas = await this.#deps.db
+      .select({ title: chatTable.title })
+      .from(chatTable)
+      .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, group.value)))
+      .limit(1);
+    if (filas.length === 0 || filas[0]!.title) return;
+
+    const line = await this.#line(lineId);
+    const driver = this.driverFor(line.channelKind);
+    if (!driver.groupMetadata) return;
+    const meta = await driver.groupMetadata(lineId as LineId, group);
+    if (meta.subject) await this.#ponerTitulo(lineId, group.value, meta.subject);
   }
 
   /** El teléfono detrás de un LID, o `null` si no lo sabemos. `null` no es "no tiene". */

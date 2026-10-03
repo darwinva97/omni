@@ -2,6 +2,7 @@
 
 import { useEffect, useOptimistic, useRef, useState, startTransition } from "react";
 import type { Mensaje } from "@/lib/api";
+import { useEventos } from "@/lib/eventos";
 
 /**
  * La conversación, con los mensajes que llegan en vivo.
@@ -19,10 +20,11 @@ export function Conversacion({
   lineId: string;
   chat: string;
   iniciales: Mensaje[];
-  enviar: (formData: FormData) => Promise<void>;
+  enviar: (texto: string) => Promise<Mensaje | null>;
 }) {
   const [mensajes, setMensajes] = useState<Mensaje[]>(iniciales);
-  const [conectado, setConectado] = useState(false);
+  // Un solo socket por página, compartido con la lista de conversaciones.
+  const { conectado, suscribir } = useEventos(lineId);
   const fondo = useRef<HTMLDivElement>(null);
   const formulario = useRef<HTMLFormElement>(null);
 
@@ -40,88 +42,59 @@ export function Conversacion({
     ],
   );
 
-  useEffect(() => {
-    let ws: WebSocket | null = null;
-    let cerrado = false;
-    let reintento: ReturnType<typeof setTimeout> | undefined;
-    let espera = 1000;
+  useEffect(() => suscribir((evento, data) => {
+    if (!evento.startsWith("message.")) return;
 
-    const abrir = async (): Promise<void> => {
-      try {
-        // El billete se pide por el intermediario, con la cookie de sesión;
-        // el socket se abre DIRECTAMENTE contra la API, porque un manejador de
-        // ruta HTTP no puede reenviar una conexión WebSocket. La credencial en
-        // esa URL es el billete: dura un minuto y sirve una vez.
-        const r = await fetch("/api/omni/v1/realtime/ticket", { method: "POST" });
-        if (!r.ok) throw new Error("sin billete");
-        const { data } = (await r.json()) as { data: { url: string } };
+    const key = (data["key"] ?? {}) as { id?: string; remoteJid?: string; fromMe?: boolean };
 
-        ws = new WebSocket(data.url);
+    /*
+     * Los acuses se aplican por IDENTIFICADOR, sin mirar la conversación.
+     *
+     * WhatsApp puede reportar el chat de un acuse con otra forma de la misma
+     * dirección —teléfono donde nosotros tenemos un LID—, y filtrar por chat
+     * hacía que el estado de un mensaje propio no se actualizara nunca.
+     */
+    if (evento === "message.receipt") {
+      const estado = String(data["state"] ?? "");
+      setMensajes((prev) =>
+        prev.map((x) => (x.providerMessageId === key.id ? { ...x, state: estado } : x)));
+      return;
+    }
 
-        ws.onopen = () => {
-          espera = 1000;
-          setConectado(true);
-          ws?.send(JSON.stringify({ type: "subscribe", events: ["message.*"], lines: [lineId] }));
-        };
+    // `upsert` duplica lo que ya llegó por `received`/`sent`: se ignora.
+    if (evento === "message.upsert") return;
+    if (key.remoteJid !== chat) return;
 
-        ws.onmessage = (e) => {
-          const m = JSON.parse(e.data as string) as {
-            type: string; event?: string; data?: Record<string, unknown>;
-          };
-          if (m.type !== "event" || !m.event?.startsWith("message.")) return;
+    setMensajes((prev) => {
+      if (key.id && prev.some((x) => x.providerMessageId === key.id)) return prev;
 
-          const key = (m.data?.["key"] ?? {}) as { id?: string; remoteJid?: string; fromMe?: boolean };
-          if (key.remoteJid !== chat) return;
-
-          if (m.event === "message.receipt") {
-            const estado = String(m.data?.["state"] ?? "");
-            setMensajes((prev) =>
-              prev.map((x) => (x.providerMessageId === key.id ? { ...x, state: estado } : x)),
-            );
-            return;
-          }
-          // `upsert` duplica lo que ya llegó por `received`/`sent`: se ignora.
-          if (m.event === "message.upsert") return;
-
-          setMensajes((prev) => {
-            if (prev.some((x) => x.providerMessageId === key.id)) return prev;
-            return [...prev, {
-              id: key.id ?? crypto.randomUUID(),
-              providerMessageId: key.id ?? null,
-              fromMe: key.fromMe ?? false,
-              kind: String(m.data?.["kind"] ?? "text"),
-              body: (m.data?.["text"] as string | null) ?? null,
-              state: key.fromMe ? "sent" : "delivered",
-              timestamp: new Date(Number(m.data?.["timestamp"] ?? Date.now())).toISOString(),
-            }];
-          });
-        };
-
-        const reconectar = (): void => {
-          setConectado(false);
-          if (cerrado) return;
-          // Espera creciente: reconectar en bucle cerrado castiga al servidor
-          // justo cuando ya está teniendo problemas.
-          reintento = setTimeout(() => void abrir(), espera);
-          espera = Math.min(espera * 2, 30000);
-        };
-        ws.onclose = reconectar;
-        ws.onerror = () => ws?.close();
-      } catch {
-        if (!cerrado) {
-          reintento = setTimeout(() => void abrir(), espera);
-          espera = Math.min(espera * 2, 30000);
+      /*
+       * Un mensaje PROPIO que vuelve por el socket es el eco del que ya
+       * fijamos al enviarlo: no se añade otra vez, se le pone el
+       * identificador del proveedor, que es lo que falta para que los acuses
+       * lo encuentren.
+       */
+      if (key.fromMe) {
+        const texto = (data["text"] as string | null) ?? null;
+        const i = prev.findLastIndex((x) => x.fromMe && !x.providerMessageId && x.body === texto);
+        if (i >= 0) {
+          const copia = [...prev];
+          copia[i] = { ...copia[i]!, providerMessageId: key.id ?? null, state: "sent" };
+          return copia;
         }
       }
-    };
 
-    void abrir();
-    return () => {
-      cerrado = true;
-      if (reintento) clearTimeout(reintento);
-      ws?.close();
-    };
-  }, [lineId, chat]);
+      return [...prev, {
+        id: key.id ?? crypto.randomUUID(),
+        providerMessageId: key.id ?? null,
+        fromMe: key.fromMe ?? false,
+        kind: String(data["kind"] ?? "text"),
+        body: (data["text"] as string | null) ?? null,
+        state: key.fromMe ? "sent" : "delivered",
+        timestamp: new Date(Number(data["timestamp"] ?? Date.now())).toISOString(),
+      }];
+    });
+  }), [chat, suscribir]);
 
   useEffect(() => {
     fondo.current?.scrollIntoView({ behavior: "smooth" });
@@ -163,7 +136,20 @@ export function Conversacion({
           if (!texto) return;
           formulario.current?.reset();
           startTransition(() => añadirPendiente(texto));
-          await enviar(formData);
+
+          /*
+           * Lo enviado se FIJA en el estado real con lo que devuelve el
+           * servidor. El estado optimista se descarta en cuanto la acción
+           * termina, así que sin esto el mensaje desaparecía de la pantalla y
+           * parecía no haberse enviado. Esperar al eco del WebSocket tampoco
+           * vale: puede tardar, y puede no llegar nunca si el transporte
+           * reporta la dirección de otra forma.
+           */
+          const enviado = await enviar(texto);
+          if (enviado) {
+            setMensajes((prev) =>
+              prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
+          }
         }}
         className="flex gap-2 border-t border-(--color-borde) py-3"
       >
