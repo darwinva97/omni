@@ -51,3 +51,18 @@ Lo que protege la puerta:
 La contraseña del panel está en `.data/panel-acceso.txt` (permisos 600, fuera
 del control de versiones). La que traía el repositorio estaba en texto plano en
 los scripts de siembra y se rotó antes de publicar nada.
+
+## ffmpeg
+
+Las notas de voz y los vídeos grabados en el navegador NO salen en el formato
+que WhatsApp reproduce: Chrome graba audio en WebM/Opus y vídeo en VP8, y
+WhatsApp quiere OGG/Opus y H.264. La conversión la hace `ffmpeg`, instalado en
+`~/.local/bin/ffmpeg` (compilación estática, sin root) y apuntado por
+`FFMPEG_PATH` en `.data/entorno`.
+
+El audio se cambia de envoltorio **sin recodificar** cuando ya viene en Opus:
+es instantáneo y no pierde calidad. El vídeo sí hay que recodificarlo.
+
+Si `ffmpeg` no está, la API lo avisa AL ARRANCAR (en `.data/api.log`) y los
+envíos que necesiten conversión se rechazan con el motivo, en vez de mandar
+algo que el destinatario no puede abrir.

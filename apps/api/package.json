@@ -29,7 +29,8 @@
     "imapflow": "^2.1.2",
     "nodemailer": "^10.0.12",
     "ws": "^8.21.3",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "@omni/media": "workspace:*"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

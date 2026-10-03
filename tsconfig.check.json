@@ -21,6 +21,9 @@
       "@omni/storage": [
         "./packages/storage/src/index.ts"
       ],
+      "@omni/media": [
+        "./packages/media/src/index.ts"
+      ],
       "@omni/engine": [
         "./apps/engine/src/index.ts"
       ],

@@ -12,6 +12,7 @@ import type { Database } from "@omni/db";
 import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
+import { Conversor, necesitaConversion } from "@omni/media";
 import { SecretBox } from "../crypto/secret-box.js";
 import { SendPacer } from "../outbound/pacer.js";
 
@@ -95,6 +96,8 @@ export interface RuntimeDeps {
   readonly bus: Bus;
   readonly box: SecretBox;
   readonly dispatcher: WebhookDispatcher;
+  /** Convierte lo que graba un navegador a lo que WhatsApp reproduce. */
+  readonly conversor?: Conversor;
   readonly storage: Storage;
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -342,7 +345,22 @@ export class EngineRuntime {
     const media = await resolveMedia(input, { orgId: line.orgId, lineId, messageId }, {
       storage: this.#deps.storage,
     });
-    if (media) exigirFormatoDelMedio(content.field, media.mimeType);
+    /*
+     * La conversión va ANTES de aceptar, no al enviar.
+     *
+     * Un navegador graba audio en WebM y vídeo en VP8; WhatsApp quiere
+     * OGG/Opus y H.264. Si se convirtiera en el trabajador, el cliente
+     * recibiría un 202 y el fallo aparecería un minuto después donde nadie
+     * mira. Aquí se puede decir que no con el motivo.
+     */
+    const convertido = media && this.#deps.conversor
+      && necesitaConversion(content.field, media.mimeType)
+      ? await this.#convertirMedio(
+          content.field, media, { orgId: line.orgId, lineId, messageId },
+        )
+      : media;
+
+    if (convertido) exigirFormatoDelMedio(content.field, convertido.mimeType);
 
     const inserted = await this.#deps.db
       .insert(messageTable)
@@ -351,10 +369,10 @@ export class EngineRuntime {
         clientMessageId, senderAddress: line.address ?? "", fromMe: true, kind,
         body: input.text ?? input.caption ?? null, state: "queued",
         replyToId: input.replyTo ?? null, mentions: input.mentions ? [...input.mentions] : null,
-        mediaKey: media?.storageKey ?? null,
-        mediaMime: media?.mimeType ?? null,
-        mediaSize: media?.size ?? null,
-        mediaFileName: media?.fileName ?? null,
+        mediaKey: convertido?.storageKey ?? null,
+        mediaMime: convertido?.mimeType ?? null,
+        mediaSize: convertido?.size ?? null,
+        mediaFileName: convertido?.fileName ?? null,
         sentFromPlatform: true,
         sentByUserId: actor.userId ?? null,
         sentByConnectorId: actor.connectorId ?? null,
@@ -371,7 +389,7 @@ export class EngineRuntime {
       {
         lineId, orgId: line.orgId, clientMessageId, input, kind,
         sentByUserId: actor.userId ?? null, sentByConnectorId: actor.connectorId ?? null,
-        mediaKey: media?.storageKey ?? null,
+        mediaKey: convertido?.storageKey ?? null,
       },
       {
         // Una partición por LÍNEA: los envíos de un número salen en orden y al
@@ -702,6 +720,33 @@ export class EngineRuntime {
       .catch(() => {
         // Aprender una identidad no puede tumbar la ingesta del mensaje.
       });
+  }
+
+  /**
+   * Convierte un medio y guarda el resultado, dejando el original en su sitio.
+   *
+   * El original NO se borra: si alguien quiere el fichero tal cual lo subió,
+   * sigue ahí. Lo que se envía es el convertido.
+   */
+  async #convertirMedio(
+    campo: string,
+    medio: NonNullable<Awaited<ReturnType<typeof resolveMedia>>>,
+    ctx: { orgId: string; lineId: string; messageId: string },
+  ): Promise<NonNullable<Awaited<ReturnType<typeof resolveMedia>>>> {
+    const r = await this.#deps.conversor!.convertir(campo, medio.bytes, medio.mimeType);
+    const extension = r.mimeType === "audio/ogg" ? "ogg"
+      : r.mimeType === "video/mp4" ? "mp4"
+      : r.mimeType === "image/webp" ? "webp" : "bin";
+    const clave = mediaKey({ ...ctx, fileName: `convertido.${extension}` });
+    const guardado = await this.#deps.storage.put(clave, r.bytes, { mimeType: r.mimeType });
+    return {
+      bytes: r.bytes,
+      mimeType: r.mimeType,
+      storageKey: guardado.key,
+      size: guardado.size,
+      checksum: guardado.checksum,
+      ...(medio.fileName ? { fileName: medio.fileName } : {}),
+    };
   }
 
   /**

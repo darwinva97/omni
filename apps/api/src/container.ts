@@ -3,6 +3,7 @@ import {
   BaileysDriver, CloudDriver, EmailDriver, SandboxDriver, TelegramDriver,
   WhatsappWebDriver, type ChannelDriver,
 } from "@omni/channels";
+import { Conversor } from "@omni/media";
 import { makeImap, makeSmtp } from "./email-transport.js";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
@@ -121,10 +122,28 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
         publicBase: `${config.PUBLIC_URL.replace(/\/+$/, "")}/v1/media`,
       });
 
+  /*
+   * El conversor se comprueba al arrancar, no al primer envío.
+   *
+   * Si ffmpeg no está, lo que graba un navegador no se puede convertir y los
+   * envíos de audio o vídeo grabados se rechazarán con un motivo claro. Es
+   * mejor saberlo aquí, en el arranque, que descubrirlo con un cliente
+   * delante.
+   */
+  const conversor = new Conversor({ ffmpegPath: config.FFMPEG_PATH });
+  const hayConversor = await conversor.disponible();
+  if (!hayConversor) {
+    console.warn(
+      `ffmpeg no está en "${config.FFMPEG_PATH}": las notas de voz y los vídeos ` +
+      "grabados en el navegador no se podrán convertir, y se rechazarán al enviarlos.",
+    );
+  }
+
   const runtime = new EngineRuntime({
     db: dbh.db, queue, kv, bus, storage,
     box: new SecretBox(config.OMNI_MASTER_KEY),
     dispatcher,
+    ...(hayConversor ? { conversor } : {}),
   });
 
   const drivers: ChannelDriver[] = [];

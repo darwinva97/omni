@@ -54,6 +54,7 @@ export default async function Chat({
    */
   async function enviarMedio(
     campo: string, storageKey: string, pie: string, fileName: string,
+    extra: Record<string, unknown> = {},
   ): Promise<Mensaje | null> {
     "use server";
     const clientMessageId = `panel-${crypto.randomUUID()}`;
@@ -66,9 +67,9 @@ export default async function Chat({
           [campo]: { storageKey },
           ...(pie ? { caption: pie } : {}),
           ...(campo === "document" && fileName ? { fileName } : {}),
-          // Una nota de voz y un fichero de audio son cosas distintas para
-          // WhatsApp; desde el panel se manda como fichero, que es lo que uno
-          // adjunta. Grabar una nota es otra función.
+          // `ptt` llega desde la grabadora: es lo que distingue una nota de
+          // voz de un fichero de audio adjunto.
+          ...extra,
           clientMessageId,
         }),
       },

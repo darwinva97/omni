@@ -76,6 +76,12 @@ export const Config = z.object({
    * configuración trae servidor y credenciales.
    */
   EMAIL_ENABLED: envBoolean(true),
+  /**
+   * Ruta de ffmpeg. Sin él, lo que graba un navegador no se puede convertir a
+   * lo que WhatsApp reproduce, y el envío se rechaza en vez de mandar algo que
+   * no suena.
+   */
+  FFMPEG_PATH: z.string().default("ffmpeg"),
   /** Cada cuánto se revisa el buzón IMAP, en segundos. */
   EMAIL_POLL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
   CHROMIUM_PATH: z.string().optional(),

@@ -4,6 +4,7 @@ import { useEffect, useOptimistic, useRef, useState, startTransition } from "rea
 import type { Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { Medio } from "@/componentes/medio";
+import { Grabadora } from "@/componentes/grabadora";
 import {
   campoPara, ETIQUETAS, MAX_BYTES, tamanoLegible, type CampoDeMedio,
 } from "@/lib/adjuntar";
@@ -31,6 +32,7 @@ export function Conversacion({
   enviar: (texto: string) => Promise<Mensaje | null>;
   enviarMedio: (
     campo: string, storageKey: string, pie: string, fileName: string,
+    extra?: Record<string, unknown>,
   ) => Promise<Mensaje | null>;
 }) {
   const [mensajes, setMensajes] = useState<Mensaje[]>(iniciales);
@@ -51,13 +53,14 @@ export function Conversacion({
    * va por el intermediario del panel, que nunca entrega una clave de API al
    * navegador.
    */
-  const mandarAdjunto = async (pie: string): Promise<void> => {
-    if (!adjunto) return;
+  const mandarFichero = async (
+    file: File, campo: CampoDeMedio, pie: string, extra: Record<string, unknown> = {},
+  ): Promise<void> => {
     setProblema(null);
     setSubiendo(true);
     try {
       const cuerpo = new FormData();
-      cuerpo.append("file", adjunto.file);
+      cuerpo.append("file", file);
       cuerpo.append("lineId", lineId);
       const r = await fetch("/api/omni/v1/media", { method: "POST", body: cuerpo });
       if (!r.ok) {
@@ -66,9 +69,7 @@ export function Conversacion({
       }
       const { data } = (await r.json()) as { data: { storageKey: string } };
 
-      const enviado = await enviarMedio(
-        adjunto.campo, data.storageKey, pie, adjunto.file.name,
-      );
+      const enviado = await enviarMedio(campo, data.storageKey, pie, file.name, extra);
       if (enviado) {
         setMensajes((prev) =>
           prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
@@ -260,7 +261,7 @@ export function Conversacion({
           // mensajes separados no es lo que se pidió al escribir junto.
           if (adjunto) {
             formulario.current?.reset();
-            await mandarAdjunto(texto);
+            await mandarFichero(adjunto.file, adjunto.campo, texto);
             return;
           }
 
@@ -311,6 +312,25 @@ export function Conversacion({
         >
           +
         </button>
+
+        {/*
+          Mantener pulsado para grabar, soltar para enviar. Una nota de voz va
+          con `ptt`: para WhatsApp una nota grabada y un fichero de audio son
+          cosas distintas, y mandarla como fichero le quita la onda y la
+          reproducción continua.
+        */}
+        <Grabadora
+          tipo="audio"
+          deshabilitado={subiendo || adjunto !== null}
+          onError={setProblema}
+          onGrabado={(file) => mandarFichero(file, "audio", "", { ptt: true })}
+        />
+        <Grabadora
+          tipo="video"
+          deshabilitado={subiendo || adjunto !== null}
+          onError={setProblema}
+          onGrabado={(file) => mandarFichero(file, "video", "")}
+        />
         <input
           name="texto" autoComplete="off"
           placeholder={adjunto ? "Pie de foto (opcional)…" : "Escribe un mensaje…"}

@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 
 PAQUETES=(
   packages/shared packages/platform packages/db packages/storage
-  packages/core packages/channels packages/plugins
+  packages/core packages/channels packages/plugins packages/media
   apps/engine apps/api apps/cli
 )
 

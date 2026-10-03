@@ -19,6 +19,7 @@ const alias = {
   "@omni/db": pkg("db"),
   "@omni/storage": pkg("storage"),
   "@omni/plugins": pkg("plugins"),
+  "@omni/media": pkg("media"),
   "@omni/engine": app("engine"),
   "@omni/cli": app("cli"),
   "@omni/worker": app("worker"),

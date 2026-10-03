@@ -22,6 +22,7 @@
     "@omni/platform": "workspace:*",
     "@omni/shared": "workspace:*",
     "@omni/storage": "workspace:*",
-    "drizzle-orm": "^0.45.3"
+    "drizzle-orm": "^0.45.3",
+    "@omni/media": "workspace:*"
   }
 }

@@ -21,6 +21,26 @@ let scopedKey: string;
 
 const j = async <T>(res: Response): Promise<T> => (await res.json()) as T;
 
+/** Ruta de ffmpeg para las pruebas. Instalado en el directorio del usuario. */
+const FFMPEG = process.env["OMNI_FFMPEG"] ?? `${process.env["HOME"]}/.local/bin/ffmpeg`;
+
+/** Fabrica un fichero de medio con ffmpeg, para no meter binarios en el repo. */
+async function conFfmpeg(args: string[], nombre: string): Promise<Uint8Array> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "omni-fix-"));
+  try {
+    const destino = join(dir, nombre);
+    await promisify(execFile)(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args, destino]);
+    return new Uint8Array(await readFile(destino));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 beforeAll(async () => {
   if (!URL_DB) return;
   await migrate(URL_DB);
@@ -55,6 +75,9 @@ beforeAll(async () => {
     loadConfig({
       ...process.env, DATABASE_URL: URL_DB, OMNI_MASTER_KEY: "b".repeat(64),
       SANDBOX_ENABLED: "true", MEDIA_DIR: "./.data/test-media-rutas",
+      // Con ffmpeg de verdad: lo que graba un navegador se convierte aquí, y
+      // probarlo con un doble no diría nada.
+      FFMPEG_PATH: FFMPEG,
     } as NodeJS.ProcessEnv),
     { runMigrations: false, fetchImpl: (async () => new Response("ok")) as unknown as typeof fetch },
   );
@@ -259,6 +282,32 @@ run("enviar de todo", () => {
     return data.storageKey;
   }
 
+  /** Sube bytes de verdad; hace falta para lo que pasa por ffmpeg. */
+  async function subirBytes(nombre: string, tipo: string, bytes: Uint8Array): Promise<string> {
+    const cuerpo = new FormData();
+    cuerpo.append("file", new File([new Blob([bytes as unknown as ArrayBuffer])], nombre, { type: tipo }));
+    cuerpo.append("lineId", LINE);
+    const res = await app.request("/v1/media", {
+      method: "POST",
+      headers: { authorization: `Bearer ${adminKey}` },
+      body: cuerpo,
+    });
+    expect(res.status).toBe(201);
+    const { data } = await j<{ data: { storageKey: string } }>(res);
+    return data.storageKey;
+  }
+
+  /** Un PNG ancho de verdad, para comprobar el relleno a 512×512. */
+  async function fabricarPng(): Promise<Uint8Array> {
+    return conFfmpeg(["-f", "lavfi", "-i", "testsrc=size=800x200:rate=1:duration=1",
+                      "-frames:v", "1"], "x.png");
+  }
+
+  async function fabricarAudioWebm(): Promise<Uint8Array> {
+    return conFfmpeg(["-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                      "-c:a", "libopus", "-f", "webm"], "x.webm");
+  }
+
   const enviarCampo = (campo: string, storageKey: string, extra: Record<string, unknown> = {}) =>
     call(`/v1/lines/${LINE}/messages`, {
       method: "POST",
@@ -297,16 +346,57 @@ run("enviar de todo", () => {
     }
   });
 
-  it("un sticker que no es WebP se rechaza ANTES de enviarlo", async () => {
+  it("una imagen cualquiera se CONVIERTE en sticker de 512×512", async () => {
     /*
-     * WhatsApp acepta el envío y entrega un cuadrado roto: el fallo lo
-     * descubre el destinatario, no quien envía. Por eso es 422 aquí.
+     * Un sticker tiene que ser WebP. Antes se rechazaba, y es mejor
+     * convertirlo: lo que quiere quien manda una foto como sticker es que
+     * salga, no leer un requisito de formato.
+     *
+     * Lo que no puede pasar es enviarlo tal cual: WhatsApp acepta el envío sin
+     * error y entrega un cuadrado roto, un fallo que descubre el destinatario.
      */
-    const clave = await subir("falso.png", "image/png", "no soy webp");
+    const png = await fabricarPng();
+    const clave = await subirBytes("foto.png", "image/png", png);
     const res = await enviarCampo("sticker", clave);
-    expect(res.status).toBe(422);
-    expect((await j<{ detail: string }>(res)).detail).toContain("WebP");
-  });
+    expect(res.status).toBe(202);
+
+    const limite = Date.now() + 15000;
+    for (;;) {
+      const filas = await dbh.sql`
+        SELECT media_mime FROM message
+        WHERE line_id = ${LINE} AND chat_id = ${CHAT_MEDIOS}
+          AND kind = 'sticker' AND from_me = true AND media_mime = 'image/webp'`;
+      if (filas.length > 0) break;
+      if (Date.now() > limite) throw new Error("el sticker no se convirtió a WebP");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }, 40_000);
+
+  it("una nota de voz grabada en el navegador se convierte a OGG/Opus", async () => {
+    // Chrome graba WebM/Opus. El flujo es el bueno, el envoltorio no: así
+    // llegaría una nota de voz que no suena.
+    const webm = await fabricarAudioWebm();
+    const clave = await subirBytes("nota.webm", "audio/webm;codecs=opus", webm);
+    const res = await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        to: CHAT_MEDIOS, audio: { storageKey: clave }, ptt: true,
+        clientMessageId: `nota-${Date.now()}`,
+      }),
+    });
+    expect(res.status).toBe(202);
+
+    const limite = Date.now() + 15000;
+    for (;;) {
+      const filas = await dbh.sql`
+        SELECT media_mime FROM message
+        WHERE line_id = ${LINE} AND chat_id = ${CHAT_MEDIOS}
+          AND kind = 'audio' AND from_me = true AND media_mime = 'audio/ogg'`;
+      if (filas.length > 0) break;
+      if (Date.now() > limite) throw new Error("la nota no se convirtió a OGG");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }, 40_000);
 
   it("un vídeo en el campo de la foto se rechaza", async () => {
     const clave = await subir("clip.mp4", "video/mp4", "vídeo");
