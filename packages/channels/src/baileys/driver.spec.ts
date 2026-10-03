@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { asLineId, type EventEnvelope } from "@omni/shared";
+import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import { BaileysDriver, ackToState, deterministicMessageId, extractText, messageKind } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
@@ -281,5 +281,42 @@ describe("capacidades declaradas", () => {
   it("se declara como transporte NO oficial", () => {
     const driver = new BaileysDriver();
     expect(driver.descriptor.risk).toBe("unofficial");
+  });
+});
+
+describe("reintentos que pide el destinatario", () => {
+  it("conserva lo enviado para poder servir el reintento", async () => {
+    /*
+     * Cuando un dispositivo no consigue descifrar un mensaje pide un
+     * REINTENTO, y Baileys nos lo reclama por `getMessage`. Devolver
+     * `undefined` —lo que se hacía— significa «no lo tengo»: ese dispositivo
+     * se queda sin el mensaje y no hay ningún error por nuestra parte.
+     */
+    const fake = createFakeSocket({ id: "51999888777:1@s.whatsapp.net" });
+    let opciones: Record<string, unknown> = {};
+    const driver = new BaileysDriver({
+      makeSocket: (o) => { opciones = o as Record<string, unknown>; return fake.socket; },
+      fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
+      // Sin espera: el enlace lo simula `emitConnection` justo después.
+      linkWaitMs: 0,
+    });
+    const line = asLineId("l-retry");
+    await driver.connect({
+      lineId: line, credentials: null, saveCredentials: async () => {},
+      config: { orgId: "org1" },
+    });
+    fake.emitConnection({ connection: "open" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const receipt = await driver.send({
+      lineId: line, to: parseAddress("51988777666"), clientMessageId: "r-1",
+      kind: "text", input: { to: "51988777666", text: "hola" },
+    });
+
+    const getMessage = opciones["getMessage"] as (k: { id: string }) => Promise<unknown>;
+    expect(typeof getMessage).toBe("function");
+    expect(await getMessage({ id: receipt.providerMessageId })).toBeDefined();
+    // Y de uno que no es nuestro, no se inventa nada.
+    expect(await getMessage({ id: "NO-ES-NUESTRO" })).toBeUndefined();
   });
 });

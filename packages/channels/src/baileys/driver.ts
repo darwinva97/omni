@@ -62,6 +62,16 @@ interface LineRuntime {
   attempts: number;
   closing: boolean;
   /**
+   * Lo enviado, por identificador de mensaje.
+   *
+   * Cuando un dispositivo del destinatario no consigue descifrar un mensaje
+   * —pasa, y más con el cambio a direccionamiento por LID— pide un REINTENTO,
+   * y WhatsApp nos lo reclama por `getMessage`. Si no lo tenemos, ese
+   * dispositivo no lo recibe nunca y el mensaje no aparece en él, sin ningún
+   * error por nuestra parte. Eso es lo que devolvía `undefined` siempre.
+   */
+  readonly enviados: Map<string, unknown>;
+  /**
    * Envíos recientes por `clientMessageId`.
    *
    * La cola ya evita encolar dos veces, pero un trabajo SÍ se reintenta: si el
@@ -73,7 +83,27 @@ interface LineRuntime {
 
 export type SocketFactory = (opts: Parameters<typeof makeWASocket>[0]) => WASocket;
 
+/** Lo mínimo del registro que espera Baileys. */
+export interface RegistroBaileys {
+  level: string;
+  trace(...a: unknown[]): void;
+  debug(...a: unknown[]): void;
+  info(...a: unknown[]): void;
+  warn(...a: unknown[]): void;
+  error(...a: unknown[]): void;
+  fatal?(...a: unknown[]): void;
+  child(ligaduras?: unknown): RegistroBaileys;
+}
+
 export interface BaileysOptions {
+  /**
+   * Registro que se le pasa a Baileys.
+   *
+   * Sin poder subirlo a `debug` no hay forma de ver el diálogo con el servidor
+   * de WhatsApp, y hay fallos —un mensaje que el servidor acepta y ningún
+   * cliente muestra— que solo se ven ahí.
+   */
+  readonly logger?: RegistroBaileys;
   /** Permite inyectar un socket falso en las pruebas. */
   readonly makeSocket?: SocketFactory;
   readonly fetchVersion?: typeof fetchLatestBaileysVersion;
@@ -95,6 +125,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   readonly #reconnectBaseMs: number;
   readonly #maxAttempts: number;
   readonly #linkWaitMs: number;
+  readonly #logger: RegistroBaileys | null;
 
   constructor(opts: BaileysOptions = {}) {
     super();
@@ -103,6 +134,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     this.#reconnectBaseMs = opts.reconnectBaseMs ?? 2000;
     this.#maxAttempts = opts.maxReconnectAttempts ?? 5;
     this.#linkWaitMs = opts.linkWaitMs ?? 8000;
+    this.#logger = opts.logger ?? null;
   }
 
   // ---------------------------------------------------------------- conexión
@@ -125,6 +157,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       attempts: 0,
       closing: false,
       recent: new Map(),
+      enviados: new Map(),
     };
     this.#lines.set(req.lineId, line);
 
@@ -160,8 +193,16 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       browser: Browsers.appropriate("Chrome"),
       syncFullHistory: config["syncFullHistory"] === true,
       markOnlineOnConnect: false,
+      ...(this.#logger ? { logger: this.#logger } : {}),
       ...(config["proxyUrl"] ? { agent: undefined } : {}),
-      getMessage: async () => undefined,
+      /*
+       * Sirve el reintento que pide un dispositivo que no pudo descifrar.
+       *
+       * Devolver `undefined` —lo que hacía antes— significa «no lo tengo»: el
+       * dispositivo se queda sin el mensaje y nadie se entera.
+       */
+      getMessage: async (key) =>
+        (line.enviados.get(String(key.id ?? "")) ?? undefined) as never,
     } as Parameters<typeof makeWASocket>[0]);
 
     line.socket = socket;
@@ -418,6 +459,19 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     if (!sent?.key.id) {
       throw new OmniError("upstream_failed", "WhatsApp no devolvió identificador para el mensaje");
     }
+    /*
+     * Se guarda el mensaje tal cual se construyó, para poder servir un
+     * reintento. Acotado: son mensajes enteros en memoria, y lo que se
+     * reintenta se reintenta en los primeros minutos, no días después.
+     */
+    if (sent.message) {
+      line.enviados.set(sent.key.id, sent.message);
+      if (line.enviados.size > 500) {
+        const primera = line.enviados.keys().next().value;
+        if (primera !== undefined) line.enviados.delete(primera);
+      }
+    }
+
     const receipt: SendReceipt = {
       providerMessageId: sent.key.id,
       state: "sent",

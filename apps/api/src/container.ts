@@ -5,6 +5,7 @@ import {
 } from "@omni/channels";
 import { Conversor } from "@omni/media";
 import { makeImap, makeSmtp } from "./email-transport.js";
+import { registroBaileys } from "./registro-baileys.js";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
 import {
   MemoryBus, MemoryJobQueue, MemoryKv,
@@ -156,7 +157,9 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    * defecto porque es la razón de ser del producto, pero el aviso de riesgo
    * aparece al arrancar y en el panel antes de enlazar cualquier número.
    */
-  if (config.WHATSAPP_BAILEYS_ENABLED) drivers.push(new BaileysDriver());
+  if (config.WHATSAPP_BAILEYS_ENABLED) {
+    drivers.push(new BaileysDriver({ logger: registroBaileys(config.LOG_LEVEL) }));
+  }
 
   /*
    * El transporte OFICIAL de Meta. Va encendido siempre: no mantiene sockets

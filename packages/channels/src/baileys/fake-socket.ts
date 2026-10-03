@@ -77,7 +77,13 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
       const id = control.nextMessageId === "FAKE-0001"
         ? `FAKE-${String(++contador).padStart(4, "0")}`
         : control.nextMessageId;
-      return { key: { id, remoteJid: jid, fromMe: true }, messageTimestamp: 1_800_000_000 };
+      // Se devuelve también el `message`: es lo que hay que conservar para
+      // poder servir un reintento, y sin él la prueba no vería ese camino.
+      return {
+        key: { id, remoteJid: jid, fromMe: true },
+        message: content,
+        messageTimestamp: 1_800_000_000,
+      };
     },
     sendPresenceUpdate: async (presence: string, jid: string) => {
       control.presence.push({ presence, jid });
