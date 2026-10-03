@@ -58,7 +58,10 @@ export default async function Chat({
   ): Promise<Mensaje | null> {
     "use server";
     const clientMessageId = `panel-${crypto.randomUUID()}`;
-    const res = await apiFetch<{ messageId: string; state: string }>(
+    const res = await apiFetch<{
+      messageId: string; state: string;
+      media: { url: string; mimeType: string; fileName: string | null; size: number } | null;
+    }>(
       `/v1/lines/${lineId}/messages`,
       {
         method: "POST",
@@ -78,7 +81,8 @@ export default async function Chat({
       id: res.messageId, providerMessageId: null, fromMe: true,
       kind: campo, body: pie || null, state: res.state,
       timestamp: new Date().toISOString(),
-      media: null,
+      // Llega con su URL firmada: así se ve en el momento y no tras recargar.
+      media: res.media,
     };
   }
 

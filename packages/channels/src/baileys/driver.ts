@@ -879,7 +879,16 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
  */
 export function deterministicMessageId(clientMessageId: string): string {
   const hash = createHash("sha256").update(clientMessageId).digest("hex").toUpperCase();
-  return `3EB0${hash.slice(0, 28)}`;
+  /*
+   * `3EB0` + 18 hex, EXACTAMENTE como genera Baileys.
+   *
+   * La longitud no es un detalle estético. Con 28 hex en vez de 18 el servidor
+   * de WhatsApp acepta el nodo, devuelve identificador y hasta manda acuses de
+   * lectura, pero NINGÚN cliente —ni el del destinatario ni el teléfono del
+   * que envía— muestra el mensaje. Es el peor fallo posible: todo parece
+   * correcto por dentro y no llega nada.
+   */
+  return `3EB0${hash.slice(0, 18)}`;
 }
 
 /**

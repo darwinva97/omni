@@ -343,6 +343,11 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       responses: {
         202: json(z.object({ data: z.object({
           clientMessageId: z.string(), messageId: z.string(), state: z.string(),
+          /** El fichero ya convertido, con su URL firmada, para poder pintarlo. */
+          media: z.object({
+            url: z.string(), mimeType: z.string(),
+            fileName: z.string().nullable(), size: z.number(),
+          }).nullable(),
         }) }), "aceptado y encolado"),
         ...errors,
       },
@@ -357,7 +362,21 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       });
       // 202 y no 200: se aceptó, todavía no se envió. Mentir aquí haría que un
       // cliente creyera entregado algo que aún está en la cola.
-      return c.json({ data: accepted }, 202);
+      return c.json({
+        data: {
+          clientMessageId: accepted.clientMessageId,
+          messageId: accepted.messageId,
+          state: accepted.state,
+          media: accepted.media
+            ? {
+                url: await container.storage.signedUrl(accepted.media.storageKey, MEDIA_URL_TTL),
+                mimeType: accepted.media.mimeType,
+                fileName: accepted.media.fileName ?? null,
+                size: accepted.media.size,
+              }
+            : null,
+        },
+      }, 202);
     },
   );
 

@@ -107,6 +107,20 @@ export interface SendAccepted {
   readonly clientMessageId: string;
   readonly messageId: string;
   readonly state: "queued";
+  /**
+   * El fichero que se va a enviar, ya convertido si hizo falta.
+   *
+   * Se devuelve para que quien envía pueda pintarlo al instante. Sin esto, el
+   * panel enseñaba el mensaje con un hueco de «descargando…» que nunca se
+   * rellenaba: el fichero ya estaba en el almacén, pero nadie le había dado
+   * una URL. Solo se veía tras recargar.
+   */
+  readonly media?: {
+    readonly storageKey: string;
+    readonly mimeType: string;
+    readonly size: number;
+    readonly fileName?: string;
+  };
 }
 
 /**
@@ -380,8 +394,19 @@ export class EngineRuntime {
       .onConflictDoNothing()
       .returning({ id: messageTable.id });
 
+    const descripcionDelMedio = convertido
+      ? {
+          media: {
+            storageKey: convertido.storageKey,
+            mimeType: convertido.mimeType,
+            size: convertido.size,
+            ...(convertido.fileName ? { fileName: convertido.fileName } : {}),
+          },
+        }
+      : {};
+
     if (inserted.length === 0) {
-      return { clientMessageId, messageId, state: "queued" };
+      return { clientMessageId, messageId, state: "queued", ...descripcionDelMedio };
     }
 
     await this.#deps.queue.enqueue<OutboundJob>(
@@ -401,7 +426,7 @@ export class EngineRuntime {
       },
     );
 
-    return { clientMessageId, messageId, state: "queued" };
+    return { clientMessageId, messageId, state: "queued", ...descripcionDelMedio };
   }
 
   /** Espera acotada a que otro proceso termine de insertar su mensaje. */

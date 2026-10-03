@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { asLineId, type EventEnvelope } from "@omni/shared";
 import { BaileysDriver, ackToState, deterministicMessageId, extractText, messageKind } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
+import { generateMessageIDV2 } from "baileys";
 
 const LINE = asLineId("l1");
 
@@ -79,9 +80,24 @@ describe("identificador derivado", () => {
     expect(deterministicMessageId("pedido-42")).not.toBe(deterministicMessageId("pedido-43"));
   });
 
-  it("tiene la forma que usan los clientes oficiales", () => {
-    const id = deterministicMessageId("x");
-    expect(id).toMatch(/^3EB0[0-9A-F]{28}$/);
+  it("tiene la MISMA forma que el que genera Baileys", () => {
+    /*
+     * Se compara contra el generador DE BAILEYS, no contra una longitud
+     * escrita aquí a mano.
+     *
+     * La versión anterior de esta prueba afirmaba 28 dígitos hexadecimales
+     * porque es lo que ponía el código, y el código estaba mal: Baileys usa
+     * 18. Con la longitud equivocada el servidor de WhatsApp acepta el envío,
+     * devuelve identificador y hasta manda acuses de lectura, y el mensaje no
+     * aparece en NINGÚN cliente —ni en el teléfono de quien lo envía—. Una
+     * prueba que repite lo que dice el código no comprueba nada.
+     */
+    const nuestro = deterministicMessageId("x");
+    const deBaileys = generateMessageIDV2("51999888777@s.whatsapp.net");
+
+    expect(nuestro).toHaveLength(deBaileys.length);
+    expect(nuestro).toMatch(/^3EB0[0-9A-F]+$/);
+    expect(deBaileys).toMatch(/^3EB0[0-9A-F]+$/);
   });
 });
 

@@ -404,6 +404,24 @@ run("enviar de todo", () => {
     expect(res.status).toBe(422);
   });
 
+  it("al aceptar un envío con fichero devuelve ya su URL firmada", async () => {
+    /*
+     * Sin esto, quien envía pinta el mensaje con un hueco de «descargando…»
+     * que no se rellena nunca: el fichero ya está en el almacén, pero nadie le
+     * ha dado una URL. Solo se veía tras recargar la página.
+     */
+    const clave = await subir("foto2.jpg", "image/jpeg", "bytes");
+    const res = await enviarCampo("image", clave);
+    expect(res.status).toBe(202);
+    const { data } = await j<{ data: { media: { url: string; mimeType: string } | null } }>(res);
+    expect(data.media).not.toBeNull();
+    expect(data.media!.mimeType).toBe("image/jpeg");
+
+    // Y la URL sirve de verdad, sin credencial.
+    const ruta = data.media!.url.slice(data.media!.url.indexOf("/v1/media"));
+    expect((await app.request(ruta)).status).toBe(200);
+  });
+
   it("el medio enviado se devuelve en el listado con su URL", async () => {
     const { data } = await j<{ data: { fromMe: boolean; kind: string; media: { url: string } | null }[] }>(
       await call(`/v1/lines/${LINE}/chats/${enc(CHAT_MEDIOS)}/messages?limit=20`));
