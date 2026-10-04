@@ -72,6 +72,15 @@ interface LineRuntime {
    */
   readonly enviados: Map<string, unknown>;
   /**
+   * Del identificador del proveedor al que puso el cliente.
+   *
+   * WhatsApp devuelve el suyo y lo que vuelve por los eventos lleva solo ese,
+   * así que sin este puente quien envió un mensaje no puede reconocerlo cuando
+   * le vuelve: el panel se quedaba con el mensaje en «queued» para siempre
+   * porque los acuses hablaban de un identificador que él no conocía.
+   */
+  readonly porProveedor: Map<string, string>;
+  /**
    * Envíos recientes por `clientMessageId`.
    *
    * La cola ya evita encolar dos veces, pero un trabajo SÍ se reintenta: si el
@@ -158,6 +167,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       closing: false,
       recent: new Map(),
       enviados: new Map(),
+      porProveedor: new Map(),
     };
     this.#lines.set(req.lineId, line);
 
@@ -251,8 +261,10 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     ev.on("message-receipt.update", (updates) => {
       for (const u of updates) {
         const estado: DeliveryState = u.receipt.readTimestamp ? "read" : "delivered";
+        const propio = u.key.id ? line.porProveedor.get(u.key.id) : undefined;
         void this.emit("message.receipt", line.orgId, lineId, {
           key: normalizeKey(u.key), state: estado, participant: u.receipt.userJid,
+          ...(propio ? { clientMessageId: propio } : {}),
         });
       }
     });
@@ -381,12 +393,15 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
 
   async #onMessage(lineId: string, line: LineRuntime, m: WAMessage): Promise<void> {
     if (!m.key.remoteJid) return;
+    const clientMessageId = m.key.id ? line.porProveedor.get(m.key.id) : undefined;
     const payload = {
       key: normalizeKey(m.key),
       pushName: m.pushName ?? null,
       kind: messageKind(m),
       text: extractText(m.message ?? null),
       timestamp: Number(m.messageTimestamp ?? 0) * 1000,
+      // Solo cuando el envío salió de aquí; de lo ajeno no hay ninguno.
+      ...(clientMessageId ? { clientMessageId } : {}),
       raw: m,
     };
     if (!m.key.fromMe) {
@@ -464,6 +479,12 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * reintento. Acotado: son mensajes enteros en memoria, y lo que se
      * reintenta se reintenta en los primeros minutos, no días después.
      */
+    line.porProveedor.set(sent.key.id, cmd.clientMessageId);
+    if (line.porProveedor.size > 2000) {
+      const vieja = line.porProveedor.keys().next().value;
+      if (vieja !== undefined) line.porProveedor.delete(vieja);
+    }
+
     if (sent.message) {
       line.enviados.set(sent.key.id, sent.message);
       if (line.enviados.size > 500) {

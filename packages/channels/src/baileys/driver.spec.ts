@@ -320,3 +320,89 @@ describe("reintentos que pide el destinatario", () => {
     expect(await getMessage({ id: "NO-ES-NUESTRO" })).toBeUndefined();
   });
 });
+
+describe("reconocer el mensaje propio cuando vuelve", () => {
+  it("el eco y el acuse llevan el identificador que pusimos nosotros", async () => {
+    /*
+     * WhatsApp devuelve SU identificador, y lo que vuelve por los eventos solo
+     * lleva ese. Sin este puente, quien envió no reconoce su propio mensaje al
+     * volver: el panel dejaba las notas de voz en «queued» para siempre,
+     * porque emparejaba por el texto y un audio no tiene.
+     */
+    const fake = createFakeSocket({ id: "51999888777:1@s.whatsapp.net" });
+    const driver = new BaileysDriver({
+      makeSocket: () => fake.socket,
+      fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
+      linkWaitMs: 0,
+    });
+    const eventos: EventEnvelope[] = [];
+    driver.subscribe((e) => void eventos.push(e));
+    const line = asLineId("l-eco");
+    await driver.connect({
+      lineId: line, credentials: null, saveCredentials: async () => {},
+      config: { orgId: "org1" },
+    });
+    fake.emitConnection({ connection: "open" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const receipt = await driver.send({
+      lineId: line, to: parseAddress("51988777666"), clientMessageId: "mio-1",
+      kind: "audio", input: { to: "51988777666", audio: { url: "https://x.test/a.ogg" }, ptt: true },
+      // El motor resuelve los bytes antes de llegar al driver.
+      media: { bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/ogg" },
+    });
+
+    // El eco que manda WhatsApp de nuestro propio mensaje.
+    fake.emitRaw("messages.upsert", {
+      type: "notify",
+      messages: [{
+        key: { id: receipt.providerMessageId, remoteJid: "51988777666@s.whatsapp.net", fromMe: true },
+        message: { audioMessage: {} }, messageTimestamp: 1_800_000_000,
+      }],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const eco = eventos.find((e) => e.event === "message.sent");
+    expect(eco).toBeDefined();
+    expect((eco!.data as { clientMessageId?: string }).clientMessageId).toBe("mio-1");
+
+    // Y el acuse, que es lo que saca el mensaje de «queued».
+    fake.emitRaw("message-receipt.update", [{
+      key: { id: receipt.providerMessageId, remoteJid: "51988777666@s.whatsapp.net", fromMe: true },
+      receipt: { readTimestamp: 1_800_000_050 },
+    }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const acuse = eventos.find((e) => e.event === "message.receipt");
+    expect((acuse!.data as { clientMessageId?: string }).clientMessageId).toBe("mio-1");
+  });
+
+  it("de un mensaje AJENO no se inventa un identificador propio", async () => {
+    const fake = createFakeSocket({ id: "51999888777:1@s.whatsapp.net" });
+    const driver = new BaileysDriver({
+      makeSocket: () => fake.socket,
+      fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
+      linkWaitMs: 0,
+    });
+    const eventos: EventEnvelope[] = [];
+    driver.subscribe((e) => void eventos.push(e));
+    await driver.connect({
+      lineId: asLineId("l-ajeno"), credentials: null, saveCredentials: async () => {},
+      config: { orgId: "org1" },
+    });
+    fake.emitConnection({ connection: "open" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    fake.emitRaw("messages.upsert", {
+      type: "notify",
+      messages: [{
+        key: { id: "AJENO1", remoteJid: "51988777666@s.whatsapp.net", fromMe: false },
+        message: { conversation: "hola" }, messageTimestamp: 1_800_000_000,
+      }],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const recibido = eventos.find((e) => e.event === "message.received")!;
+    expect((recibido.data as { clientMessageId?: string }).clientMessageId).toBeUndefined();
+  });
+});

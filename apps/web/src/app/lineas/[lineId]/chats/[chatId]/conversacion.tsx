@@ -113,8 +113,13 @@ export function Conversacion({
      */
     if (evento === "message.receipt") {
       const estado = String(data["state"] ?? "");
+      const cliente = data["clientMessageId"] as string | undefined;
       setMensajes((prev) =>
-        prev.map((x) => (x.providerMessageId === key.id ? { ...x, state: estado } : x)));
+        prev.map((x) =>
+          (x.providerMessageId !== null && x.providerMessageId === key.id)
+          || (cliente !== undefined && x.clientMessageId === cliente)
+            ? { ...x, state: estado, providerMessageId: x.providerMessageId ?? key.id ?? null }
+            : x));
       return;
     }
 
@@ -141,13 +146,22 @@ export function Conversacion({
 
       /*
        * Un mensaje PROPIO que vuelve por el socket es el eco del que ya
-       * fijamos al enviarlo: no se añade otra vez, se le pone el
-       * identificador del proveedor, que es lo que falta para que los acuses
-       * lo encuentren.
+       * fijamos al enviarlo: no se añade otra vez, se le pone el identificador
+       * del proveedor, que es lo que falta para que los acuses lo encuentren.
+       *
+       * Se empareja por el identificador que pusimos NOSOTROS, que viaja con
+       * el evento. Antes se comparaba el texto, y eso falla con dos mensajes
+       * iguales seguidos y no sirve para un audio, que no tiene texto: por eso
+       * una nota de voz se quedaba en «queued» para siempre.
        */
       if (key.fromMe) {
-        const texto = (data["text"] as string | null) ?? null;
-        const i = prev.findLastIndex((x) => x.fromMe && !x.providerMessageId && x.body === texto);
+        const cliente = data["clientMessageId"] as string | undefined;
+        const i = cliente !== undefined
+          ? prev.findIndex((x) => x.clientMessageId === cliente)
+          : prev.findLastIndex(
+              (x) => x.fromMe && !x.providerMessageId
+                && x.body === ((data["text"] as string | null) ?? null),
+            );
         if (i >= 0) {
           const copia = [...prev];
           copia[i] = { ...copia[i]!, providerMessageId: key.id ?? null, state: "sent" };

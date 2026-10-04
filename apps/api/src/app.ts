@@ -24,6 +24,8 @@ const MEDIA_KINDS_API = new Set(["image", "video", "audio", "document", "sticker
 const MensajeSchema = z.object({
   id: z.string(),
   providerMessageId: z.string().nullable(),
+  /** El que puso quien envió. Permite reconocer el mensaje propio al volver. */
+  clientMessageId: z.string().nullable(),
   fromMe: z.boolean(),
   kind: z.string(),
   body: z.string().nullable(),
@@ -501,7 +503,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
        * guardada en la base es una imagen rota semanas después.
        */
       const data = await Promise.all(rows.map(async (r) => ({
-        id: r.id, providerMessageId: r.providerMessageId, fromMe: r.fromMe,
+        id: r.id, providerMessageId: r.providerMessageId,
+        clientMessageId: r.clientMessageId, fromMe: r.fromMe,
         kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
         media: r.mediaKey
           ? {

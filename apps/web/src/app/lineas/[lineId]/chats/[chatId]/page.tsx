@@ -39,7 +39,8 @@ export default async function Chat({
       { method: "POST", body: JSON.stringify({ to: chat, text: limpio, clientMessageId }) },
     );
     return {
-      id: res.messageId, providerMessageId: null, fromMe: true,
+      id: res.messageId, providerMessageId: null, clientMessageId: res.clientMessageId,
+      fromMe: true,
       kind: "text", body: limpio, state: res.state,
       timestamp: new Date().toISOString(),
     };
@@ -78,7 +79,8 @@ export default async function Chat({
       },
     );
     return {
-      id: res.messageId, providerMessageId: null, fromMe: true,
+      id: res.messageId, providerMessageId: null, clientMessageId,
+      fromMe: true,
       kind: campo, body: pie || null, state: res.state,
       timestamp: new Date().toISOString(),
       // Llega con su URL firmada: así se ve en el momento y no tras recargar.

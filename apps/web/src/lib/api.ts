@@ -76,6 +76,14 @@ export interface Medio {
 
 export interface Mensaje {
   id: string; providerMessageId: string | null; fromMe: boolean;
+  /**
+   * El identificador que pusimos nosotros al enviar.
+   *
+   * Es el puente para reconocer un mensaje propio cuando vuelve: lo que llega
+   * por el socket trae el identificador de WhatsApp, que al enviar todavía no
+   * conocíamos.
+   */
+  clientMessageId?: string | null;
   kind: string; body: string | null; state: string; timestamp: string;
   media?: Medio | null;
   /** Por qué no hay fichero, cuando debería haberlo. */
