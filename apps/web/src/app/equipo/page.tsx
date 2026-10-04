@@ -1,7 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { apiFetch, apiFetchAuth, type Yo } from "@/lib/api";
-import { Cabecera } from "@/lib/ui";
-import { Boton, Campo, Navegacion, SecretoUnaVez, Tabla } from "@/lib/ui-nav";
+import { Boton, Campo, SecretoUnaVez, Tabla } from "@/lib/ui-nav";
+import { Pagina } from "@/componentes/armazon";
 
 interface Miembro { userId: string; email: string; name: string; role: string }
 
@@ -38,15 +38,13 @@ export default async function Equipo({
   }
 
   return (
-    <>
-      <Cabecera titulo="equipo" />
-      <Navegacion actual="/equipo" />
-      <main className="mx-auto max-w-5xl space-y-5 px-5 py-6">
+    <Pagina actual="/equipo" titulo="Equipo" descripcion="Quién entra al panel y con qué papel. Las invitaciones caducan.">
+      <div className="space-y-5">
         {invitacion && <SecretoUnaVez etiqueta="Enlace de invitación" valor={invitacion} />}
 
-        <section className="rounded-lg border border-(--color-borde) bg-(--color-panel) p-4">
-          <h2 className="text-sm font-medium">Invitar</h2>
-          <p className="mt-1 text-xs text-(--color-tenue)">
+        <section className="rounded-xl border border-(--color-borde) bg-(--color-panel) p-5">
+          <h2 className="text-sm font-semibold">Invitar</h2>
+          <p className="mt-1 text-sm text-(--color-tenue)">
             La invitación caduca en siete días y solo se puede usar una vez.
           </p>
           <form action={invitar} className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
@@ -70,7 +68,7 @@ export default async function Equipo({
             ])}
           />
         </section>
-      </main>
-    </>
+      </div>
+    </Pagina>
   );
 }

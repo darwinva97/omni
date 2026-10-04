@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { apiFetch, apiFetchAuth } from "@/lib/api";
-import { Cabecera, Aviso } from "@/lib/ui";
-import { Boton, Campo, Navegacion } from "@/lib/ui-nav";
+import { Aviso } from "@/componentes/piezas";
+import { Boton, Campo } from "@/lib/ui";
+import { Pagina } from "@/componentes/armazon";
 
 interface Capacidad {
   kind: string; risk: string; linkMethod: string;
@@ -35,10 +36,8 @@ export default async function NuevaLinea() {
   const noOficiales = capacidades.filter((c) => c.risk === "unofficial");
 
   return (
-    <>
-      <Cabecera titulo="nueva línea" volver={{ href: "/", texto: "líneas" }} />
-      <Navegacion actual="/" />
-      <main className="mx-auto max-w-2xl space-y-4 px-5 py-6">
+    <Pagina actual="/" titulo="Nueva línea" descripcion="Una línea es una cuenta de un canal. El riesgo depende del transporte que elijas, y se dice aquí antes de crearla.">
+      <div className="space-y-5">
         {noOficiales.length > 0 && (
           <Aviso>
             <strong>Antes de enlazar un número de WhatsApp.</strong> Los transportes{" "}
@@ -79,7 +78,7 @@ export default async function NuevaLinea() {
             ))}
           </ul>
         </section>
-      </main>
-    </>
+      </div>
+    </Pagina>
   );
 }

@@ -1,6 +1,6 @@
 import { apiFetchAuth } from "@/lib/api";
-import { Cabecera } from "@/lib/ui";
-import { Navegacion, Tabla } from "@/lib/ui-nav";
+import { Tabla } from "@/lib/ui-nav";
+import { Pagina } from "@/componentes/armazon";
 
 interface Evento {
   action: string; targetKind: string | null; targetId: string | null;
@@ -13,10 +13,8 @@ export default async function Auditoria() {
   const eventos = await apiFetchAuth<Evento[]>("/v1/audit?limit=100");
 
   return (
-    <>
-      <Cabecera titulo="bitácora" />
-      <Navegacion actual="/auditoria" />
-      <main className="mx-auto max-w-5xl space-y-4 px-5 py-6">
+    <Pagina actual="/auditoria" titulo="Bitácora" descripcion="Quién hizo qué, con qué credencial y desde dónde.">
+      <div className="space-y-5">
         <p className="text-xs text-(--color-tenue)">
           No se puede desactivar desde la aplicación: quién creó, borró, conectó o
           cambió un rol queda registrado siempre.
@@ -36,7 +34,7 @@ export default async function Auditoria() {
             <span className="text-xs text-(--color-tenue)">{new Date(e.at).toLocaleString("es")}</span>,
           ])}
         />
-      </main>
-    </>
+      </div>
+    </Pagina>
   );
 }

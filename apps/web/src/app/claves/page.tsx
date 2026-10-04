@@ -1,7 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { apiFetch, apiFetchAuth } from "@/lib/api";
-import { Cabecera } from "@/lib/ui";
-import { Boton, Campo, Navegacion, SecretoUnaVez, Tabla } from "@/lib/ui-nav";
+import { Boton, Campo, SecretoUnaVez, Tabla } from "@/lib/ui-nav";
+import { Pagina } from "@/componentes/armazon";
 
 interface Clave {
   id: string; name: string; role: string; prefix: string;
@@ -48,15 +48,13 @@ export default async function Claves({
   }
 
   return (
-    <>
-      <Cabecera titulo="credenciales" />
-      <Navegacion actual="/claves" />
-      <main className="mx-auto max-w-5xl space-y-5 px-5 py-6">
+    <Pagina actual="/claves" titulo="Claves de API" descripcion="Cada clave lleva su propio alcance: a qué líneas llega y, si hace falta, a qué conversaciones. El secreto se enseña una sola vez.">
+      <div className="space-y-5">
         {nueva && <SecretoUnaVez etiqueta="Clave creada" valor={nueva} />}
 
-        <section className="rounded-lg border border-(--color-borde) bg-(--color-panel) p-4">
-          <h2 className="text-sm font-medium">Acuñar una clave</h2>
-          <p className="mt-1 text-xs text-(--color-tenue)">
+        <section className="rounded-xl border border-(--color-borde) bg-(--color-panel) p-5">
+          <h2 className="text-sm font-semibold">Acuñar una clave</h2>
+          <p className="mt-1 text-sm text-(--color-tenue)">
             Dejar <strong>líneas</strong> o <strong>chats</strong> en blanco significa
             «todas». Una clave acotada a chats solo alcanza las rutas marcadas como
             seguras para ella, también las que se añadan en el futuro.
@@ -103,7 +101,7 @@ export default async function Claves({
             ])}
           />
         </section>
-      </main>
-    </>
+      </div>
+    </Pagina>
   );
 }

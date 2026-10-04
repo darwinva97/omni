@@ -68,6 +68,9 @@ export interface Chat {
   /** El teléfono detrás de un LID, cuando se sabe. */
   phone: string | null;
   lastMessageAt: string | null; unreadCount: number;
+  /** Resumen del último mensaje, para la lista. */
+  ultimo: string | null;
+  ultimoPropio: boolean;
 }
 
 export interface Medio {
@@ -84,6 +87,9 @@ export interface Mensaje {
    * conocíamos.
    */
   clientMessageId?: string | null;
+  /** Quién lo escribió. Solo se enseña en grupos: en un chat de dos sobra. */
+  senderAddress?: string | null;
+  senderName?: string | null;
   kind: string; body: string | null; state: string; timestamp: string;
   media?: Medio | null;
   /** Por qué no hay fichero, cuando debería haberlo. */

@@ -1,4 +1,6 @@
 import type { Medio } from "@/lib/api";
+import { IconoDocumento } from "./iconos";
+import { tamano } from "@/lib/formato";
 
 /**
  * El contenido de un mensaje con fichero.
@@ -17,8 +19,18 @@ export function Medio({ kind, medio, error }: {
     // Sin fichero: o falló, o aún está bajando. Son dos cosas distintas y el
     // usuario tiene que poder distinguirlas en vez de ver el mismo hueco.
     return (
-      <p className="text-xs text-(--color-tenue) italic">
-        {error ? `${kind}: no se pudo descargar` : `${kind}: descargando…`}
+      <p
+        className={`flex items-center gap-1.5 text-xs ${
+          error ? "text-(--color-error)" : "text-(--color-tenue)"
+        }`}
+      >
+        {!error && (
+          <span
+            aria-hidden
+            className="size-3 animate-pulse rounded-full bg-current opacity-60"
+          />
+        )}
+        {error ? "No se pudo descargar" : "Descargando…"}
       </p>
     );
   }
@@ -30,7 +42,7 @@ export function Medio({ kind, medio, error }: {
         alt="sticker"
         // Los stickers son pequeños y transparentes: a tamaño de foto se ven
         // mal y con fondo se ven peor.
-        className="h-32 w-32 object-contain"
+        className="h-36 w-36 object-contain"
         loading="lazy"
       />
     );
@@ -66,15 +78,15 @@ export function Medio({ kind, medio, error }: {
       href={medio.url}
       target="_blank"
       rel="noreferrer"
-      className="flex items-center gap-2 text-sm text-(--color-acento) hover:underline"
+      className="flex items-center gap-2.5 rounded-lg bg-black/5 px-2.5 py-2 text-sm hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10"
     >
-      <span aria-hidden>📄</span>
-      <span className="truncate">{medio.fileName ?? "documento"}</span>
-      {medio.size !== null && (
-        <span className="shrink-0 text-xs text-(--color-tenue)">
-          {Math.round(medio.size / 1024)} kB
-        </span>
-      )}
+      <IconoDocumento className="size-5 shrink-0 text-(--color-tenue)" />
+      <span className="min-w-0">
+        <span className="block truncate">{medio.fileName ?? "Documento"}</span>
+        {medio.size !== null && (
+          <span className="block text-xs text-(--color-tenue)">{tamano(medio.size)}</span>
+        )}
+      </span>
     </a>
   );
 }

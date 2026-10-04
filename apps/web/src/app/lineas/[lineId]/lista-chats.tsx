@@ -1,24 +1,33 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import type { Chat } from "@/lib/api";
+import { useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import type { Chat, Linea } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
+import { cuando, resumen } from "@/lib/formato";
+import { Avatar } from "@/componentes/piezas";
+import { IconoBuscar, IconoCerrar } from "@/componentes/iconos";
 
 /**
- * La lista de conversaciones, viva.
+ * La columna de conversaciones.
  *
- * Antes era estática y había que recargar para ver que alguien había escrito,
- * que es justo lo que un panel de mensajería no debe obligar a hacer. Ahora
- * escucha el mismo WebSocket que la conversación.
+ * Tres cosas la hacen útil y las tres son decisiones, no adornos:
  *
- * Un mensaje de un chat DESCONOCIDO no se puede pintar con lo que trae el
- * evento: el nombre hay que resolverlo, y eso vive en el servidor. Así que se
- * pide esa conversación concreta —una sola, no la lista entera— y se inserta.
+ * 1. **Viva.** Escucha el mismo socket que el hilo abierto. Recargar para ver
+ *    si alguien ha contestado es lo que un panel de mensajería no debe pedir.
+ * 2. **Ordenada por lo último.** Lo que acaba de llegar sube. Es la única
+ *    ordenación que sirve cuando hay sesenta conversaciones.
+ * 3. **Buscable sin ir al servidor.** Con doscientas cargadas, filtrar en el
+ *    navegador es instantáneo; pedirlo al servidor añade un viaje por letra
+ *    para un resultado idéntico.
  */
-export function ListaChats({ lineId, iniciales }: { lineId: string; iniciales: Chat[] }) {
+export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat[] }) {
   const [chats, setChats] = useState<Chat[]>(iniciales);
-  const { conectado, suscribir } = useEventos(lineId);
+  const [busqueda, setBusqueda] = useState("");
+  const { conectado, suscribir } = useEventos(linea.id);
+  const params = useParams<{ chatId?: string }>();
+  const abierto = params.chatId ? decodeURIComponent(params.chatId) : null;
 
   useEffect(() => suscribir(async (evento, data) => {
     if (!evento.startsWith("message.") && !evento.startsWith("chat.")) return;
@@ -27,84 +36,153 @@ export function ListaChats({ lineId, iniciales }: { lineId: string; iniciales: C
     const direccion = key.remoteJid ?? (data["chat"] as string | undefined);
     if (!direccion) return;
 
-    const cuando = new Date(Number(data["timestamp"] ?? Date.now())).toISOString();
-    const conocido = chats.some((c) => c.address === direccion);
+    const cuandoISO = new Date(Number(data["timestamp"] ?? Date.now())).toISOString();
+    const texto = (data["text"] as string | null) ?? null;
+    const tipo = String(data["kind"] ?? "text");
 
-    if (!conocido) {
-      // Se pide solo esa: traer la lista entera por cada mensaje de un chat
-      // nuevo multiplicaría el trabajo justo cuando llega una ráfaga.
-      const r = await fetch(
-        `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(direccion)}`,
-      );
+    setChats((prev) => {
+      const i = prev.findIndex((c) => c.address === direccion);
+      if (i < 0) return prev;
+      const actual = prev[i]!;
+      const copia = [...prev];
+      copia[i] = {
+        ...actual,
+        lastMessageAt: cuandoISO,
+        ultimo: resumen(tipo, texto),
+        ultimoPropio: key.fromMe === true,
+        // Lo que se está mirando no acumula pendientes: el contador existiría
+        // para avisar de algo que ya se tiene delante.
+        unreadCount:
+          evento === "message.received" && !key.fromMe && direccion !== abierto
+            ? actual.unreadCount + 1
+            : evento === "chat.read" || direccion === abierto
+              ? 0
+              : actual.unreadCount,
+      };
+      return copia.sort((a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""));
+    });
+
+    // Una conversación que no estaba en la lista no se puede pintar con lo que
+    // trae el evento: el nombre hay que resolverlo, y eso vive en el servidor.
+    if (!chats.some((c) => c.address === direccion)) {
+      const r = await fetch(`/api/omni/v1/lines/${linea.id}/chats/${encodeURIComponent(direccion)}`);
       if (!r.ok) return;
       const { data: nuevo } = (await r.json()) as { data: Chat };
       setChats((prev) =>
         prev.some((c) => c.address === nuevo.address) ? prev : [nuevo, ...prev]);
-      return;
     }
+  }), [linea.id, chats, suscribir, abierto]);
 
-    setChats((prev) => {
-      const movida = prev.map((c) =>
-        c.address === direccion
-          ? {
-              ...c,
-              lastMessageAt: cuando,
-              unreadCount: evento === "message.received" && !key.fromMe
-                ? c.unreadCount + 1
-                : evento === "chat.read"
-                  ? 0
-                  : c.unreadCount,
-            }
-          : c);
-      // La que acaba de recibir sube arriba, como en cualquier mensajería.
-      return [...movida].sort((a, b) =>
-        (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""));
-    });
-  }), [lineId, chats, suscribir]);
-
-  if (chats.length === 0) {
-    return (
-      <p className="rounded-lg border border-(--color-borde) bg-(--color-panel) px-4 py-6 text-center text-sm text-(--color-tenue)">
-        Sin conversaciones todavía.
-      </p>
-    );
-  }
+  const visibles = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return chats;
+    return chats.filter((c) =>
+      c.displayName.toLowerCase().includes(q)
+      || c.address.toLowerCase().includes(q)
+      || (c.phone ?? "").includes(q));
+  }, [chats, busqueda]);
 
   return (
-    <>
-      <div className="mb-2 flex items-center gap-2 text-xs text-(--color-tenue)">
-        <span
-          aria-hidden
-          className={`size-1.5 rounded-full ${conectado ? "bg-green-500" : "bg-(--color-tenue)"}`}
-        />
-        {conectado ? "en vivo" : "reconectando…"}
-      </div>
-      <ul className="divide-y divide-(--color-borde) overflow-hidden rounded-lg border border-(--color-borde) bg-(--color-panel)">
-        {chats.map((c) => (
-          <li key={c.address}>
-            <Link
-              href={`/lineas/${lineId}/chats/${encodeURIComponent(c.address)}`}
-              className="flex items-center gap-3 px-4 py-3 hover:bg-(--color-ajeno)"
+    <aside className="flex w-[22rem] shrink-0 flex-col border-r border-(--color-borde) bg-(--color-panel)">
+      <header className="border-b border-(--color-borde) px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold">{linea.name}</h1>
+            <p className="truncate text-xs text-(--color-tenue)">
+              {linea.address ? `+${linea.address.split("@")[0]}` : linea.channelKind}
+            </p>
+          </div>
+          <span
+            title={conectado ? "Recibiendo en vivo" : "Reconectando"}
+            className="flex items-center gap-1.5 text-xs text-(--color-tenue)"
+          >
+            <span
+              aria-hidden
+              className={`size-2 rounded-full ${
+                conectado ? "bg-(--color-exito)" : "bg-(--color-apagado)"
+              }`}
+            />
+            {conectado ? "en vivo" : "…"}
+          </span>
+        </div>
+
+        <div className="relative mt-3">
+          <IconoBuscar className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-(--color-apagado)" />
+          <input
+            type="search"
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar conversación"
+            aria-label="Buscar conversación"
+            className="w-full rounded-lg bg-(--color-hundido) py-2 pr-8 pl-8.5 text-sm outline-none placeholder:text-(--color-apagado) focus:bg-(--color-panel) focus:ring-2 focus:ring-(--color-acento)"
+          />
+          {busqueda && (
+            <button
+              type="button"
+              onClick={() => setBusqueda("")}
+              aria-label="Limpiar búsqueda"
+              className="absolute top-1/2 right-2 -translate-y-1/2 text-(--color-apagado) hover:text-(--color-texto)"
             >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm">{c.displayName}</span>
-                <span className="block truncate text-xs text-(--color-tenue)">
-                  {c.kind === "group" ? "grupo" : "contacto"}
-                  {/* La dirección, como detalle: es lo que hace falta para la
-                      API, pero no es con lo que uno reconoce a nadie. */}
-                  {` · ${c.phone ? `+${c.phone.split("@")[0]}` : c.address}`}
-                  {c.lastMessageAt && ` · ${new Date(c.lastMessageAt).toLocaleString("es")}`}
-                </span>
-              </span>
-              {c.unreadCount > 0 && (
-                <span className="rounded-full bg-(--color-acento) px-2 py-0.5 text-xs text-white">
-                  {c.unreadCount}
-                </span>
-              )}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </>
+              <IconoCerrar className="size-4" />
+            </button>
+          )}
+        </div>
+      </header>
+
+      <div className="scroll-discreto flex-1 overflow-y-auto">
+        {visibles.length === 0 ? (
+          <p className="px-4 py-10 text-center text-sm text-(--color-tenue)">
+            {busqueda ? `Nada que coincida con «${busqueda}»` : "Sin conversaciones todavía."}
+          </p>
+        ) : (
+          <ul>
+            {visibles.map((c) => {
+              const activo = c.address === abierto;
+              return (
+                <li key={c.address}>
+                  <Link
+                    href={`/lineas/${linea.id}/chats/${encodeURIComponent(c.address)}`}
+                    aria-current={activo ? "page" : undefined}
+                    className={`flex items-center gap-3 px-4 py-2.5 transition-colors duration-150 ${
+                      activo ? "bg-(--color-acento-tenue)" : "hover:bg-(--color-hundido)"
+                    }`}
+                  >
+                    <Avatar nombre={c.displayName} direccion={c.address} kind={c.kind} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-sm font-medium">{c.displayName}</span>
+                        <span
+                          className={`shrink-0 text-[11px] ${
+                            c.unreadCount > 0
+                              ? "font-semibold text-(--color-acento-fuerte)"
+                              : "text-(--color-apagado)"
+                          }`}
+                        >
+                          {cuando(c.lastMessageAt)}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 flex items-center justify-between gap-2">
+                        <span className="truncate text-xs text-(--color-tenue)">
+                          {c.ultimo
+                            ? `${c.ultimoPropio ? "Tú: " : ""}${c.ultimo}`
+                            : c.phone
+                              ? `+${c.phone.split("@")[0]}`
+                              : c.address}
+                        </span>
+                        {c.unreadCount > 0 && (
+                          <span className="flex min-w-5 shrink-0 justify-center rounded-full bg-(--color-acento) px-1.5 text-[11px] leading-5 font-semibold text-(--color-sobre-acento)">
+                            {c.unreadCount > 99 ? "99+" : c.unreadCount}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </aside>
   );
 }

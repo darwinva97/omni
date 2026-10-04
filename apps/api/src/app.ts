@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
 import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
@@ -26,6 +26,15 @@ const MensajeSchema = z.object({
   providerMessageId: z.string().nullable(),
   /** El que puso quien envió. Permite reconocer el mensaje propio al volver. */
   clientMessageId: z.string().nullable(),
+  /**
+   * Quién lo escribió, en un grupo.
+   *
+   * En un chat de dos sobra —solo hay dos— pero en un grupo es lo que permite
+   * seguir una conversación: sin él, veinte burbujas iguales sin saber de
+   * quién es cada una.
+   */
+  senderAddress: z.string().nullable(),
+  senderName: z.string().nullable(),
   fromMe: z.boolean(),
   kind: z.string(),
   body: z.string().nullable(),
@@ -50,12 +59,50 @@ const ChatSchema = z.object({
   phone: z.string().nullable(),
   lastMessageAt: z.string().nullable(),
   unreadCount: z.number(),
+  /** Resumen del último mensaje, para la lista. `null` si aún no hay ninguno. */
+  ultimo: z.string().nullable(),
+  ultimoPropio: z.boolean(),
 }).openapi("Chat");
 
 interface FilaDeChat {
   address: string; kind: string; title: string | null;
   lastMessageAt: Date | null; unreadCount: number;
   pushName: string | null; savedName: string | null; phone: string | null;
+  ultimo?: string | null; ultimoPropio?: boolean;
+}
+
+/**
+ * El último mensaje de cada conversación, en UNA consulta.
+ *
+ * `DISTINCT ON` con el orden adecuado devuelve una fila por chat sin recorrer
+ * la tabla una vez por conversación: con sesenta chats, lo segundo son sesenta
+ * viajes a la base para pintar una lista.
+ */
+async function ultimosMensajes(
+  container: Container, lineId: string, direcciones: readonly string[],
+): Promise<Map<string, { texto: string; propio: boolean }>> {
+  if (direcciones.length === 0) return new Map();
+  const filas = await container.dbh.sql<
+    { chat_id: string; kind: string; body: string | null; from_me: boolean }[]
+  >`
+    SELECT DISTINCT ON (chat_id) chat_id, kind, body, from_me
+    FROM message
+    WHERE line_id = ${lineId} AND chat_id = ANY(${direcciones as string[]})
+      AND deleted_at IS NULL
+    ORDER BY chat_id, timestamp DESC`;
+
+  const nombres: Record<string, string> = {
+    image: "Foto", video: "Vídeo", audio: "Audio", sticker: "Sticker",
+    document: "Documento", location: "Ubicación", contact: "Contacto",
+    poll: "Encuesta", reaction: "Reacción",
+  };
+  return new Map(filas.map((f) => [
+    f.chat_id,
+    {
+      texto: f.body?.trim() || nombres[f.kind] || "Mensaje",
+      propio: f.from_me,
+    },
+  ]));
 }
 
 /**
@@ -82,6 +129,8 @@ function presentarChat(r: FilaDeChat) {
     phone: r.phone,
     lastMessageAt: r.lastMessageAt?.toISOString() ?? null,
     unreadCount: r.unreadCount,
+    ultimo: r.ultimo ?? null,
+    ultimoPropio: r.ultimoPropio ?? false,
   };
 }
 import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
@@ -422,7 +471,15 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       const visible = principal.kind === "api-key" && principal.allowedChats.length > 0
         ? rows.filter((r) => principal.allowedChats.includes(r.address))
         : rows;
-      return c.json({ data: visible.map(presentarChat) }, 200);
+
+      const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
+      return c.json({
+        data: visible.map((r) => presentarChat({
+          ...r,
+          ultimo: ultimos.get(r.address)?.texto ?? null,
+          ultimoPropio: ultimos.get(r.address)?.propio ?? false,
+        })),
+      }, 200);
     },
   );
 
@@ -464,7 +521,14 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .limit(1);
 
       if (!rows[0]) throw new OmniError("not_found", "esa conversación no existe en esta línea");
-      return c.json({ data: presentarChat(rows[0]) }, 200);
+      const ultimo = (await ultimosMensajes(container, lineId, [chat.value])).get(chat.value);
+      return c.json({
+        data: presentarChat({
+          ...rows[0],
+          ultimo: ultimo?.texto ?? null,
+          ultimoPropio: ultimo?.propio ?? false,
+        }),
+      }, 200);
     },
   );
 
@@ -499,12 +563,45 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .limit(limit);
 
       /*
+       * Los nombres de quienes escriben, en UNA consulta.
+       *
+       * Solo hace falta en los grupos, y ahí hay pocas personas distintas
+       * aunque haya cien mensajes: se piden los remitentes únicos y se reparten.
+       */
+      const remitentes = [...new Set(
+        rows.filter((r) => !r.fromMe && r.senderAddress && r.senderAddress !== chat.value)
+          .map((r) => r.senderAddress!),
+      )];
+      const nombres = new Map<string, string>();
+      if (remitentes.length > 0) {
+        const contactos = await container.dbh.db
+          .select({
+            address: contactTable.address,
+            pushName: contactTable.pushName,
+            savedName: contactTable.savedName,
+          })
+          .from(contactTable)
+          .where(and(
+            eq(contactTable.lineId, lineId),
+            inArray(contactTable.address, remitentes),
+          ));
+        for (const c of contactos) {
+          const nombre = c.savedName?.trim() || c.pushName?.trim();
+          if (nombre) nombres.set(c.address, nombre);
+        }
+      }
+
+      /*
        * Las URLs se firman aquí, no se guardan: caducan, y una URL caducada
        * guardada en la base es una imagen rota semanas después.
        */
       const data = await Promise.all(rows.map(async (r) => ({
         id: r.id, providerMessageId: r.providerMessageId,
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
+        senderAddress: r.senderAddress,
+        senderName: r.senderAddress
+          ? nombres.get(r.senderAddress) ?? `+${r.senderAddress.split("@")[0]}`
+          : null,
         kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
         media: r.mediaKey
           ? {

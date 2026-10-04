@@ -1,33 +1,35 @@
 "use client";
 
 import { useEffect, useOptimistic, useRef, useState, startTransition } from "react";
-import type { Medio as TipoMedio, Mensaje } from "@/lib/api";
+import type { Chat, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
+import { diaDeSeparador, hora, mismoDia } from "@/lib/formato";
+import { Acuse, Avatar } from "@/componentes/piezas";
+import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
 import { Grabadora } from "@/componentes/grabadora";
-import {
-  campoPara, ETIQUETAS, MAX_BYTES, tamanoLegible, type CampoDeMedio,
-} from "@/lib/adjuntar";
+import { FichaContacto } from "@/componentes/ficha-contacto";
+import { IconoAdjuntar, IconoCerrar, IconoEnviar, IconoInfo } from "@/componentes/iconos";
+import { campoPara, ETIQUETAS, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
+import { tamano } from "@/lib/formato";
 
-/**
- * La conversación, con los mensajes que llegan en vivo.
- *
- * El histórico lo trae el servidor; a partir de ahí, el WebSocket. Recargar la
- * página para ver si alguien ha contestado es exactamente lo que un panel de
- * mensajería no debe obligar a hacer.
- */
 /** Los tipos que se pintan como fichero y no como texto. */
 const MEDIOS = new Set(["image", "sticker", "video", "audio", "document"]);
+
+/** Un sticker va suelto, sin burbuja: con fondo se ve peor que en WhatsApp. */
+const SIN_BURBUJA = new Set(["sticker"]);
 
 export function Conversacion({
   lineId,
   chat,
+  info,
   iniciales,
   enviar,
   enviarMedio,
 }: {
   lineId: string;
   chat: string;
+  info: Chat | null;
   iniciales: Mensaje[];
   enviar: (texto: string) => Promise<Mensaje | null>;
   enviarMedio: (
@@ -36,7 +38,7 @@ export function Conversacion({
   ) => Promise<Mensaje | null>;
 }) {
   const [mensajes, setMensajes] = useState<Mensaje[]>(iniciales);
-  // Un solo socket por página, compartido con la lista de conversaciones.
+  const [ficha, setFicha] = useState(false);
   const { conectado, suscribir } = useEventos(lineId);
   const fondo = useRef<HTMLDivElement>(null);
   const formulario = useRef<HTMLFormElement>(null);
@@ -45,49 +47,13 @@ export function Conversacion({
   const [subiendo, setSubiendo] = useState(false);
   const [problema, setProblema] = useState<string | null>(null);
 
-  /**
-   * Sube el fichero y pide el envío.
-   *
-   * Dos pasos a propósito: la subida devuelve una clave del almacén y el envío
-   * la reutiliza, así que un reintento no vuelve a subir los bytes. El fichero
-   * va por el intermediario del panel, que nunca entrega una clave de API al
-   * navegador.
-   */
-  const mandarFichero = async (
-    file: File, campo: CampoDeMedio, pie: string, extra: Record<string, unknown> = {},
-  ): Promise<void> => {
-    setProblema(null);
-    setSubiendo(true);
-    try {
-      const cuerpo = new FormData();
-      cuerpo.append("file", file);
-      cuerpo.append("lineId", lineId);
-      const r = await fetch("/api/omni/v1/media", { method: "POST", body: cuerpo });
-      if (!r.ok) {
-        const detalle = (await r.json().catch(() => null)) as { detail?: string } | null;
-        throw new Error(detalle?.detail ?? `la subida falló (${r.status})`);
-      }
-      const { data } = (await r.json()) as { data: { storageKey: string } };
+  // Al cambiar de conversación entra otra lista: sin esto se vería el hilo
+  // anterior hasta que llegara el primer evento del nuevo.
+  useEffect(() => { setMensajes(iniciales); setFicha(false); }, [iniciales]);
 
-      const enviado = await enviarMedio(campo, data.storageKey, pie, file.name, extra);
-      if (enviado) {
-        setMensajes((prev) =>
-          prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
-      }
-      setAdjunto(null);
-      if (selector.current) selector.current.value = "";
-    } catch (e) {
-      // El error se ENSEÑA. Un adjunto que desaparece sin decir nada deja a
-      // quien envía creyendo que se mandó.
-      setProblema(e instanceof Error ? e.message : "no se pudo enviar el fichero");
-    } finally {
-      setSubiendo(false);
-    }
-  };
-
-  // Lo enviado aparece al instante y se marca como "enviando": esperar al
-  // servidor para pintar lo que el usuario acaba de escribir se siente roto.
-  const [conPendientes, añadirPendiente] = useOptimistic(
+  // Lo escrito aparece al instante. Esperar al servidor para pintar lo que
+  // acabas de escribir se siente roto aunque tarde 200 ms.
+  const [conPendientes, anadirPendiente] = useOptimistic(
     mensajes,
     (actuales: Mensaje[], texto: string) => [
       ...actuales,
@@ -101,15 +67,12 @@ export function Conversacion({
 
   useEffect(() => suscribir((evento, data) => {
     if (!evento.startsWith("message.")) return;
-
     const key = (data["key"] ?? {}) as { id?: string; remoteJid?: string; fromMe?: boolean };
 
     /*
-     * Los acuses se aplican por IDENTIFICADOR, sin mirar la conversación.
-     *
+     * Los acuses se aplican por IDENTIFICADOR, sin mirar la conversación:
      * WhatsApp puede reportar el chat de un acuse con otra forma de la misma
-     * dirección —teléfono donde nosotros tenemos un LID—, y filtrar por chat
-     * hacía que el estado de un mensaje propio no se actualizara nunca.
+     * dirección, y filtrar por chat dejaba el estado sin actualizar nunca.
      */
     if (evento === "message.receipt") {
       const estado = String(data["state"] ?? "");
@@ -123,11 +86,8 @@ export function Conversacion({
       return;
     }
 
-    /*
-     * El fichero de un medio llega DESPUÉS del mensaje: la descarga va en una
-     * cola, así que el mensaje ya se pintó con un hueco. Este aviso lo rellena
-     * sin recargar.
-     */
+    // El fichero llega DESPUÉS del mensaje —la descarga va en una cola—, así
+    // que el hueco pintado se rellena aquí sin recargar.
     if (evento === "message.updated") {
       const medio = data["media"] as TipoMedio | undefined;
       if (!medio) return;
@@ -137,7 +97,6 @@ export function Conversacion({
       return;
     }
 
-    // `upsert` duplica lo que ya llegó por `received`/`sent`: se ignora.
     if (evento === "message.upsert") return;
     if (key.remoteJid !== chat) return;
 
@@ -145,14 +104,10 @@ export function Conversacion({
       if (key.id && prev.some((x) => x.providerMessageId === key.id)) return prev;
 
       /*
-       * Un mensaje PROPIO que vuelve por el socket es el eco del que ya
-       * fijamos al enviarlo: no se añade otra vez, se le pone el identificador
-       * del proveedor, que es lo que falta para que los acuses lo encuentren.
-       *
-       * Se empareja por el identificador que pusimos NOSOTROS, que viaja con
-       * el evento. Antes se comparaba el texto, y eso falla con dos mensajes
-       * iguales seguidos y no sirve para un audio, que no tiene texto: por eso
-       * una nota de voz se quedaba en «queued» para siempre.
+       * Un mensaje propio que vuelve es el eco del que ya fijamos al enviarlo.
+       * Se empareja por el identificador que pusimos NOSOTROS, que viaja con el
+       * evento: comparar el texto falla con dos mensajes iguales seguidos y no
+       * sirve para un audio, que no tiene.
        */
       if (key.fromMe) {
         const cliente = data["clientMessageId"] as string | undefined;
@@ -181,182 +136,358 @@ export function Conversacion({
     });
   }), [chat, suscribir]);
 
+  const yaColocado = useRef(false);
   useEffect(() => {
-    fondo.current?.scrollIntoView({ behavior: "smooth" });
+    // Al abrir, de golpe: ver el hilo deslizarse desde arriba durante medio
+    // segundo cada vez que se entra en una conversación es ruido, no feedback.
+    fondo.current?.scrollIntoView({
+      behavior: yaColocado.current ? "smooth" : "instant",
+      block: "end",
+    });
+    yaColocado.current = true;
   }, [conPendientes.length]);
+  useEffect(() => { yaColocado.current = false; }, [chat]);
+
+  const mandarFichero = async (
+    file: File, campo: CampoDeMedio, pie: string, extra: Record<string, unknown> = {},
+  ): Promise<void> => {
+    setProblema(null);
+    setSubiendo(true);
+    try {
+      const cuerpo = new FormData();
+      cuerpo.append("file", file);
+      cuerpo.append("lineId", lineId);
+      const r = await fetch("/api/omni/v1/media", { method: "POST", body: cuerpo });
+      if (!r.ok) {
+        const detalle = (await r.json().catch(() => null)) as { detail?: string } | null;
+        throw new Error(detalle?.detail ?? `la subida falló (${r.status})`);
+      }
+      const { data } = (await r.json()) as { data: { storageKey: string } };
+
+      const enviado = await enviarMedio(campo, data.storageKey, pie, file.name, extra);
+      if (enviado) {
+        setMensajes((prev) =>
+          prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
+      }
+      setAdjunto(null);
+      if (selector.current) selector.current.value = "";
+    } catch (e) {
+      // El error se ENSEÑA: un adjunto que desaparece sin decir nada deja a
+      // quien envía creyendo que se mandó.
+      setProblema(e instanceof Error ? e.message : "no se pudo enviar el fichero");
+    } finally {
+      setSubiendo(false);
+    }
+  };
+
+  const esGrupo = info?.kind === "group";
+  const nombre = info?.displayName ?? chat;
+  const detalle = info?.phone
+    ? `+${info.phone.split("@")[0]}`
+    : info?.kind === "group" ? "Grupo" : chat;
 
   return (
-    <main className="mx-auto flex h-[calc(100dvh-57px)] max-w-3xl flex-col px-5">
-      <div className="flex items-center gap-2 py-2 text-xs text-(--color-tenue)">
-        <span
-          aria-hidden
-          className={`size-1.5 rounded-full ${conectado ? "bg-green-500" : "bg-(--color-tenue)"}`}
-        />
-        {conectado ? "en vivo" : "reconectando…"}
-      </div>
-
-      <ol className="flex-1 space-y-2 overflow-y-auto py-2">
-        {conPendientes.map((m) => (
-          <li key={m.id} className={m.fromMe ? "flex justify-end" : "flex justify-start"}>
-            <div
-              className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${
-                m.fromMe ? "bg-(--color-propio)" : "bg-(--color-ajeno)"
-              }`}
-            >
-              {MEDIOS.has(m.kind) ? (
-                <div className="space-y-1">
-                  <Medio kind={m.kind} medio={m.media} error={m.mediaError} />
-                  {/* El pie, cuando lo trae: en WhatsApp una foto puede venir
-                      con texto y perderlo sería perder la mitad del mensaje. */}
-                  {m.body && <p className="whitespace-pre-wrap break-words">{m.body}</p>}
-                </div>
-              ) : (
-                <p className="whitespace-pre-wrap break-words">
-                  {m.body ?? <em className="text-(--color-tenue)">{m.kind}</em>}
-                </p>
-              )}
-              <p className="mt-1 text-[10px] text-(--color-tenue)">
-                {new Date(m.timestamp).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}
-                {m.fromMe && ` · ${m.state}`}
-              </p>
-            </div>
-          </li>
-        ))}
-        <div ref={fondo} />
-      </ol>
-
-      {problema && (
-        <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-          {problema}
-        </p>
-      )}
-
-      {adjunto && (
-        <div className="flex items-center gap-3 border-t border-(--color-borde) py-2">
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm">{adjunto.file.name}</p>
-            <p className="text-xs text-(--color-tenue)">
-              {tamanoLegible(adjunto.file.size)} · {adjunto.file.type || "tipo desconocido"}
-            </p>
-          </div>
-
-          {/* Se puede cambiar el tipo: un WebP se adjunta como sticker por
-              defecto, pero a veces se quiere mandar como foto. */}
-          <select
-            value={adjunto.campo}
-            onChange={(e) => setAdjunto({ ...adjunto, campo: e.target.value as CampoDeMedio })}
-            className="rounded-lg border border-(--color-borde) bg-(--color-panel) px-2 py-1 text-xs"
+    <div className="flex h-full">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center gap-3 border-b border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
+          <Avatar nombre={nombre} direccion={chat} kind={info?.kind ?? "pn"} tamano="sm" />
+          <button
+            type="button"
+            onClick={() => setFicha((v) => !v)}
+            className="min-w-0 flex-1 text-left"
+            aria-expanded={ficha}
           >
-            {(Object.keys(ETIQUETAS) as CampoDeMedio[]).map((k) => (
-              <option key={k} value={k}>{ETIQUETAS[k]}</option>
-            ))}
-          </select>
+            <span className="block truncate text-sm font-semibold">{nombre}</span>
+            <span className="block truncate text-xs text-(--color-tenue)">{detalle}</span>
+          </button>
+
+          <span
+            title={conectado ? "Recibiendo en vivo" : "Reconectando"}
+            aria-live="polite"
+            className="flex items-center gap-1.5 text-xs text-(--color-tenue)"
+          >
+            <span
+              aria-hidden
+              className={`size-2 rounded-full ${
+                conectado ? "bg-(--color-exito)" : "bg-(--color-apagado)"
+              }`}
+            />
+            <span className="sr-only">
+              {conectado ? "Conexión en vivo activa" : "Reconectando"}
+            </span>
+          </span>
 
           <button
             type="button"
-            onClick={() => {
-              setAdjunto(null);
-              setProblema(null);
-              if (selector.current) selector.current.value = "";
-            }}
-            className="text-xs text-(--color-tenue) hover:underline"
+            onClick={() => setFicha((v) => !v)}
+            aria-label={ficha ? "Ocultar información" : "Ver información del contacto"}
+            className={`flex size-9 items-center justify-center rounded-lg transition-colors duration-150 ${
+              ficha
+                ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+                : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+            }`}
           >
-            quitar
+            <IconoInfo className="size-5" />
           </button>
-        </div>
-      )}
+        </header>
 
-      <form
-        ref={formulario}
-        action={async (formData) => {
-          const texto = String(formData.get("texto") ?? "").trim();
+        <ol className="scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
+          {conPendientes.map((m, i) => {
+            const anterior = conPendientes[i - 1];
+            const siguiente = conPendientes[i + 1];
+            const nuevoDia = !anterior || !mismoDia(anterior.timestamp, m.timestamp);
+            // Agrupar por remitente quita el ruido de una ráfaga: solo la
+            // última burbuja de cada tanda lleva pico y hora.
+            const primeroDeTanda = nuevoDia || anterior?.fromMe !== m.fromMe;
+            const ultimoDeTanda = !siguiente || siguiente.fromMe !== m.fromMe
+              || !mismoDia(siguiente.timestamp, m.timestamp);
+            const suelto = SIN_BURBUJA.has(m.kind) && m.media != null;
 
-          // Con adjunto, el texto es el PIE de la foto, no otro mensaje: dos
-          // mensajes separados no es lo que se pidió al escribir junto.
-          if (adjunto) {
-            formulario.current?.reset();
-            await mandarFichero(adjunto.file, adjunto.campo, texto);
-            return;
-          }
+            return (
+              <li key={m.id}>
+                {nuevoDia && (
+                  <div className="flex justify-center py-3">
+                    <span className="rounded-full bg-(--color-panel) px-3 py-1 text-[11px] font-medium text-(--color-tenue) shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
+                      {diaDeSeparador(m.timestamp)}
+                    </span>
+                  </div>
+                )}
 
-          if (!texto) return;
-          formulario.current?.reset();
-          startTransition(() => añadirPendiente(texto));
+                <div
+                  className={`mensaje-nuevo flex ${m.fromMe ? "justify-end" : "justify-start"} ${
+                    primeroDeTanda ? "mt-2" : ""
+                  }`}
+                >
+                  <div
+                    className={`relative max-w-[min(32rem,75%)] ${
+                      suelto
+                        ? ""
+                        : `rounded-(--radius-burbuja) border px-2.5 py-1.5 ${
+                            m.fromMe
+                              ? "border-(--color-propio-borde) bg-(--color-propio)"
+                              : "border-(--color-ajeno-borde) bg-(--color-ajeno)"
+                          } ${
+                            ultimoDeTanda
+                              ? m.fromMe ? "pico-propio" : "pico-ajeno"
+                              : ""
+                          }`
+                    }`}
+                  >
+                    {/*
+                      En un grupo, quién escribe. Sin esto, veinte burbujas
+                      iguales y ninguna forma de seguir quién dice qué.
+                    */}
+                    {esGrupo && !m.fromMe && primeroDeTanda && m.senderName && (
+                      <p
+                        className="mb-0.5 text-xs font-semibold"
+                        style={{
+                          color: `oklch(var(--l-remitente) 0.12 ${tonoDe(m.senderAddress ?? "")})`,
+                        }}
+                      >
+                        {m.senderName}
+                      </p>
+                    )}
 
-          /*
-           * Lo enviado se FIJA en el estado real con lo que devuelve el
-           * servidor. El estado optimista se descarta en cuanto la acción
-           * termina, así que sin esto el mensaje desaparecía de la pantalla y
-           * parecía no haberse enviado. Esperar al eco del WebSocket tampoco
-           * vale: puede tardar, y puede no llegar nunca si el transporte
-           * reporta la dirección de otra forma.
-           */
-          const enviado = await enviar(texto);
-          if (enviado) {
-            setMensajes((prev) =>
-              prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
-          }
-        }}
-        className="flex gap-2 border-t border-(--color-borde) py-3"
-      >
-        <input
-          ref={selector}
-          type="file"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            setProblema(null);
-            if (file.size > MAX_BYTES) {
-              // Se avisa ANTES de subir: mandar sesenta megas para que el otro
-              // lado los rechace es el viaje entero perdido.
-              setProblema(`${tamanoLegible(file.size)} es demasiado; el máximo es ${tamanoLegible(MAX_BYTES)}`);
-              e.target.value = "";
+                    {MEDIOS.has(m.kind) ? (
+                      <div className="space-y-1">
+                        <Medio kind={m.kind} medio={m.media} error={m.mediaError} />
+                        {/* El pie, cuando lo trae: en WhatsApp una foto puede
+                            venir con texto y perderlo es perder medio mensaje. */}
+                        {m.body && (
+                          <p className="px-0.5 text-sm wrap-anywhere whitespace-pre-wrap">
+                            {m.body}
+                            <Firma mensaje={m} />
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm wrap-anywhere whitespace-pre-wrap">
+                        {m.body ?? <em className="text-(--color-tenue)">{m.kind}</em>}
+                        <Firma mensaje={m} />
+                      </p>
+                    )}
+
+                    {/*
+                      Cuando no hay texto donde meter la hora —una foto sola, un
+                      sticker— va debajo, que es lo único que queda.
+                    */}
+                    {(!m.body || suelto) && (
+                      <span
+                        className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] text-(--color-apagado) ${
+                          suelto ? "pr-1" : ""
+                        }`}
+                      >
+                        <time dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                        {m.fromMe && <Acuse estado={m.state} />}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+          <div ref={fondo} />
+        </ol>
+
+        {problema && (
+          <p
+            role="alert"
+            className="border-t border-(--color-error) bg-(--color-error-tenue) px-4 py-2 text-xs text-(--color-error)"
+          >
+            {problema}
+          </p>
+        )}
+
+        {adjunto && (
+          <div className="flex items-center gap-3 border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm">{adjunto.file.name}</p>
+              <p className="text-xs text-(--color-tenue)">
+                {tamano(adjunto.file.size)} · {adjunto.file.type || "tipo desconocido"}
+              </p>
+            </div>
+
+            {/* El tipo se puede cambiar: un WebP se adjunta como sticker por
+                defecto, pero a veces se quiere mandar como foto. */}
+            <label className="text-xs text-(--color-tenue)">
+              <span className="sr-only">Enviar como</span>
+              <select
+                value={adjunto.campo}
+                onChange={(e) => setAdjunto({ ...adjunto, campo: e.target.value as CampoDeMedio })}
+                className="rounded-lg border border-(--color-borde) bg-(--color-panel) px-2 py-1.5 text-xs"
+              >
+                {(Object.keys(ETIQUETAS) as CampoDeMedio[]).map((k) => (
+                  <option key={k} value={k}>{ETIQUETAS[k]}</option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={() => {
+                setAdjunto(null);
+                setProblema(null);
+                if (selector.current) selector.current.value = "";
+              }}
+              aria-label="Quitar el adjunto"
+              className="flex size-8 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+            >
+              <IconoCerrar className="size-4" />
+            </button>
+          </div>
+        )}
+
+        <form
+          ref={formulario}
+          action={async (formData) => {
+            const texto = String(formData.get("texto") ?? "").trim();
+
+            // Con adjunto, lo escrito es el PIE y no otro mensaje: dos
+            // mensajes separados no es lo que se pidió al escribir junto.
+            if (adjunto) {
+              formulario.current?.reset();
+              await mandarFichero(adjunto.file, adjunto.campo, texto);
               return;
             }
-            setAdjunto({ file, campo: campoPara(file) });
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => selector.current?.click()}
-          disabled={subiendo}
-          aria-label="Adjuntar un fichero"
-          className="rounded-lg border border-(--color-borde) px-3 py-2 text-sm hover:bg-(--color-ajeno) disabled:opacity-50"
-        >
-          +
-        </button>
 
-        {/*
-          Mantener pulsado para grabar, soltar para enviar. Una nota de voz va
-          con `ptt`: para WhatsApp una nota grabada y un fichero de audio son
-          cosas distintas, y mandarla como fichero le quita la onda y la
-          reproducción continua.
-        */}
-        <Grabadora
-          tipo="audio"
-          deshabilitado={subiendo || adjunto !== null}
-          onError={setProblema}
-          onGrabado={(file) => mandarFichero(file, "audio", "", { ptt: true })}
-        />
-        <Grabadora
-          tipo="video"
-          deshabilitado={subiendo || adjunto !== null}
-          onError={setProblema}
-          onGrabado={(file) => mandarFichero(file, "video", "")}
-        />
-        <input
-          name="texto" autoComplete="off"
-          placeholder={adjunto ? "Pie de foto (opcional)…" : "Escribe un mensaje…"}
-          className="flex-1 rounded-lg border border-(--color-borde) bg-(--color-panel) px-3 py-2 text-sm outline-none focus:border-(--color-acento)"
-        />
-        <button
-          disabled={subiendo}
-          className="rounded-lg bg-(--color-acento) px-4 py-2 text-sm text-white hover:opacity-90 disabled:opacity-50"
+            if (!texto) return;
+            formulario.current?.reset();
+            startTransition(() => anadirPendiente(texto));
+
+            const enviado = await enviar(texto);
+            if (enviado) {
+              setMensajes((prev) =>
+                prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
+            }
+          }}
+          className="flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
-          {subiendo ? "Enviando…" : "Enviar"}
-        </button>
-      </form>
-    </main>
+          <input
+            ref={selector}
+            type="file"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              setProblema(null);
+              if (file.size > MAX_BYTES) {
+                // Se avisa ANTES de subir: mandar sesenta megas para que el
+                // otro lado los rechace es el viaje entero perdido.
+                setProblema(`${tamano(file.size)} es demasiado; el máximo es ${tamano(MAX_BYTES)}`);
+                e.target.value = "";
+                return;
+              }
+              setAdjunto({ file, campo: campoPara(file) });
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => selector.current?.click()}
+            disabled={subiendo}
+            aria-label="Adjuntar un fichero"
+            className="flex size-10 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-40"
+          >
+            <IconoAdjuntar className="size-5" />
+          </button>
+
+          <Grabadora
+            tipo="audio"
+            deshabilitado={subiendo || adjunto !== null}
+            onError={setProblema}
+            onGrabado={(file) => mandarFichero(file, "audio", "", { ptt: true })}
+          />
+          <Grabadora
+            tipo="video"
+            deshabilitado={subiendo || adjunto !== null}
+            onError={setProblema}
+            onGrabado={(file) => mandarFichero(file, "video", "")}
+          />
+
+          <input
+            name="texto"
+            autoComplete="off"
+            placeholder={adjunto ? "Añade un pie (opcional)…" : "Escribe un mensaje"}
+            className="min-w-0 flex-1 rounded-xl bg-(--color-hundido) px-4 py-2.5 text-sm outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
+          />
+
+          <button
+            disabled={subiendo}
+            aria-label="Enviar"
+            className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-(--color-acento) text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
+          >
+            <IconoEnviar className="size-5" />
+          </button>
+        </form>
+      </div>
+
+      {ficha && info && (
+        <FichaContacto
+          info={info}
+          mensajes={mensajes}
+          onCerrar={() => setFicha(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * La hora y el acuse, metidos en la última línea del texto.
+ *
+ * Es la densidad que hace que WhatsApp quepa: con la hora en su propia línea,
+ * un «vale» ocupa dos renglones y una ráfaga de diez mensajes cortos llena la
+ * pantalla sin decir nada. El hueco en blanco reserva el sitio para que la
+ * hora no se monte encima de la última palabra.
+ */
+function Firma({ mensaje }: { mensaje: Mensaje }) {
+  return (
+    <>
+      {/* Hueco reservado para que la hora no se monte sobre la última palabra. */}
+      <span aria-hidden className="inline-block w-14 select-none" />
+      <span className="float-right ml-1.5 inline-flex translate-y-0.5 items-center gap-1 text-[11px] leading-none text-(--color-apagado)">
+        <time dateTime={mensaje.timestamp}>{hora(mensaje.timestamp)}</time>
+        {mensaje.fromMe && <Acuse estado={mensaje.state} />}
+      </span>
+    </>
   );
 }

@@ -1,6 +1,6 @@
 import { apiFetchAuth } from "@/lib/api";
-import { Cabecera } from "@/lib/ui";
-import { Navegacion, Tabla } from "@/lib/ui-nav";
+import { Tabla } from "@/lib/ui-nav";
+import { Pagina } from "@/componentes/armazon";
 
 interface Entrega {
   id: string; event: string; status: string; attempt: number;
@@ -30,10 +30,8 @@ export default async function Entregas() {
   const muertas = entregas.filter((e) => e.status === "dead").length;
 
   return (
-    <>
-      <Cabecera titulo="entregas de webhooks" />
-      <Navegacion actual="/entregas" />
-      <main className="mx-auto max-w-5xl space-y-4 px-5 py-6">
+    <Pagina actual="/entregas" titulo="Entregas de webhook" descripcion="Cada intento con su resultado. Un webhook que falla tiene que verse, no desaparecer en silencio.">
+      <div className="space-y-5">
         {muertas > 0 && (
           <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
             <strong>{muertas} entrega{muertas > 1 ? "s" : ""} agotó sus intentos.</strong>{" "}
@@ -55,7 +53,7 @@ export default async function Entregas() {
             <span className="text-xs text-(--color-tenue)">{new Date(e.createdAt).toLocaleString("es")}</span>,
           ])}
         />
-      </main>
-    </>
+      </div>
+    </Pagina>
   );
 }

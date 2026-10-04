@@ -1,41 +1,211 @@
 @import "tailwindcss";
 
 /*
- * Una escala corta y deliberada.
+ * Sistema visual del panel.
  *
- * El panel enseña conversaciones, y una conversación se lee mejor con poco
- * contraste de color y mucho de jerarquía: el texto manda, el cromo desaparece.
+ * ESCENA: un portátil, jornadas largas, esta pestaña junto a otras diez y al
+ * WhatsApp Web que ya tienen abierto al lado. De ahí salen dos decisiones que
+ * no son de gusto: claro Y oscuro siguiendo al sistema —hay quien trabaja de
+ * noche y quien no—, y densidad de escritorio, no de móvil estirado.
+ *
+ * COLOR: restringido. Neutros con una pizca de frío y UN acento, un verde
+ * azulado que no es el verde de WhatsApp: esto se usa al lado de WhatsApp Web,
+ * y dos verdes casi iguales en dos pestañas es peor que uno distinto. El
+ * acento se reserva a la acción primaria, la selección actual y los estados;
+ * nunca decora.
+ *
+ * Las superficies van en tres niveles —fondo, panel, elevado— porque un panel
+ * de mensajería es columnas adosadas y sin esos escalones no se sabe dónde
+ * acaba una y empieza otra.
  */
 @theme {
-  --color-fondo: oklch(0.99 0.002 250);
+  /* Superficies, de atrás hacia delante. */
+  --color-fondo: oklch(0.97 0.004 240);
   --color-panel: oklch(1 0 0);
-  --color-borde: oklch(0.92 0.004 250);
-  --color-tenue: oklch(0.55 0.01 250);
-  --color-texto: oklch(0.22 0.01 250);
-  --color-acento: oklch(0.55 0.15 250);
-  --color-propio: oklch(0.95 0.03 150);
-  --color-ajeno: oklch(0.97 0.002 250);
+  --color-elevado: oklch(0.985 0.003 240);
+  --color-hundido: oklch(0.945 0.005 240);
+
+  /* Trazos. El sutil separa dentro de un grupo; el normal separa grupos. */
+  --color-borde: oklch(0.9 0.006 240);
+  --color-borde-sutil: oklch(0.94 0.005 240);
+
+  /* Texto, en tres pesos de jerarquía. */
+  --color-texto: oklch(0.24 0.012 240);
+  --color-tenue: oklch(0.52 0.014 240);
+  --color-apagado: oklch(0.64 0.012 240);
+
+  /* Acento. */
+  --color-acento: oklch(0.56 0.105 195);
+  --color-acento-fuerte: oklch(0.48 0.11 195);
+  --color-acento-tenue: oklch(0.95 0.025 195);
+  --color-sobre-acento: oklch(0.99 0 0);
+
+  /* Burbujas. La propia lleva el acento diluido; la ajena, la superficie. */
+  --color-propio: oklch(0.93 0.045 195);
+  --color-propio-borde: oklch(0.88 0.05 195);
+  --color-ajeno: oklch(1 0 0);
+  --color-ajeno-borde: oklch(0.92 0.005 240);
+
+  /*
+   * Acuse de lectura. Azul y no el acento: es la convención que la gente ya
+   * lee sin pensar, y aquí la familiaridad vale más que la coherencia.
+   */
+  --color-leido: oklch(0.6 0.16 245);
+
+  /* Estados. */
+  --color-exito: oklch(0.55 0.13 150);
+  --color-exito-tenue: oklch(0.95 0.04 150);
+  --color-aviso: oklch(0.62 0.13 75);
+  --color-aviso-tenue: oklch(0.96 0.05 85);
+  --color-error: oklch(0.56 0.18 27);
+  --color-error-tenue: oklch(0.96 0.03 27);
+
+  /* El lienzo de la conversación, que no es el panel. */
+  --color-lienzo: oklch(0.955 0.006 240);
+
+  --radius-burbuja: 0.75rem;
+
+  /*
+   * Luminosidad del nombre de quien escribe en un grupo.
+   *
+   * El tono sale de su dirección, pero la claridad tiene que cambiar con el
+   * tema: un tono al 52% se lee sobre blanco y desaparece sobre el lienzo
+   * oscuro. Es una variable y no dos clases porque el tono se calcula en
+   * tiempo de ejecución y no se puede escribir en una utilidad.
+   */
+  --l-remitente: 0.5;
 }
 
+/*
+ * El tema oscuro sobrescribe las variables, NO vuelve a declarar `@theme`.
+ *
+ * Tailwind v4 aplana cualquier `@theme` al `:root` global sin conservar la
+ * consulta de medios: con dos bloques `@theme`, el segundo gana siempre y el
+ * tema claro no existe. Costó verlo porque el panel se veía «bien»: oscuro, y
+ * oscuro era lo que todos esperábamos.
+ */
 @media (prefers-color-scheme: dark) {
-  @theme {
-    --color-fondo: oklch(0.17 0.008 250);
-    --color-panel: oklch(0.21 0.008 250);
-    --color-borde: oklch(0.28 0.008 250);
-    --color-tenue: oklch(0.65 0.01 250);
-    --color-texto: oklch(0.94 0.004 250);
-    --color-acento: oklch(0.72 0.13 250);
-    --color-propio: oklch(0.30 0.05 150);
-    --color-ajeno: oklch(0.25 0.008 250);
+  :root {
+    --color-fondo: oklch(0.155 0.008 240);
+    --color-panel: oklch(0.195 0.008 240);
+    --color-elevado: oklch(0.23 0.009 240);
+    --color-hundido: oklch(0.13 0.008 240);
+
+    --color-borde: oklch(0.29 0.009 240);
+    --color-borde-sutil: oklch(0.25 0.008 240);
+
+    --color-texto: oklch(0.95 0.004 240);
+    --color-tenue: oklch(0.7 0.012 240);
+    --color-apagado: oklch(0.58 0.012 240);
+
+    --color-acento: oklch(0.73 0.1 195);
+    --color-acento-fuerte: oklch(0.8 0.1 195);
+    --color-acento-tenue: oklch(0.28 0.04 195);
+    --color-sobre-acento: oklch(0.16 0.01 240);
+
+    --color-propio: oklch(0.32 0.045 195);
+    --color-propio-borde: oklch(0.37 0.05 195);
+    --color-ajeno: oklch(0.235 0.009 240);
+    --color-ajeno-borde: oklch(0.28 0.009 240);
+
+    --color-leido: oklch(0.72 0.14 245);
+
+    --color-exito: oklch(0.72 0.13 150);
+    --color-exito-tenue: oklch(0.28 0.05 150);
+    --color-aviso: oklch(0.78 0.12 80);
+    --color-aviso-tenue: oklch(0.3 0.06 80);
+    --color-error: oklch(0.7 0.16 27);
+    --color-error-tenue: oklch(0.3 0.07 27);
+
+    --color-lienzo: oklch(0.135 0.008 240);
+    --l-remitente: 0.78;
   }
 }
 
-html { color-scheme: light dark; }
+html {
+  color-scheme: light dark;
+}
 
 body {
   background: var(--color-fondo);
   color: var(--color-texto);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  /* Las cifras de una tabla se comparan mal si bailan de ancho. */
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Las horas y los contadores se comparan mal si bailan de ancho. */
   font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Foco visible y propio.
+ *
+ * El del navegador desaparece sobre los fondos oscuros del panel. Se dibuja
+ * con dos anillos para que se vea sobre cualquiera de los tres niveles de
+ * superficie.
+ */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-acento);
+  outline-offset: 2px;
+  border-radius: 0.375rem;
+}
+
+/*
+ * Barras de desplazamiento discretas.
+ *
+ * No es decoración: la columna de conversaciones y el hilo son dos zonas que
+ * se desplazan a la vez, y dos barras del sistema a ancho completo parten la
+ * pantalla en tercios visuales que no existen.
+ */
+@supports (scrollbar-width: thin) {
+  .scroll-discreto {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-borde) transparent;
+  }
+}
+
+/*
+ * El pico de la burbuja.
+ *
+ * Es lo que hace que un hilo se lea como conversación y no como una lista de
+ * tarjetas. Solo lo lleva el ÚLTIMO mensaje de cada tanda: repetirlo en cada
+ * burbuja de una ráfaga ensucia el borde y rompe la agrupación.
+ */
+.pico-propio::after,
+.pico-ajeno::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 0.5rem;
+  height: 0.75rem;
+}
+
+.pico-propio::after {
+  right: -0.45rem;
+  background: var(--color-propio);
+  clip-path: polygon(0 0, 0 100%, 100% 100%);
+  border-bottom-right-radius: 0.25rem;
+}
+
+.pico-ajeno::after {
+  left: -0.45rem;
+  background: var(--color-ajeno);
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+  border-bottom-left-radius: 0.25rem;
+}
+
+/* Entrada de un mensaje nuevo: una sola, corta, desde donde ya se ve. */
+@keyframes aparece-mensaje {
+  from {
+    opacity: 0;
+    transform: translateY(0.375rem);
+  }
+}
+
+.mensaje-nuevo {
+  animation: aparece-mensaje 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mensaje-nuevo {
+    animation: none;
+  }
 }

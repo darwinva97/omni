@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { grabar, puedeGrabar, reloj, type Grabador } from "@/lib/grabar";
+import { IconoCamara, IconoMicrofono } from "./iconos";
 
 /**
  * Grabar una nota de voz o un vídeo, como en WhatsApp.
@@ -101,7 +102,7 @@ export function Grabadora({
           ref={video}
           muted
           playsInline
-          className="pointer-events-none fixed right-4 bottom-24 z-10 h-40 w-32 rounded-lg border border-(--color-borde) object-cover"
+          className="pointer-events-none fixed right-6 bottom-24 z-20 h-44 w-36 rounded-xl border-2 border-(--color-error) object-cover shadow-[0_8px_24px_rgba(0,0,0,0.25)]"
         />
       )}
 
@@ -116,18 +117,20 @@ export function Grabadora({
           // Si el puntero se va fuera, se envía lo grabado en vez de perderlo.
           onPointerLeave={() => { if (grabando) void soltar(); }}
           onContextMenu={(e) => e.preventDefault()}
-          className={`rounded-lg border px-3 py-2 text-sm ${
+          className={`flex size-10 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ${
             grabando
-              ? "border-red-500 bg-red-500/20 text-red-400"
-              : "border-(--color-borde) hover:bg-(--color-ajeno)"
-          } disabled:opacity-50`}
+              ? "bg-(--color-error-tenue) text-(--color-error)"
+              : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+          } disabled:opacity-40`}
         >
-          {tipo === "audio" ? "🎙" : "🎥"}
+          {tipo === "audio" ? <IconoMicrofono className="size-5" /> : <IconoCamara className="size-5" />}
         </button>
 
         {grabando && (
           <>
-            <span className="text-xs text-red-400 tabular-nums">{reloj(segundos)}</span>
+            <span className="text-xs font-medium text-(--color-error) tabular-nums">
+              {reloj(segundos)}
+            </span>
             <button
               type="button"
               onClick={cancelar}

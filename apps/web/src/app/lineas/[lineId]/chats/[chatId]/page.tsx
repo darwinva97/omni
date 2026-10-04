@@ -1,8 +1,7 @@
 import { apiFetch, apiFetchAuth, type Chat, type Mensaje } from "@/lib/api";
-import { Cabecera } from "@/lib/ui";
 import { Conversacion } from "./conversacion";
 
-export default async function Chat({
+export default async function ChatAbierto({
   params,
 }: {
   params: Promise<{ lineId: string; chatId: string }>;
@@ -21,18 +20,17 @@ export default async function Chat({
   /**
    * Envía y DEVUELVE lo enviado.
    *
-   * Antes no devolvía nada, y el mensaje escrito desaparecía de la pantalla en
-   * cuanto la acción terminaba: el estado optimista de React se descarta al
-   * acabar, y lo que quedaba debajo no incluía el mensaje. Parecía que no se
-   * había enviado cuando sí.
+   * Si no devolviera nada, el mensaje escrito desaparecería de la pantalla al
+   * terminar la acción: el estado optimista de React se descarta al acabar y
+   * lo que queda debajo no lo incluye. Parecía no haberse enviado cuando sí.
    */
   async function enviar(texto: string): Promise<Mensaje | null> {
     "use server";
     const limpio = texto.trim();
     if (!limpio) return null;
 
-    // `clientMessageId` propio: si el envío se reintenta —por recarga, por red—
-    // el destinatario recibe UN mensaje, no dos.
+    // `clientMessageId` propio: si el envío se reintenta —por recarga, por
+    // red— el destinatario recibe UN mensaje, no dos.
     const clientMessageId = `panel-${crypto.randomUUID()}`;
     const res = await apiFetch<{ clientMessageId: string; messageId: string; state: string }>(
       `/v1/lines/${lineId}/messages`,
@@ -40,8 +38,7 @@ export default async function Chat({
     );
     return {
       id: res.messageId, providerMessageId: null, clientMessageId: res.clientMessageId,
-      fromMe: true,
-      kind: "text", body: limpio, state: res.state,
+      fromMe: true, kind: "text", body: limpio, state: res.state,
       timestamp: new Date().toISOString(),
     };
   }
@@ -50,8 +47,8 @@ export default async function Chat({
    * Envía un fichero ya subido.
    *
    * Se manda la `storageKey` que devolvió la subida, no los bytes: el fichero
-   * ya está en nuestro almacén, y volver a mandarlo por aquí lo subiría dos
-   * veces y lo metería entero en memoria del servidor del panel.
+   * ya está en nuestro almacén, y repetirlo lo subiría dos veces y lo metería
+   * entero en memoria del servidor del panel.
    */
   async function enviarMedio(
     campo: string, storageKey: string, pie: string, fileName: string,
@@ -71,8 +68,8 @@ export default async function Chat({
           [campo]: { storageKey },
           ...(pie ? { caption: pie } : {}),
           ...(campo === "document" && fileName ? { fileName } : {}),
-          // `ptt` llega desde la grabadora: es lo que distingue una nota de
-          // voz de un fichero de audio adjunto.
+          // `ptt` llega desde la grabadora: es lo que distingue una nota de voz
+          // de un fichero de audio adjunto.
           ...extra,
           clientMessageId,
         }),
@@ -80,28 +77,20 @@ export default async function Chat({
     );
     return {
       id: res.messageId, providerMessageId: null, clientMessageId,
-      fromMe: true,
-      kind: campo, body: pie || null, state: res.state,
+      fromMe: true, kind: campo, body: pie || null, state: res.state,
       timestamp: new Date().toISOString(),
-      // Llega con su URL firmada: así se ve en el momento y no tras recargar.
       media: res.media,
     };
   }
 
   return (
-    <>
-      <Cabecera
-        titulo={info?.displayName ?? chat}
-        detalle={info?.phone ? `+${info.phone.split("@")[0]} · ${chat}` : chat}
-        volver={{ href: `/lineas/${lineId}`, texto: "conversaciones" }}
-      />
-      <Conversacion
-        lineId={lineId}
-        chat={chat}
-        iniciales={[...mensajes].reverse()}
-        enviar={enviar}
-        enviarMedio={enviarMedio}
-      />
-    </>
+    <Conversacion
+      lineId={lineId}
+      chat={chat}
+      info={info}
+      iniciales={[...mensajes].reverse()}
+      enviar={enviar}
+      enviarMedio={enviarMedio}
+    />
   );
 }
