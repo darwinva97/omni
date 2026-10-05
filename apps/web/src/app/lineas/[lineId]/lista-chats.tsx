@@ -43,6 +43,11 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
    * «vaciar» toca WhatsApp y «quitar» no, y confundirlas es perder mensajes de
    * verdad o creer que se perdieron cuando siguen ahí.
    */
+  const quitar = (c: Chat): void => {
+    setChats((prev) => prev.filter((x) => x.address !== c.address));
+    if (abierto === c.address) router.push(`/lineas/${linea.id}`);
+  };
+
   const acciones = (c: Chat): OpcionMenu[] => {
     const pedir = async (ruta: string, init: RequestInit): Promise<boolean> => {
       const r = await fetch(`/api/omni/v1/lines/${linea.id}${ruta}`, init);
@@ -91,7 +96,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         },
       },
       {
-        texto: "Quitar de esta lista",
+        texto: "Quitar solo de aquí",
         peligro: true,
         Icono: IconoCerrar,
         onSelect: async () => {
@@ -99,9 +104,30 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
             `Se quita «${c.displayName}» de Omni. En WhatsApp sigue entera, y si `
             + "llega un mensaje nuevo volverá a aparecer aquí.",
           )) return;
-          if (await pedir(`/chats/${dir}`, { method: "DELETE" })) {
-            setChats((prev) => prev.filter((x) => x.address !== c.address));
-            if (abierto === c.address) router.push(`/lineas/${linea.id}`);
+          if (await pedir(`/chats/${dir}?scope=local`, { method: "DELETE" })) {
+            quitar(c);
+          }
+        },
+      },
+      {
+        /*
+         * La de verdad: desaparece también del teléfono.
+         *
+         * Va la última y con el aviso más duro porque es irreversible y toca
+         * algo que no está en esta pantalla: quien la pulse desde aquí no ve
+         * el WhatsApp donde va a desaparecer la conversación.
+         */
+        texto: "Eliminar en WhatsApp y aquí",
+        peligro: true,
+        Icono: IconoPapelera,
+        onSelect: async () => {
+          if (!confirm(
+            `«${c.displayName}» desaparecerá de WhatsApp: de tu teléfono y de los `
+            + "demás dispositivos enlazados, no solo de Omni.\n\n"
+            + "No se puede deshacer. Quien esté al otro lado conserva la suya.",
+          )) return;
+          if (await pedir(`/chats/${dir}?scope=network`, { method: "DELETE" })) {
+            quitar(c);
           }
         },
       },

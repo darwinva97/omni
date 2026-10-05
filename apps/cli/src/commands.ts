@@ -587,16 +587,22 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
-    name: "chat:quitar",
-    summary: "Quitar una conversación de nuestra lista; en WhatsApp sigue",
+    name: "chat:eliminar",
+    summary: "Eliminar una conversación; con --en-whatsapp también de la red",
     operation: "DELETE /v1/lines/{lineId}/chats/{chatId}",
     destructive: true,
     args: [
       { name: "linea", required: true, description: "Identificador de la línea" },
       { name: "chat", required: true, description: "Dirección del chat" },
     ],
+    flags: [{
+      name: "en-whatsapp",
+      description: "Borrarla también en WhatsApp, no solo aquí",
+    }],
     run: (c, a) => c.request("DELETE",
-      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}`),
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}`,
+      undefined,
+      { scope: a.flags["en-whatsapp"] === true ? "network" : "local" }),
   },
   {
     name: "contactos:sincronizar",

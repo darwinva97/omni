@@ -49,6 +49,7 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "group.invite": "groupInviteCode",
   "newsletter.read": "newsletterMetadata",
   "chat.clear": "clearChat",
+  "chat.delete": "deleteChat",
   "chat.archive": "archiveChat",
   "chat.mute": "muteChat",
   "chat.ephemeral": "setEphemeral",

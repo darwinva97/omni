@@ -41,7 +41,7 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
     "message.edit", "message.delete", "message.receipts",
     "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
-    "chat.clear",
+    "chat.clear", "chat.delete",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
     "call.receive", "call.reject",
     "community.read", "community.manage",
@@ -954,6 +954,19 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const { socket } = this.#require(lineId);
     const meta = await socket.newsletterCreate(name, description);
     return toNewsletterMetadata(meta);
+  }
+
+  async deleteChat(
+    lineId: LineId, chat: Address, anchor: readonly ChatAnchorMessage[],
+  ): Promise<void> {
+    const { socket } = this.#require(lineId);
+    if (anchor.length === 0) {
+      throw new OmniError(
+        "validation_failed",
+        "no hay ningún mensaje conocido en esa conversación desde el que borrarla",
+      );
+    }
+    await socket.chatModify({ delete: true, lastMessages: anclaBaileys(chat, anchor) }, chat.value);
   }
 
   async newsletterMetadata(lineId: LineId, newsletter: Address): Promise<NewsletterMetadata> {

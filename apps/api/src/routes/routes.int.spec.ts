@@ -527,6 +527,53 @@ run("nombres de conversaciones", () => {
   });
 });
 
+run("eliminar una conversación", () => {
+  const CHAT_BORRAR = "51900555666@s.whatsapp.net";
+
+  it("por defecto se quita solo de aquí, y en la red sigue", async () => {
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900555666", text: "hola" }),
+    });
+    await esperarChat(CHAT_BORRAR, true);
+
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(CHAT_BORRAR)}`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    await esperarChat(CHAT_BORRAR, false);
+
+    // En el transporte la conversación sigue: «quitar de aquí» no la toca.
+    expect(container.sandbox!.thread(LINE as never, CHAT_BORRAR).length).toBeGreaterThan(0);
+  });
+
+  it("con scope=network desaparece TAMBIÉN del transporte", async () => {
+    /*
+     * Es la diferencia que la gente quiere cuando dice «eliminar»: que no
+     * aparezca. Vaciar deja el chat en la lista sin mensajes; esto lo quita.
+     */
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900555666", text: "otra vez" }),
+    });
+    await esperarChat(CHAT_BORRAR, true);
+
+    const res = await call(
+      `/v1/lines/${LINE}/chats/${enc(CHAT_BORRAR)}?scope=network`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    await esperarChat(CHAT_BORRAR, false);
+    expect(container.sandbox!.thread(LINE as never, CHAT_BORRAR)).toHaveLength(0);
+  });
+
+  async function esperarChat(chat: string, debeExistir: boolean): Promise<void> {
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const res = await call(`/v1/lines/${LINE}/chats/${enc(chat)}`);
+      if ((res.status === 200) === debeExistir) return;
+      if (Date.now() > limite) {
+        throw new Error(`la conversación ${debeExistir ? "no apareció" : "no se fue"}`);
+      }
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+});
+
 run("los dos nombres de un contacto", () => {
   const CHAT_NOMBRES = "51900333444@s.whatsapp.net";
 

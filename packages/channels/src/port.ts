@@ -125,6 +125,14 @@ export interface ChannelDriverOptional {
    * no lo necesite simplemente lo ignora.
    */
   clearChat?(lineId: LineId, chat: Address, anchor: readonly ChatAnchorMessage[]): Promise<void>;
+  /**
+   * Borra la conversación ENTERA de la red, no solo su contenido.
+   *
+   * Vaciar deja el chat en la lista, vacío; esto lo quita. Son dos cosas
+   * distintas y la gente quiere la segunda cuando dice «eliminar»: que no
+   * aparezca. Como vaciar, necesita el ancla del historial.
+   */
+  deleteChat?(lineId: LineId, chat: Address, anchor: readonly ChatAnchorMessage[]): Promise<void>;
 
   /**
    * Descarga y descifra el medio de un mensaje entrante.

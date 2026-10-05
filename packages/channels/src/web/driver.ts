@@ -36,7 +36,7 @@ export const WEB_DESCRIPTOR: ChannelDescriptor = {
     "send.sticker", "send.location", "send.contact", "send.poll", "send.reaction",
     "send.reply", "send.mentions", "send.forward",
     "message.edit", "message.delete", "message.receipts",
-    "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.clear",
+    "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.clear", "chat.delete",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "contact.check", "contact.block", "contact.profile",
     "call.receive",
@@ -361,6 +361,14 @@ export class WhatsappWebDriver extends EventEmitterBase implements ChannelDriver
     return chats
       .filter((c) => c.isGroup)
       .map((c) => toGroupMetadata(parseAddress(c.id?._serialized ?? ""), c));
+  }
+
+  async deleteChat(lineId: LineId, chat: Address): Promise<void> {
+    const { cliente } = this.#require(lineId);
+    const c = (await cliente.getChatById(toWebId(chat))) as unknown as {
+      delete: () => Promise<unknown>;
+    };
+    await c.delete();
   }
 
   async clearChat(lineId: LineId, chat: Address): Promise<void> {

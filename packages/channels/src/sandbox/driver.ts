@@ -80,7 +80,7 @@ export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
     "send.reply", "send.mentions", "send.viewOnce", "send.forward",
     "message.edit", "message.delete", "message.receipts",
     "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
-    "chat.clear", "send.forward", "contact.profile", "contact.block",
+    "chat.clear", "chat.delete", "send.forward", "contact.profile", "contact.block",
     "community.read", "community.manage", "catalog.read", "catalog.manage",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
@@ -689,6 +689,15 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       forwarded: true,
     });
     return { providerMessageId: copia.id, state: copia.state, timestamp: copia.timestamp };
+  }
+
+  async deleteChat(lineId: LineId, chat: Address): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    await this.clearChat(lineId, chat);
+    line.archivados.delete(chat.value);
+    line.silenciados.delete(chat.value);
+    await this.emit("chat.updated", line.orgId, lineId, { chat: chat.value, deleted: true });
   }
 
   async clearChat(lineId: LineId, chat: Address): Promise<void> {

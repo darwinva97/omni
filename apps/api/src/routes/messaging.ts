@@ -280,12 +280,19 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
   app.openapi(
     createRoute({
       method: "delete", path: "/v1/lines/{lineId}/chats/{chatId}",
-      tags: ["chats"], summary: "Quitar una conversación de NUESTRA lista",
+      tags: ["chats"], summary: "Eliminar una conversación",
       description:
-        "Borra lo que guardamos de ella: sus mensajes y su ficha. NO la borra " +
-        "en WhatsApp —ahí sigue, con todo— y si llega un mensaje nuevo vuelve a " +
-        "aparecer. Para vaciarla también en la red está `DELETE .../messages`.",
-      request: { params: lineChat },
+        "`scope=local` (por defecto) borra solo lo que guardamos: en WhatsApp " +
+        "sigue entera, y si llega un mensaje nuevo vuelve a aparecer aquí.\n\n" +
+        "`scope=network` la borra TAMBIÉN en WhatsApp: desaparece de la lista " +
+        "del teléfono y de los demás dispositivos enlazados. No es lo mismo que " +
+        "vaciarla, que la deja en la lista sin mensajes.",
+      request: {
+        params: lineChat,
+        query: z.object({
+          scope: z.enum(["local", "network"]).default("local"),
+        }),
+      },
       responses: {
         200: json(z.object({ data: z.object({ deleted: z.number() }) }), "quitada"),
         ...errors,
@@ -293,8 +300,41 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
     }),
     async (c) => {
       const { lineId, chatId } = c.req.valid("param");
+      const { scope } = c.req.valid("query");
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.clear"), { lineId, chat });
+
+      if (scope === "network") {
+        const driver = await driverOf(lineId);
+        assertCapability(driver, "chat.delete");
+
+        /*
+         * El ancla se lee ANTES de borrar nada: son los últimos mensajes que
+         * conocemos, y WhatsApp los necesita para saber hasta dónde borra.
+         * Después de vaciar nuestra tabla ya no existirían.
+         */
+        const ultimos = await container.dbh.db
+          .select({
+            providerMessageId: messageTable.providerMessageId,
+            fromMe: messageTable.fromMe,
+            timestamp: messageTable.timestamp,
+          })
+          .from(messageTable)
+          .where(and(eq(messageTable.lineId, lineId), eq(messageTable.chatId, chat.value)))
+          .orderBy(desc(messageTable.timestamp))
+          .limit(5);
+
+        await driver.deleteChat!(
+          lineId as LineId, chat,
+          ultimos
+            .filter((m) => m.providerMessageId !== null)
+            .map((m) => ({
+              providerMessageId: m.providerMessageId!,
+              fromMe: m.fromMe,
+              timestamp: m.timestamp.getTime(),
+            })),
+        );
+      }
 
       const borrados = await container.dbh.db
         .delete(messageTable)

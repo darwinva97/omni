@@ -44,7 +44,7 @@ export const capabilities = [
   "message.edit", "message.delete", "message.receipts",
   // chats
   "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
-  "chat.clear",
+  "chat.clear", "chat.delete",
   // grupos
   "group.read", "group.create", "group.manage", "group.invite", "group.participants",
   /*

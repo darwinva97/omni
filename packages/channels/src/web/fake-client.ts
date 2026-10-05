@@ -19,6 +19,7 @@ export interface FakeWebControl {
   readonly cambiosDeGrupo: { id: string; asunto?: string; desc?: string }[];
   readonly salidas: string[];
   readonly vaciados: string[];
+  readonly borrados: string[];
   readonly archivados: { id: string; archivado: boolean }[];
   readonly silenciados: { id: string; hasta: Date | null }[];
   readonly bloqueos: { id: string; bloqueado: boolean }[];
@@ -39,6 +40,7 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
     cambiosDeGrupo: [],
     salidas: [],
     vaciados: [],
+    borrados: [],
     archivados: [],
     silenciados: [],
     bloqueos: [],
@@ -79,6 +81,7 @@ export function createFakeWebClient(opts: { numero?: string } = {}): FakeWebCont
     setDescription: async (desc: string) => { control.cambiosDeGrupo.push({ id, desc }); },
     leave: async () => { control.salidas.push(id); },
     clearMessages: async () => { control.vaciados.push(id); },
+    delete: async () => { control.borrados.push(id); },
     archive: async () => { control.archivados.push({ id, archivado: true }); },
     unarchive: async () => { control.archivados.push({ id, archivado: false }); },
     mute: async (hasta?: Date) => { control.silenciados.push({ id, hasta: hasta ?? null }); },
