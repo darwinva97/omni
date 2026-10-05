@@ -666,7 +666,18 @@ export class EngineRuntime {
       // guarda primero y aquí falla algo, el chat queda con un LID que ya no
       // se puede atar a nadie, porque el servidor solo lo dice esta vez.
       await this.#aprenderIdentidad(envelope);
-      if (envelope.event === "message.received") await this.#persistInbound(envelope);
+      /*
+       * Se guardan los entrantes Y los que salen del TELÉFONO.
+       *
+       * Un mensaje escrito desde la aplicación de WhatsApp llega aquí como eco
+       * con `fromMe`, y antes se tiraba: la conversación en el panel se quedaba
+       * con la mitad, sin lo que el propio usuario había contestado desde el
+       * móvil. Los que salen de aquí ya tienen su fila desde que se encolan, y
+       * el eco los reconoce y no los duplica.
+       */
+      if (envelope.event === "message.received" || envelope.event === "message.sent") {
+        await this.#persistirMensaje(envelope, envelope.event === "message.sent");
+      }
       /*
        * Los nombres se aprenden DESPUÉS de persistir.
        *
@@ -1177,21 +1188,57 @@ export class EngineRuntime {
     return filas[0] ? tryParseAddress(filas[0].lid) : null;
   }
 
-  async #persistInbound(envelope: EventEnvelope): Promise<void> {
+  async #persistirMensaje(envelope: EventEnvelope, propio: boolean): Promise<void> {
     const d = envelope.data as {
       key: { id: string; remoteJid: string; participant?: string };
       kind?: MessageKind; text?: string | null; timestamp?: number;
+      clientMessageId?: string;
     };
     const chat = parseAddress(d.key.remoteJid);
     const when = new Date(d.timestamp ?? envelope.timestamp);
+
+    /*
+     * Un eco de lo que mandamos NOSOTROS ya tiene su fila.
+     *
+     * Se reconoce por el identificador del cliente, que el driver adjunta a lo
+     * que salió de aquí, y si no lo hay, por el del proveedor. Sin esta
+     * comprobación, cada mensaje enviado desde el panel aparecería dos veces:
+     * el que insertamos al encolar y el que vuelve del servidor.
+     */
+    if (propio) {
+      const yaEsta = await this.#deps.db
+        .select({ id: messageTable.id })
+        .from(messageTable)
+        .where(and(
+          eq(messageTable.lineId, envelope.lineId),
+          d.clientMessageId
+            ? eq(messageTable.clientMessageId, d.clientMessageId)
+            : eq(messageTable.providerMessageId, d.key.id),
+        ))
+        .limit(1);
+      if (yaEsta.length > 0) {
+        // Puede faltarle el identificador del proveedor si el eco llegó antes
+        // de que el envío lo anotara: se completa aquí.
+        await this.#deps.db
+          .update(messageTable)
+          .set({ providerMessageId: d.key.id })
+          .where(and(
+            eq(messageTable.id, yaEsta[0]!.id),
+            isNull(messageTable.providerMessageId),
+          ));
+        return;
+      }
+    }
 
     await this.#deps.db
       .insert(messageTable)
       .values({
         id: `m-${envelope.lineId}-${d.key.id}`, timestamp: when,
         lineId: envelope.lineId, chatId: chat.value, providerMessageId: d.key.id,
-        senderAddress: d.key.participant ?? chat.value, fromMe: false,
-        kind: d.kind ?? "text", body: d.text ?? null, state: "delivered",
+        senderAddress: d.key.participant ?? chat.value, fromMe: propio,
+        kind: d.kind ?? "text", body: d.text ?? null,
+        // Lo escrito desde el teléfono ya salió: nace enviado, no en cola.
+        state: propio ? "sent" : "delivered",
         raw: envelope.data as never,
       })
       .onConflictDoNothing();
@@ -1229,11 +1276,21 @@ export class EngineRuntime {
       .insert(chatTable)
       .values({
         id: `c-${envelope.lineId}-${chat.value}`, lineId: envelope.lineId,
-        address: chat.value, kind: chat.kind, lastMessageAt: when, unreadCount: 1,
+        address: chat.value, kind: chat.kind, lastMessageAt: when,
+        unreadCount: propio ? 0 : 1,
       })
       .onConflictDoUpdate({
         target: [chatTable.lineId, chatTable.address],
-        set: { lastMessageAt: when, unreadCount: sql`${chatTable.unreadCount} + 1` },
+        set: {
+          lastMessageAt: when,
+          /*
+           * Lo propio no suma pendientes: lo escribiste tú. Y además los PONE A
+           * CERO, porque escribir desde el teléfono significa que ya has leído
+           * esa conversación —es lo que hace WhatsApp— y dejar el globo puesto
+           * obligaría a abrirla aquí solo para apagarlo.
+           */
+          unreadCount: propio ? sql`0` : sql`${chatTable.unreadCount} + 1`,
+        },
       });
   }
 

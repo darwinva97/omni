@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mintApiKey, parseApiKey, verifySecret } from "./keys.js";
+import { mintApiKey, secretoDe, parseApiKey, verifySecret } from "./keys.js";
 
 describe("claves de API", () => {
   it("acuña una clave usable y verificable", async () => {
@@ -11,8 +11,24 @@ describe("claves de API", () => {
 
   it("el secreto NO se guarda en claro", async () => {
     const k = await mintApiKey();
-    const secret = k.plaintext.split("_")[2]!;
+    /*
+     * El secreto se saca con el analizador, NO partiendo por `_`.
+     *
+     * Es base64url, que incluye el guion bajo, y el guion bajo es también el
+     * separador: `split("_")[2]` devuelve un fragmento en el 41% de las
+     * claves. Esta prueba fallaba sola de vez en cuando por eso, comparando
+     * contra un trozo de una letra que aparecía en cualquier hash.
+     */
+    const secret = secretoDe(k.plaintext)!;
+    expect(secret.length).toBeGreaterThan(20);
     expect(k.secretHash).not.toContain(secret);
+  });
+
+  it("una clave con guion bajo en el secreto se analiza entera", async () => {
+    // Es lo que rompía las pruebas y lo que rompería a cualquiera que parta la
+    // clave a mano: el analizador llega hasta el final a propósito.
+    const falsa = "omni_0123456789ab_aa_bb_cc";
+    expect(secretoDe(falsa)).toBe("aa_bb_cc");
   });
 
   it("dos claves nunca coinciden", async () => {

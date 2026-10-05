@@ -4,7 +4,7 @@ import { apiKeyTable, createDatabase, lineTable, migrate, orgTable, type DbHandl
 import { loadConfig } from "../config.js";
 import { buildContainer, type Container } from "../container.js";
 import { createApp } from "../app.js";
-import { mintApiKey } from "../keys.js";
+import { mintApiKey, secretoDe } from "../keys.js";
 
 const URL_DB = process.env["OMNI_TEST_DATABASE_URL"];
 const run = URL_DB ? describe : describe.skip;
@@ -524,6 +524,86 @@ run("nombres de conversaciones", () => {
       SELECT push_name FROM contact
       WHERE line_id = ${LINE} AND address = '51900555444@s.whatsapp.net'`;
     expect(filas[0]?.["push_name"]).toBe("Alan Turing");
+  });
+});
+
+run("lo escrito desde el teléfono", () => {
+  const CHAT_TEL = "51900777111@s.whatsapp.net";
+
+  it("un mensaje enviado desde la app aparece en la conversación", async () => {
+    /*
+     * Llega como eco con `fromMe` y antes se tiraba: la conversación en el
+     * panel se quedaba con la mitad, sin lo que el propio usuario había
+     * contestado desde el móvil.
+     */
+    await container.runtime.publish("message.sent", LINE, {
+      key: { id: "SBX-tel-1", remoteJid: CHAT_TEL, fromMe: true },
+      kind: "text", text: "escrito desde el teléfono", timestamp: Date.now(),
+    });
+
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const { data } = await j<{ data: { body: string | null; fromMe: boolean; state: string }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(CHAT_TEL)}/messages?limit=10`));
+      const m = data.find((x) => x.body === "escrito desde el teléfono");
+      if (m) {
+        expect(m.fromMe).toBe(true);
+        // Ya salió: nace enviado, no en cola.
+        expect(m.state).toBe("sent");
+        return;
+      }
+      if (Date.now() > limite) throw new Error("no apareció lo escrito desde el teléfono");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  });
+
+  it("no suma pendientes y además los pone a cero", async () => {
+    // Escribir desde el teléfono significa que ya has leído esa conversación.
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900777111", text: "te escribo" }),
+    });
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const { data } = await j<{ data: { unreadCount: number } }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(CHAT_TEL)}`));
+      if (data.unreadCount > 0) break;
+      if (Date.now() > limite) throw new Error("no llegó a tener pendientes");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    await container.runtime.publish("message.sent", LINE, {
+      key: { id: "SBX-tel-2", remoteJid: CHAT_TEL, fromMe: true },
+      kind: "text", text: "contesto desde el móvil", timestamp: Date.now(),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+
+    const { data } = await j<{ data: { unreadCount: number } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT_TEL)}`));
+    expect(data.unreadCount).toBe(0);
+  });
+
+  it("el eco de lo que enviamos NOSOTROS no se duplica", async () => {
+    /*
+     * Nuestro envío ya tiene fila desde que se encola. Sin reconocer el eco,
+     * cada mensaje del panel aparecería dos veces.
+     */
+    await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ to: CHAT_TEL, text: "desde el panel", clientMessageId: "eco-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 800));
+
+    await container.runtime.publish("message.sent", LINE, {
+      key: { id: "SBX-eco-1", remoteJid: CHAT_TEL, fromMe: true },
+      clientMessageId: "eco-1",
+      kind: "text", text: "desde el panel", timestamp: Date.now(),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+
+    const filas = await dbh.sql`
+      SELECT count(*)::int AS n FROM message
+      WHERE line_id = ${LINE} AND chat_id = ${CHAT_TEL} AND body = 'desde el panel'`;
+    expect(filas[0]?.["n"]).toBe(1);
   });
 });
 
@@ -1062,7 +1142,10 @@ run("administración de líneas y credenciales", () => {
     const lista = await j<{ data: { id: string; prefix: string }[] }>(await call("/v1/api-keys"));
     const guardada = lista.data.find((k) => k.id === data.id)!;
     expect(guardada.prefix).toBe(data.prefix);
-    expect(JSON.stringify(guardada)).not.toContain(data.apiKey.split("_")[2]!);
+    // El secreto se saca con el analizador: es base64url, lleva guiones bajos,
+    // y partir por el separador devuelve un fragmento que sí aparece en
+    // cualquier JSON. Esta prueba fallaba sola por eso.
+    expect(JSON.stringify(guardada)).not.toContain(secretoDe(data.apiKey)!);
   });
 
   it("no deja revocar la última clave de administración viva", async () => {

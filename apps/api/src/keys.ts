@@ -53,6 +53,18 @@ export interface ParsedKey {
  */
 const KEY_RE = /^omni_([0-9a-f]{8,32})_(.+)$/;
 
+/**
+ * Saca el secreto de una clave completa.
+ *
+ * El secreto es base64url, que INCLUYE el guion bajo, y el guion bajo es
+ * también el separador. Partir por él y coger el tercer trozo devuelve un
+ * fragmento en el 41% de las claves. El analizador de arriba no cae porque su
+ * último grupo es `(.+)$`, hasta el final; quien lo haga a mano, sí.
+ */
+export function secretoDe(plaintext: string): string | null {
+  return parseApiKey(plaintext)?.secret ?? null;
+}
+
 export function parseApiKey(raw: string): ParsedKey | null {
   const token = raw.startsWith("Bearer ") ? raw.slice(7).trim() : raw.trim();
   const m = KEY_RE.exec(token);
