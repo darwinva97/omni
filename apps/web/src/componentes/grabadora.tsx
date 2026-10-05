@@ -117,7 +117,7 @@ export function Grabadora({
           // Si el puntero se va fuera, se envía lo grabado en vez de perderlo.
           onPointerLeave={() => { if (grabando) void soltar(); }}
           onContextMenu={(e) => e.preventDefault()}
-          className={`flex size-10 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ${
+          className={`flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 md:size-10 ${
             grabando
               ? "bg-(--color-error-tenue) text-(--color-error)"
               : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"

@@ -2,6 +2,8 @@ import { apiFetchAuth, type Mensaje } from "@/lib/api";
 import { Avatar } from "@/componentes/piezas";
 import { Medio } from "@/componentes/medio";
 import { cuando, hora } from "@/lib/formato";
+import Link from "next/link";
+import { IconoVolver } from "@/componentes/iconos";
 
 interface EstadoDe {
   address: string;
@@ -34,11 +36,20 @@ export default async function Estados({
 
   return (
     <div className="scroll-discreto h-full overflow-y-auto bg-(--color-lienzo)">
-      <header className="sticky top-0 z-10 border-b border-(--color-borde) bg-(--color-panel) px-6 py-3.5">
+      <header className="sticky top-0 z-10 flex items-center gap-2 border-b border-(--color-borde) bg-(--color-panel) px-4 py-3.5 md:px-6">
+        <Link
+          href={`/lineas/${lineId}`}
+          aria-label="Volver a las conversaciones"
+          className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) md:hidden"
+        >
+          <IconoVolver className="size-5" />
+        </Link>
+        <div>
         <h1 className="text-sm font-semibold">Estados</h1>
         <p className="text-xs text-(--color-tenue)">
           De las últimas 24 horas. Pasado ese plazo WhatsApp los borra.
         </p>
+        </div>
       </header>
 
       {autores.length === 0 ? (

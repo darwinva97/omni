@@ -199,7 +199,11 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   }, [chats, busqueda]);
 
   return (
-    <aside className="flex w-[22rem] shrink-0 flex-col border-r border-(--color-borde) bg-(--color-panel)">
+    <aside
+      className={`${
+        abierto || enEstados ? "hidden md:flex" : "flex"
+      } w-full shrink-0 flex-col border-r border-(--color-borde) bg-(--color-panel) md:w-[22rem]`}
+    >
       <header className="border-b border-(--color-borde) px-4 py-3">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">

@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
 import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
-import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
@@ -362,8 +362,15 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     async (c) => {
       const principal = c.get("principal");
       await authorize(principal, routeOf("line.list"));
+      /*
+       * Las borradas NO salen.
+       *
+       * El borrado es blando —la bitácora necesita saber qué línea mandó qué—
+       * pero eso es cosa de la base, no del usuario: una línea que borraste y
+       * sigue en la lista es un borrado que no funciona.
+       */
       const rows = await container.dbh.db.select().from(lineTable)
-        .where(eq(lineTable.orgId, principal.orgId));
+        .where(and(eq(lineTable.orgId, principal.orgId), isNull(lineTable.deletedAt)));
       // Una clave limitada ve SUS líneas, no un error: los listados se filtran.
       const visible = filterLines(principal, rows, (l) => l.id);
       return c.json({ data: visible.map(toLine) }, 200);

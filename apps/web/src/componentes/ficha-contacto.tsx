@@ -37,7 +37,7 @@ export function FichaContacto({
     : info.kind === "lid" ? "Contacto" : "Contacto";
 
   return (
-    <aside className="scroll-discreto flex w-80 shrink-0 flex-col overflow-y-auto border-l border-(--color-borde) bg-(--color-panel)">
+    <aside className="scroll-discreto absolute inset-0 z-20 flex flex-col overflow-y-auto border-l border-(--color-borde) bg-(--color-panel) md:static md:z-auto md:w-80 md:shrink-0">
       <header className="flex items-center gap-2 border-b border-(--color-borde) px-4 py-2.5">
         <h2 className="flex-1 text-sm font-semibold">Información</h2>
         <button

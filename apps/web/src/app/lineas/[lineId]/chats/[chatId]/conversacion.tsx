@@ -11,8 +11,9 @@ import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
   IconoAdjuntar, IconoCerrar, IconoCopiar, IconoDescargar, IconoEnviar,
-  IconoInfo, IconoPapelera,
+  IconoInfo, IconoPapelera, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
+import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { Reacciones, Stickers } from "@/componentes/stickers";
 import { campoPara, ETIQUETAS, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
@@ -293,9 +294,18 @@ export function Conversacion({
     : info?.kind === "group" ? "Grupo" : chat;
 
   return (
-    <div className="flex h-full">
+    <div className="relative flex h-full">
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
+        <header className="flex items-center gap-3 border-b border-(--color-borde) bg-(--color-panel) px-3 py-2.5 md:px-4">
+          {/* Volver a la lista. Solo en móvil: en escritorio la lista está al
+              lado y un botón de volver no llevaría a ninguna parte nueva. */}
+          <Link
+            href={`/lineas/${lineId}`}
+            aria-label="Volver a las conversaciones"
+            className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto) md:hidden"
+          >
+            <IconoVolver className="size-5" />
+          </Link>
           <Avatar
             nombre={nombre}
             direccion={chat}
@@ -592,7 +602,7 @@ export function Conversacion({
             onClick={() => selector.current?.click()}
             disabled={subiendo}
             aria-label="Adjuntar un fichero"
-            className="flex size-10 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-40"
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-40 md:size-10"
           >
             <IconoAdjuntar className="size-5" />
           </button>
@@ -603,15 +613,13 @@ export function Conversacion({
             disabled={subiendo}
             aria-label="Stickers"
             aria-expanded={stickers}
-            className={`flex size-10 shrink-0 items-center justify-center rounded-lg text-base transition-colors duration-150 disabled:opacity-40 ${
+            className={`flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 md:size-10 ${
               stickers
                 ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
                 : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
             }`}
           >
-            {/* Una carita es lo que la gente busca aquí; no es un icono de
-                sistema disfrazado, es el contenido del botón. */}
-            <span aria-hidden>🙂</span>
+            <IconoSticker className="size-5" />
           </button>
 
           <Grabadora
@@ -620,24 +628,32 @@ export function Conversacion({
             onError={setProblema}
             onGrabado={(file) => mandarFichero(file, "audio", "", { ptt: true })}
           />
-          <Grabadora
-            tipo="video"
-            deshabilitado={subiendo || adjunto !== null}
-            onError={setProblema}
-            onGrabado={(file) => mandarFichero(file, "video", "")}
-          />
+          {/*
+            El de vídeo, solo en escritorio.
+            En 390 píxeles, cuatro botones y el campo de texto no caben: el
+            campo se queda en «Escribe un mer». Grabar vídeo es lo menos
+            frecuente de los cuatro y un vídeo se puede adjuntar igual.
+          */}
+          <span className="hidden md:contents">
+            <Grabadora
+              tipo="video"
+              deshabilitado={subiendo || adjunto !== null}
+              onError={setProblema}
+              onGrabado={(file) => mandarFichero(file, "video", "")}
+            />
+          </span>
 
           <input
             name="texto"
             autoComplete="off"
             placeholder={adjunto ? "Añade un pie (opcional)…" : "Escribe un mensaje"}
-            className="min-w-0 flex-1 rounded-xl bg-(--color-hundido) px-4 py-2.5 text-sm outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
+            className="min-w-0 flex-1 rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
           />
 
           <button
             disabled={subiendo}
             aria-label="Enviar"
-            className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-(--color-acento) text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
+            className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-(--color-acento) md:size-10 text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
           >
             <IconoEnviar className="size-5" />
           </button>

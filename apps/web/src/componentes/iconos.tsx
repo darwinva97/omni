@@ -172,6 +172,20 @@ export const IconoMas = (p: Props) => (
   </Base>
 );
 
+/**
+ * Stickers.
+ *
+ * Dibujado y no la carita `🙂`: ese emoji lo pinta cada sistema a su manera y
+ * en un navegador sin fuente de emoji sale un cuadro vacío. Se vio en una
+ * captura de móvil, que es donde más duele.
+ */
+export const IconoSticker = (p: Props) => (
+  <Base {...p}>
+    <path d="M21 12a9 9 0 1 0-9 9c1 0 4-3 6-5s3-3 3-4Z" />
+    <path d="M12 21c0-3 1-5 4-5.5M9 10v.5M15 10v.5M9.5 14.5a3.5 3.5 0 0 0 4 .5" />
+  </Base>
+);
+
 export const IconoCopiar = (p: Props) => (
   <Base {...p}>
     <rect x="8" y="8" width="12" height="12" rx="2.5" />

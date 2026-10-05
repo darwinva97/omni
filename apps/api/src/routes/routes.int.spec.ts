@@ -527,6 +527,29 @@ run("nombres de conversaciones", () => {
   });
 });
 
+run("borrar una línea", () => {
+  it("deja de aparecer en el listado", async () => {
+    /*
+     * El borrado es blando —la bitácora necesita saber qué línea mandó qué—
+     * pero eso es cosa de la base. Una línea borrada que sigue en la lista es
+     * un borrado que no funciona.
+     */
+    const creada = await j<{ data: { id: string } }>(
+      await call("/v1/lines", {
+        method: "POST",
+        body: JSON.stringify({ name: "Para borrar", slug: `borrar-${Date.now()}`, channelKind: "sandbox" }),
+      }));
+
+    const antes = await j<{ data: { id: string }[] }>(await call("/v1/lines"));
+    expect(antes.data.map((l) => l.id)).toContain(creada.data.id);
+
+    expect((await call(`/v1/lines/${creada.data.id}`, { method: "DELETE" })).status).toBe(200);
+
+    const despues = await j<{ data: { id: string }[] }>(await call("/v1/lines"));
+    expect(despues.data.map((l) => l.id)).not.toContain(creada.data.id);
+  });
+});
+
 run("reacciones y stickers", () => {
   const CHAT_R = "51900888111@s.whatsapp.net";
 
