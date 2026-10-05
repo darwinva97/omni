@@ -237,8 +237,24 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     });
 
     ev.on("messages.upsert", ({ messages, type }) => {
-      if (type !== "notify") return;
-      for (const m of messages) void this.#onMessage(lineId, line, m);
+      /*
+       * Dos tipos, y hacen falta los dos.
+       *
+       * `notify` son los mensajes nuevos que llegan de fuera. Lo que uno
+       * escribe desde OTRO dispositivo de la misma cuenta —el teléfono, con el
+       * panel abierto— llega como `append`, porque para el servidor no es una
+       * notificación: es un mensaje que se añade a una conversación que ya
+       * tienes. Descartarlo dejaba el panel sin la mitad de la conversación.
+       *
+       * De `append` solo se acepta lo PROPIO. Ese tipo también lo usa WhatsApp
+       * para rellenar huecos de historial, y tragarlo entero reingeriría
+       * conversaciones viejas como si acabaran de llegar, subiéndolas en la
+       * lista y marcándolas sin leer.
+       */
+      for (const m of messages) {
+        if (type !== "notify" && !m.key.fromMe) continue;
+        void this.#onMessage(lineId, line, m);
+      }
     });
 
     ev.on("messages.update", (updates) => {

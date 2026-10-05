@@ -406,3 +406,76 @@ describe("reconocer el mensaje propio cuando vuelve", () => {
     expect((recibido.data as { clientMessageId?: string }).clientMessageId).toBeUndefined();
   });
 });
+
+describe("lo escrito desde otro dispositivo", () => {
+  it("un mensaje propio con type `append` SÍ se ingiere", async () => {
+    /*
+     * Es lo que uno escribe desde el teléfono con el panel abierto: para el
+     * servidor no es una notificación, es un mensaje que se añade a una
+     * conversación que ya tienes. Descartarlo dejaba el panel sin la mitad de
+     * la conversación, y se descartaba.
+     */
+    const fake = createFakeSocket({ id: "51999888777:1@s.whatsapp.net" });
+    const driver = new BaileysDriver({
+      makeSocket: () => fake.socket,
+      fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
+      linkWaitMs: 0,
+    });
+    const eventos: EventEnvelope[] = [];
+    driver.subscribe((e) => void eventos.push(e));
+    await driver.connect({
+      lineId: asLineId("l-append"), credentials: null, saveCredentials: async () => {},
+      config: { orgId: "org1" },
+    });
+    fake.emitConnection({ connection: "open" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    fake.emitRaw("messages.upsert", {
+      type: "append",
+      messages: [{
+        key: { id: "DESDE-EL-MOVIL", remoteJid: "51988777666@s.whatsapp.net", fromMe: true },
+        message: { conversation: "escrito desde el teléfono" },
+        messageTimestamp: 1_800_000_000,
+      }],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const enviado = eventos.find((e) => e.event === "message.sent");
+    expect(enviado).toBeDefined();
+    expect((enviado!.data as { text: string }).text).toBe("escrito desde el teléfono");
+  });
+
+  it("pero un mensaje AJENO con `append` no: es relleno de historial", async () => {
+    /*
+     * WhatsApp usa ese tipo también para rellenar huecos. Tragarlo entero
+     * reingeriría conversaciones viejas como si acabaran de llegar: subirían
+     * en la lista y se marcarían sin leer.
+     */
+    const fake = createFakeSocket({ id: "51999888777:1@s.whatsapp.net" });
+    const driver = new BaileysDriver({
+      makeSocket: () => fake.socket,
+      fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
+      linkWaitMs: 0,
+    });
+    const eventos: EventEnvelope[] = [];
+    driver.subscribe((e) => void eventos.push(e));
+    await driver.connect({
+      lineId: asLineId("l-append-2"), credentials: null, saveCredentials: async () => {},
+      config: { orgId: "org1" },
+    });
+    fake.emitConnection({ connection: "open" });
+    await new Promise((r) => setTimeout(r, 10));
+
+    fake.emitRaw("messages.upsert", {
+      type: "append",
+      messages: [{
+        key: { id: "VIEJO", remoteJid: "51988777666@s.whatsapp.net", fromMe: false },
+        message: { conversation: "de hace meses" },
+        messageTimestamp: 1_700_000_000,
+      }],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(eventos.some((e) => e.event === "message.received")).toBe(false);
+  });
+});
