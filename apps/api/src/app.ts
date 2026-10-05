@@ -1,7 +1,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
@@ -61,6 +61,10 @@ const MensajeSchema = z.object({
   }).nullable(),
   /** Por qué no hay fichero, cuando debería haberlo. */
   mediaError: z.string().nullable(),
+  /** Reacciones, agrupadas por emoji. `mia` dice si una es nuestra. */
+  reacciones: z.array(z.object({
+    emoji: z.string(), cuantas: z.number(), mia: z.boolean(),
+  })).default([]),
 }).openapi("Mensaje");
 
 const ChatSchema = z.object({
@@ -525,6 +529,54 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
   app.openapi(
     createRoute({
+      method: "get", path: "/v1/lines/{lineId}/stickers", tags: ["mensajes"],
+      summary: "Los stickers que han pasado por esta línea",
+      description:
+        "No existe una «biblioteca de stickers» que WhatsApp deje consultar: los " +
+        "paquetes viven en el teléfono y no se exponen. Esto es lo que SÍ se " +
+        "puede ofrecer y resulta igual de útil: los que has recibido o enviado, " +
+        "listos para reenviar sin volver a subirlos.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        query: z.object({ limit: z.coerce.number().int().min(1).max(100).default(60) }),
+      },
+      responses: {
+        200: json(z.object({ data: z.array(z.object({
+          storageKey: z.string(), url: z.string(), usados: z.number(),
+        })) }), "ok"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const { lineId } = c.req.valid("param");
+      const { limit } = c.req.valid("query");
+      await authorize(principal, routeOf("chat.list"), { lineId });
+
+      /*
+       * Se agrupan por fichero, no por mensaje: el mismo sticker llega veinte
+       * veces en un grupo activo, y una rejilla con veinte copias del mismo
+       * dibujo no es una biblioteca.
+       */
+      const filas = await container.dbh.sql<{ media_key: string; usados: number }[]>`
+        SELECT media_key, count(*)::int AS usados
+        FROM message
+        WHERE line_id = ${lineId} AND kind = 'sticker' AND media_key IS NOT NULL
+        GROUP BY media_key
+        ORDER BY max(timestamp) DESC
+        LIMIT ${limit}`;
+
+      const data = await Promise.all(filas.map(async (f) => ({
+        storageKey: f.media_key,
+        url: await container.storage.signedUrl(f.media_key, MEDIA_URL_TTL),
+        usados: f.usados,
+      })));
+      return c.json({ data }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get", path: "/v1/lines/{lineId}/statuses", tags: ["mensajes"],
       summary: "Los estados, agrupados por quién los publicó",
       description:
@@ -622,6 +674,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
               }
             : null,
           mediaError: null,
+          reacciones: [],
         }))),
       })));
 
@@ -744,6 +797,35 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
        * Las URLs se firman aquí, no se guardan: caducan, y una URL caducada
        * guardada en la base es una imagen rota semanas después.
        */
+      /*
+       * Las reacciones de todos los mensajes, en UNA consulta.
+       *
+       * Una por mensaje serían cien viajes a la base para pintar cien
+       * burbujas, y las reacciones son pocas: casi todas las filas no tienen.
+       */
+      const ids = rows.map((r) => r.providerMessageId).filter((x): x is string => x !== null);
+      const porMensaje = new Map<string, { emoji: string; cuantas: number; mia: boolean }[]>();
+      if (ids.length > 0) {
+        const filas = await container.dbh.db
+          .select()
+          .from(reactionTable)
+          .where(and(
+            eq(reactionTable.lineId, lineId),
+            inArray(reactionTable.providerMessageId, ids),
+          ));
+        for (const f of filas) {
+          const lista = porMensaje.get(f.providerMessageId) ?? [];
+          const previa = lista.find((x) => x.emoji === f.emoji);
+          if (previa) {
+            previa.cuantas++;
+            previa.mia = previa.mia || f.reactor === "yo";
+          } else {
+            lista.push({ emoji: f.emoji, cuantas: 1, mia: f.reactor === "yo" });
+          }
+          porMensaje.set(f.providerMessageId, lista);
+        }
+      }
+
       const data = await Promise.all(rows.map(async (r) => ({
         id: r.id, providerMessageId: r.providerMessageId,
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
@@ -766,6 +848,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
          * y nadie sabe si esperar o no.
          */
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
+        reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
       })));
 
       return c.json({

@@ -106,6 +106,14 @@ export const SendMessageInput = z
     /** Texto que acompaña a `buttons` o a `list`; su cuerpo, no un pie de foto. */
     bodyText: z.string().max(1024).optional(),
     footerText: z.string().max(60).optional(),
+    /**
+     * Manda un vídeo como GIF: en bucle, sin sonido y sin controles.
+     *
+     * WhatsApp NO envía ficheros GIF. Lo que enseña como «GIF» es un MP4 con
+     * esta marca; mandar el .gif tal cual llega como un fichero que el
+     * destinatario tiene que abrir aparte.
+     */
+    gifPlayback: z.boolean().optional(),
     /** Antepone un retardo simulando escritura. El motor lo respeta si el canal lo permite. */
     typingMs: z.number().int().min(0).max(30000).optional(),
   })

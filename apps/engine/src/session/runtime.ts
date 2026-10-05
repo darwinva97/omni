@@ -9,7 +9,7 @@ import { assertCapability } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable } from "@omni/db";
+import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -39,6 +39,9 @@ export function exigirFormatoDelMedio(campo: string, mimeType: string): void {
   if (campo === "image" && !tipo.startsWith("image/")) {
     throw new OmniError("validation_failed", `"${tipo}" no es una imagen`, { campo: "image" });
   }
+  // Un GIF es legítimo en el campo del vídeo: se convierte a MP4 antes de
+  // enviarlo, que es lo que WhatsApp llama «GIF».
+  if (campo === "video" && tipo === "image/gif") return;
   if (campo === "video" && !tipo.startsWith("video/")) {
     throw new OmniError("validation_failed", `"${tipo}" no es un vídeo`, { campo: "video" });
   }
@@ -673,6 +676,7 @@ export class EngineRuntime {
        */
       await this.#aprenderNombre(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
+      if (envelope.event === "message.reaction") await this.#aplicarReaccion(envelope);
       if (envelope.event === "session.connected" || envelope.event === "session.status") {
         const data = envelope.data as { state?: string; self?: string };
         if (data.state) await this.#setStatus(envelope.lineId, data.state);
@@ -1230,6 +1234,48 @@ export class EngineRuntime {
       .onConflictDoUpdate({
         target: [chatTable.lineId, chatTable.address],
         set: { lastMessageAt: when, unreadCount: sql`${chatTable.unreadCount} + 1` },
+      });
+  }
+
+  /**
+   * Guarda una reacción.
+   *
+   * La tabla existía desde el principio y no la escribía nadie: las reacciones
+   * llegaban, se publicaban por el socket y se perdían al recargar. Un emoji
+   * VACÍO significa retirarla —así lo expresa WhatsApp— y por eso borra la
+   * fila en vez de guardar una cadena vacía que luego habría que filtrar en
+   * cada consulta.
+   */
+  async #aplicarReaccion(envelope: EventEnvelope): Promise<void> {
+    const d = envelope.data as {
+      key?: { id?: string; participant?: string; fromMe?: boolean; remoteJid?: string };
+      emoji?: string;
+    };
+    const id = d.key?.id;
+    if (!id) return;
+
+    // Quién reacciona: en un grupo, el participante; en un chat de dos, el
+    // otro extremo, salvo que seamos nosotros.
+    const quien = d.key?.fromMe
+      ? "yo"
+      : d.key?.participant ?? d.key?.remoteJid ?? "desconocido";
+    const emoji = (d.emoji ?? "").trim();
+
+    if (!emoji) {
+      await this.#deps.db.delete(reactionTable).where(and(
+        eq(reactionTable.lineId, envelope.lineId),
+        eq(reactionTable.providerMessageId, id),
+        eq(reactionTable.reactor, quien),
+      ));
+      return;
+    }
+
+    await this.#deps.db
+      .insert(reactionTable)
+      .values({ lineId: envelope.lineId, providerMessageId: id, reactor: quien, emoji })
+      .onConflictDoUpdate({
+        target: [reactionTable.lineId, reactionTable.providerMessageId, reactionTable.reactor],
+        set: { emoji, at: new Date() },
       });
   }
 

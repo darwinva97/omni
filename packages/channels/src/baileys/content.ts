@@ -33,7 +33,12 @@ export function toBaileysContent(cmd: OutboundCommand): AnyMessageContent {
       return { image: media(), ...caption, ...mentions, ...(input.viewOnce ? { viewOnce: true } : {}) };
 
     case "video":
-      return { video: media(), ...caption, ...mentions, ...(input.viewOnce ? { viewOnce: true } : {}) };
+      return {
+        video: media(), ...caption, ...mentions,
+        ...(input.viewOnce ? { viewOnce: true } : {}),
+        // Lo que WhatsApp llama «GIF» es esto: un MP4 marcado así.
+        ...(input.gifPlayback ? { gifPlayback: true } : {}),
+      };
 
     case "audio":
       return {

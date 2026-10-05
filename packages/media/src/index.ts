@@ -38,7 +38,11 @@ export interface ConversorOptions {
 /** Qué hace falta convertir, decidido por el tipo que trae el fichero. */
 export function necesitaConversion(campo: string, mimeType: string): boolean {
   const tipo = mimeType.split(";")[0]!.trim().toLowerCase();
+  // Un GIF se manda por el campo del vídeo, y hay que convertirlo siempre.
+  if (campo === "video" && tipo === "image/gif") return true;
   if (campo === "audio") return tipo !== "audio/ogg" && tipo !== "audio/mpeg" && tipo !== "audio/mp4";
+  // Un GIF entra por el campo del vídeo y SIEMPRE hay que convertirlo:
+  // WhatsApp no reproduce ficheros GIF.
   if (campo === "video") return tipo !== "video/mp4";
   if (campo === "sticker") return tipo !== "image/webp";
   return false;

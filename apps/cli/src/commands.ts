@@ -551,6 +551,16 @@ export const COMMANDS: readonly Command[] = [
     run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/groups/sync`),
   },
   {
+    name: "stickers",
+    summary: "Los stickers que han pasado por la línea, listos para reenviar",
+    operation: "GET /v1/lines/{lineId}/stickers",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    flags: [{ name: "limite", description: "Cuántos devolver" }],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/stickers`, undefined, {
+      limit: flag(a, "limite"),
+    }),
+  },
+  {
     name: "estados",
     summary: "Los estados de las últimas horas, agrupados por quién publicó",
     operation: "GET /v1/lines/{lineId}/statuses",

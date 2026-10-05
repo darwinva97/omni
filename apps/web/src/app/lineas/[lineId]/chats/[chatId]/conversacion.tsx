@@ -14,6 +14,7 @@ import {
   IconoInfo, IconoPapelera,
 } from "@/componentes/iconos";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
+import { Reacciones, Stickers } from "@/componentes/stickers";
 import { campoPara, ETIQUETAS, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 
@@ -47,7 +48,9 @@ export function Conversacion({
   const fondo = useRef<HTMLDivElement>(null);
   const formulario = useRef<HTMLFormElement>(null);
   const selector = useRef<HTMLInputElement>(null);
-  const [adjunto, setAdjunto] = useState<{ file: File; campo: CampoDeMedio } | null>(null);
+  const [adjunto, setAdjunto] = useState<
+    { file: File; campo: CampoDeMedio; gif?: boolean } | null
+  >(null);
   const [subiendo, setSubiendo] = useState(false);
   const [problema, setProblema] = useState<string | null>(null);
 
@@ -202,6 +205,35 @@ export function Conversacion({
 
   const menu = useMenu();
   const [sobre, setSobre] = useState<Mensaje | null>(null);
+  const [stickers, setStickers] = useState(false);
+  const [reaccionando, setReaccionando] = useState<string | null>(null);
+
+  /** Reacciona a un mensaje. Repetir el mismo emoji la retira, como WhatsApp. */
+  const reaccionar = async (m: Mensaje, emoji: string): Promise<void> => {
+    if (!m.providerMessageId) return;
+    const yaEstaba = m.reacciones?.some((r) => r.mia && r.emoji === emoji);
+    const final = yaEstaba ? "" : emoji;
+
+    // Se pinta antes de que conteste la red: una reacción que tarda medio
+    // segundo en aparecer se pulsa dos veces.
+    setMensajes((prev) => prev.map((x) => {
+      if (x.id !== m.id) return x;
+      const otras = (x.reacciones ?? []).filter((r) => !r.mia);
+      return {
+        ...x,
+        reacciones: final ? [...otras, { emoji: final, cuantas: 1, mia: true }] : otras,
+      };
+    }));
+
+    await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId)}/reaction`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ emoji: final }),
+      },
+    ).catch(() => {});
+  };
 
   /**
    * Las acciones de un mensaje.
@@ -226,6 +258,12 @@ export function Conversacion({
         texto: "Descargar",
         Icono: IconoDescargar,
         onSelect: () => { window.open(m.media!.url, "_blank", "noreferrer"); },
+      });
+    }
+    if (m.providerMessageId) {
+      opciones.push({
+        texto: "Reaccionar",
+        onSelect: () => setReaccionando(m.id),
       });
     }
     if (m.fromMe && m.providerMessageId) {
@@ -386,6 +424,42 @@ export function Conversacion({
                       Cuando no hay texto donde meter la hora —una foto sola, un
                       sticker— va debajo, que es lo único que queda.
                     */}
+                    {(m.reacciones?.length ?? 0) > 0 && (
+                      <span
+                        className={`absolute -bottom-2.5 flex gap-0.5 ${
+                          m.fromMe ? "right-2" : "left-2"
+                        }`}
+                      >
+                        {m.reacciones!.map((r) => (
+                          <button
+                            key={r.emoji}
+                            type="button"
+                            onClick={() => void reaccionar(m, r.emoji)}
+                            title={r.mia ? "Tu reacción; púlsala para quitarla" : undefined}
+                            className={`flex items-center gap-0.5 rounded-full border px-1.5 py-px text-[11px] ${
+                              r.mia
+                                ? "border-(--color-acento) bg-(--color-acento-tenue)"
+                                : "border-(--color-borde) bg-(--color-panel)"
+                            }`}
+                          >
+                            <span>{r.emoji}</span>
+                            {r.cuantas > 1 && <span>{r.cuantas}</span>}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+
+                    {reaccionando === m.id && (
+                      <span
+                        className={`absolute -top-10 z-20 ${m.fromMe ? "right-0" : "left-0"}`}
+                      >
+                        <Reacciones
+                          onElegir={(e) => reaccionar(m, e)}
+                          onCerrar={() => setReaccionando(null)}
+                        />
+                      </span>
+                    )}
+
                     {(!m.body || suelto) && (
                       <span
                         className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] text-(--color-apagado) ${
@@ -461,7 +535,12 @@ export function Conversacion({
             // mensajes separados no es lo que se pidió al escribir junto.
             if (adjunto) {
               formulario.current?.reset();
-              await mandarFichero(adjunto.file, adjunto.campo, texto);
+              await mandarFichero(
+                adjunto.file, adjunto.campo, texto,
+                // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
+                // llama «GIF»; sin la marca llega como un vídeo normal.
+                adjunto.gif && adjunto.campo === "video" ? { gifPlayback: true } : {},
+              );
               return;
             }
 
@@ -475,8 +554,21 @@ export function Conversacion({
                 prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
             }
           }}
-          className="flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
+          className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
+          {stickers && (
+            <Stickers
+              lineId={lineId}
+              onCerrar={() => setStickers(false)}
+              onElegir={async (storageKey) => {
+                const enviado = await enviarMedio("sticker", storageKey, "", "sticker.webp");
+                if (enviado) {
+                  setMensajes((prev) =>
+                    prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
+                }
+              }}
+            />
+          )}
           <input
             ref={selector}
             type="file"
@@ -492,7 +584,7 @@ export function Conversacion({
                 e.target.value = "";
                 return;
               }
-              setAdjunto({ file, campo: campoPara(file) });
+              setAdjunto({ file, campo: campoPara(file), gif: file.type === "image/gif" });
             }}
           />
           <button
@@ -503,6 +595,23 @@ export function Conversacion({
             className="flex size-10 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-40"
           >
             <IconoAdjuntar className="size-5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setStickers((v) => !v)}
+            disabled={subiendo}
+            aria-label="Stickers"
+            aria-expanded={stickers}
+            className={`flex size-10 shrink-0 items-center justify-center rounded-lg text-base transition-colors duration-150 disabled:opacity-40 ${
+              stickers
+                ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+                : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+            }`}
+          >
+            {/* Una carita es lo que la gente busca aquí; no es un icono de
+                sistema disfrazado, es el contenido del botón. */}
+            <span aria-hidden>🙂</span>
           </button>
 
           <Grabadora

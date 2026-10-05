@@ -100,6 +100,8 @@ export interface Mensaje {
   media?: Medio | null;
   /** Por qué no hay fichero, cuando debería haberlo. */
   mediaError?: string | null;
+  /** Reacciones agrupadas por emoji. */
+  reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
 }
 
 export interface Yo {

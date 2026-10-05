@@ -20,6 +20,14 @@ export function campoPara(file: File): CampoDeMedio {
    * tipo en el selector.
    */
   if (tipo === "image/webp") return "sticker";
+  /*
+   * Un GIF va por el campo del VÍDEO.
+   *
+   * WhatsApp no envía ficheros GIF: lo que enseña como «GIF» es un MP4 en
+   * bucle, y el servidor lo convierte. Mandarlo como imagen llegaría como un
+   * fichero estático que hay que abrir aparte.
+   */
+  if (tipo === "image/gif") return "video";
   if (tipo.startsWith("image/")) return "image";
   if (tipo.startsWith("video/")) return "video";
   if (tipo.startsWith("audio/")) return "audio";

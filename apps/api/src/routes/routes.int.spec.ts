@@ -527,6 +527,68 @@ run("nombres de conversaciones", () => {
   });
 });
 
+run("reacciones y stickers", () => {
+  const CHAT_R = "51900888111@s.whatsapp.net";
+
+  it("una reacción recibida se guarda y vuelve con el mensaje", async () => {
+    /*
+     * La tabla existía desde el principio y no la escribía nadie: las
+     * reacciones llegaban, se publicaban por el socket y se perdían al
+     * recargar la página.
+     */
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900888111", text: "reacciona a esto" }),
+    });
+    const limite = Date.now() + 6000;
+    let id = "";
+    for (;;) {
+      const filas = await dbh.sql`
+        SELECT provider_message_id FROM message
+        WHERE line_id = ${LINE} AND chat_id = ${CHAT_R} ORDER BY timestamp DESC LIMIT 1`;
+      if (filas[0]?.["provider_message_id"]) { id = String(filas[0]["provider_message_id"]); break; }
+      if (Date.now() > limite) throw new Error("el mensaje no llegó");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    await container.runtime.publish("message.reaction", LINE, {
+      key: { id, remoteJid: CHAT_R, fromMe: false, participant: CHAT_R },
+      emoji: "👍",
+    });
+    await new Promise((r) => setTimeout(r, 600));
+
+    const { data } = await j<{ data: { providerMessageId: string | null; reacciones: { emoji: string; cuantas: number }[] }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT_R)}/messages?limit=10`));
+    const m = data.find((x) => x.providerMessageId === id)!;
+    expect(m.reacciones).toEqual([{ emoji: "👍", cuantas: 1, mia: false }]);
+  });
+
+  it("un emoji vacío RETIRA la reacción en vez de guardar una vacía", async () => {
+    // Es como lo expresa WhatsApp. Guardar la cadena vacía obligaría a
+    // filtrarla en cada consulta y a pintar un globo sin emoji.
+    const filas = await dbh.sql`
+      SELECT provider_message_id FROM message
+      WHERE line_id = ${LINE} AND chat_id = ${CHAT_R} ORDER BY timestamp DESC LIMIT 1`;
+    const id = String(filas[0]!["provider_message_id"]);
+
+    await container.runtime.publish("message.reaction", LINE, {
+      key: { id, remoteJid: CHAT_R, fromMe: false, participant: CHAT_R },
+      emoji: "",
+    });
+    await new Promise((r) => setTimeout(r, 600));
+
+    const quedan = await dbh.sql`
+      SELECT 1 FROM reaction WHERE line_id = ${LINE} AND provider_message_id = ${id}`;
+    expect(quedan).toHaveLength(0);
+  });
+
+  it("los stickers vistos se ofrecen agrupados, no repetidos", async () => {
+    const { data } = await j<{ data: { storageKey: string; url: string }[] }>(
+      await call(`/v1/lines/${LINE}/stickers`));
+    const claves = data.map((s) => s.storageKey);
+    expect(new Set(claves).size).toBe(claves.length);
+  });
+});
+
 run("estados y no leídos", () => {
   it("los estados NO salen entre las conversaciones", async () => {
     /*
@@ -788,8 +850,14 @@ run("medios entrantes e identidad", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/jpeg");
 
-    // Y con la firma tocada, no.
-    const falsa = await app.request(ruta.replace(/signature=./, "signature=0"));
+    /*
+     * Y con la firma tocada, no.
+     *
+     * Se sustituye la firma ENTERA, no su primer carácter: cambiarlo por un
+     * «0» dejaba la firma intacta una de cada dieciséis veces, y la prueba
+     * fallaba sola sin que nada estuviera roto.
+     */
+    const falsa = await app.request(ruta.replace(/signature=[^&]*/, "signature=invalida"));
     expect(falsa.status).toBe(403);
   });
 
