@@ -2,7 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
 import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
@@ -500,7 +500,12 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           eq(identityMapTable.lineId, chatTable.lineId),
           eq(identityMapTable.lid, chatTable.address),
         ))
-        .where(eq(chatTable.lineId, lineId))
+        /*
+         * `status@broadcast` NO es una conversación: es el muro de estados.
+         * Colarlo entre los chats pone «Estados» con el nombre del último que
+         * publicó, y ningún cliente de mensajería lo enseña ahí.
+         */
+        .where(and(eq(chatTable.lineId, lineId), ne(chatTable.address, "status@broadcast")))
         .orderBy(desc(chatTable.lastMessageAt)).limit(limit);
 
       const visible = principal.kind === "api-key" && principal.allowedChats.length > 0
@@ -514,6 +519,113 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         ultimo: ultimos.get(r.address)?.texto ?? null,
         ultimoPropio: ultimos.get(r.address)?.propio ?? false,
       })));
+      return c.json({ data }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/statuses", tags: ["mensajes"],
+      summary: "Los estados, agrupados por quién los publicó",
+      description:
+        "Los estados llegan todos a la misma dirección (`status@broadcast`), así " +
+        "que como conversación no significan nada: lo que importa es QUIÉN " +
+        "publicó y qué. Aquí vienen agrupados, como en el teléfono.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        query: z.object({ horas: z.coerce.number().int().min(1).max(168).default(24) }),
+      },
+      responses: {
+        200: json(z.object({ data: z.array(z.object({
+          address: z.string(),
+          displayName: z.string(),
+          avatarUrl: z.string().nullable(),
+          ultimo: z.string(),
+          items: z.array(MensajeSchema),
+        })) }), "ok"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const { lineId } = c.req.valid("param");
+      const { horas } = c.req.valid("query");
+      await authorize(principal, routeOf("chat.list"), { lineId });
+
+      /*
+       * Los estados caducan: WhatsApp los borra a las 24 horas y enseñar los de
+       * la semana pasada como si estuvieran vivos sería mentir sobre lo que la
+       * otra persona tiene publicado.
+       */
+      const desde = new Date(Date.now() - horas * 3600 * 1000);
+      const filas = await container.dbh.db.select().from(messageTable)
+        .where(and(
+          eq(messageTable.lineId, lineId),
+          eq(messageTable.chatId, "status@broadcast"),
+          gte(messageTable.timestamp, desde),
+        ))
+        .orderBy(desc(messageTable.timestamp))
+        .limit(500);
+
+      const autores = [...new Set(filas.map((f) => f.senderAddress).filter(Boolean))] as string[];
+      const nombres = new Map<string, { nombre: string; avatarKey: string | null }>();
+      if (autores.length > 0) {
+        const datos = await container.dbh.db
+          .select({
+            address: contactTable.address,
+            pushName: contactTable.pushName,
+            savedName: contactTable.savedName,
+          })
+          .from(contactTable)
+          .where(and(eq(contactTable.lineId, lineId), inArray(contactTable.address, autores)));
+        for (const d of datos) {
+          nombres.set(d.address, {
+            nombre: d.savedName?.trim() || d.pushName?.trim() || `+${d.address.split("@")[0]}`,
+            avatarKey: null,
+          });
+        }
+        const avatares = await container.dbh.db
+          .select({ address: chatTable.address, avatarKey: chatTable.avatarKey })
+          .from(chatTable)
+          .where(and(eq(chatTable.lineId, lineId), inArray(chatTable.address, autores)));
+        for (const a of avatares) {
+          const previo = nombres.get(a.address);
+          nombres.set(a.address, {
+            nombre: previo?.nombre ?? `+${a.address.split("@")[0]}`,
+            avatarKey: a.avatarKey,
+          });
+        }
+      }
+
+      const porAutor = new Map<string, typeof filas>();
+      for (const f of filas) {
+        const quien = f.senderAddress ?? "desconocido";
+        porAutor.set(quien, [...(porAutor.get(quien) ?? []), f]);
+      }
+
+      const data = await Promise.all([...porAutor.entries()].map(async ([address, items]) => ({
+        address,
+        displayName: nombres.get(address)?.nombre ?? `+${address.split("@")[0]}`,
+        avatarUrl: await urlDeAvatar(container, nombres.get(address)?.avatarKey),
+        ultimo: items[0]!.timestamp.toISOString(),
+        items: await Promise.all(items.map(async (r) => ({
+          id: r.id, providerMessageId: r.providerMessageId,
+          clientMessageId: r.clientMessageId, fromMe: r.fromMe,
+          senderAddress: r.senderAddress, senderName: null,
+          kind: r.kind, body: r.body, state: r.state,
+          timestamp: r.timestamp.toISOString(),
+          media: r.mediaKey
+            ? {
+                url: await container.storage.signedUrl(r.mediaKey, MEDIA_URL_TTL),
+                mimeType: r.mediaMime ?? "application/octet-stream",
+                fileName: r.mediaFileName, size: r.mediaSize,
+              }
+            : null,
+          mediaError: null,
+        }))),
+      })));
+
+      data.sort((a, b) => b.ultimo.localeCompare(a.ultimo));
       return c.json({ data }, 200);
     },
   );

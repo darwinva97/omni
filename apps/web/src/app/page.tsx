@@ -2,7 +2,8 @@ import Link from "next/link";
 import { apiFetchAuth, type Linea, type Yo } from "@/lib/api";
 import { Pagina } from "@/componentes/armazon";
 import { Aviso, Avatar, Estado, Vacio } from "@/componentes/piezas";
-import { IconoCanal, IconoPersona } from "@/componentes/iconos";
+import { IconoCanal } from "@/componentes/iconos";
+import { MenuLinea } from "./menu-linea";
 
 /**
  * Las líneas: la portada del panel.
@@ -80,11 +81,11 @@ export default async function Lineas() {
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
             {lineas.map((l) => (
-              <li key={l.id}>
-                <Link
-                  href={`/lineas/${l.id}`}
-                  className="flex h-full items-start gap-3 rounded-xl border border-(--color-borde) bg-(--color-panel) p-4 transition-colors duration-150 hover:border-(--color-acento)"
-                >
+              <li
+                key={l.id}
+                className="relative flex h-full items-start gap-3 rounded-xl border border-(--color-borde) bg-(--color-panel) p-4 transition-colors duration-150 hover:border-(--color-acento)"
+              >
+                <Link href={`/lineas/${l.id}`} className="flex min-w-0 flex-1 items-start gap-3">
                   <Avatar
                     nombre={l.name}
                     direccion={l.id}
@@ -93,7 +94,7 @@ export default async function Lineas() {
                   <span className="min-w-0 flex-1">
                     <span className="flex items-start justify-between gap-2">
                       <span className="truncate text-sm font-semibold">{l.name}</span>
-                      <Estado estado={l.status} />
+                      <Estado estado={l.enabled ? l.status : "pausada"} />
                     </span>
                     <span className="mt-1 block truncate text-xs text-(--color-tenue)">
                       {l.channelKind}
@@ -101,9 +102,11 @@ export default async function Lineas() {
                     <span className="mt-0.5 block truncate text-xs text-(--color-apagado)">
                       {l.address ? `+${l.address.split("@")[0]}` : "sin número todavía"}
                       {` · ${l.sendRatePerMinute}/min`}
+                      {!l.enabled && " · pausada"}
                     </span>
                   </span>
                 </Link>
+                <MenuLinea linea={l} />
               </li>
             ))}
           </ul>

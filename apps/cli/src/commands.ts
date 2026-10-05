@@ -551,6 +551,16 @@ export const COMMANDS: readonly Command[] = [
     run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/groups/sync`),
   },
   {
+    name: "estados",
+    summary: "Los estados de las últimas horas, agrupados por quién publicó",
+    operation: "GET /v1/lines/{lineId}/statuses",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    flags: [{ name: "horas", description: "Cuántas horas atrás mirar; 24 por defecto" }],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/statuses`, undefined, {
+      horas: flag(a, "horas"),
+    }),
+  },
+  {
     name: "chat",
     summary: "Una conversación con su nombre ya resuelto",
     operation: "GET /v1/lines/{lineId}/chats/{chatId}",

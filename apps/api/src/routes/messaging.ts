@@ -104,22 +104,65 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
   app.openapi(
     createRoute({
       method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/read",
-      tags: ["chats"], summary: "Marcar mensajes como leídos",
+      tags: ["chats"], summary: "Marcar como leído",
+      description:
+        "Sin `messageIds` marca la conversación ENTERA, que es lo que pasa al " +
+        "abrirla. Con la lista, solo esos mensajes.\n\n" +
+        "Pone a cero nuestro contador de pendientes además de decírselo a la red: " +
+        "sin eso, abrir un chat lo dejaba leído en el teléfono y con el globo de " +
+        "no leídos puesto aquí.",
       request: {
         params: lineChat,
-        ...body(z.object({ messageIds: z.array(z.string()).min(1).max(200) })),
+        ...body(z.object({
+          messageIds: z.array(z.string()).max(200).optional(),
+        })),
       },
-      responses: { 200: json(Ok, "hecho"), ...errors },
+      responses: { 200: json(z.object({ data: z.object({ ok: z.boolean(), marcados: z.number() }) }), "hecho"), ...errors },
     }),
     async (c) => {
       const { lineId, chatId } = c.req.valid("param");
       const { messageIds } = c.req.valid("json");
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.markRead"), { lineId, chat });
+
+      /*
+       * Sin lista, se cogen los últimos entrantes que conocemos.
+       *
+       * WhatsApp marca por mensaje, no por conversación: para decir «lo he
+       * leído todo» hay que nombrar mensajes. Veinte bastan —el acuse de uno
+       * reciente arrastra a los anteriores— y pedir doscientos por abrir un
+       * chat sería una ráfaga por cada clic.
+       */
+      let ids = messageIds ?? [];
+      if (ids.length === 0) {
+        const filas = await container.dbh.db
+          .select({ providerMessageId: messageTable.providerMessageId })
+          .from(messageTable)
+          .where(and(
+            eq(messageTable.lineId, lineId),
+            eq(messageTable.chatId, chat.value),
+            eq(messageTable.fromMe, false),
+          ))
+          .orderBy(desc(messageTable.timestamp))
+          .limit(20);
+        ids = filas.map((f) => f.providerMessageId).filter((x): x is string => x !== null);
+      }
+
       const driver = await driverOf(lineId);
       assertCapability(driver, "chat.read");
-      await driver.markRead!(lineId as LineId, chat, messageIds);
-      return c.json({ data: { ok: true } }, 200);
+      if (ids.length > 0) {
+        // Que la red falle no puede dejar el contador puesto: lo que el usuario
+        // ve aquí es nuestro, y ya lo ha leído.
+        await driver.markRead!(lineId as LineId, chat, ids).catch(() => {});
+      }
+
+      const { chatTable } = await import("@omni/db");
+      await container.dbh.db
+        .update(chatTable)
+        .set({ unreadCount: 0 })
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)));
+
+      return c.json({ data: { ok: true, marcados: ids.length } }, 200);
     },
   );
 

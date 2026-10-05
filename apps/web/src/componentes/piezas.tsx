@@ -118,6 +118,7 @@ export function Estado({ estado }: { estado: string }) {
     connecting: "bg-(--color-aviso-tenue) text-(--color-aviso)",
     "awaiting-link": "bg-(--color-aviso-tenue) text-(--color-aviso)",
     "logged-out": "bg-(--color-error-tenue) text-(--color-error)",
+    pausada: "bg-(--color-hundido) text-(--color-tenue)",
   };
   const etiqueta: Record<string, string> = {
     connected: "conectada",
@@ -125,6 +126,9 @@ export function Estado({ estado }: { estado: string }) {
     "awaiting-link": "esperando enlace",
     disconnected: "desconectada",
     "logged-out": "desvinculada",
+    // Pausada no es un estado del transporte: es nuestro, y por eso se dice
+    // aparte. La conexión puede estar viva y los envíos parados.
+    pausada: "pausada",
   };
   return (
     <span

@@ -55,6 +55,22 @@ export function Conversacion({
   // anterior hasta que llegara el primer evento del nuevo.
   useEffect(() => { setMensajes(iniciales); setFicha(false); }, [iniciales]);
 
+  /*
+   * Abrir una conversación la marca como leída.
+   *
+   * Es lo que hace cualquier cliente de mensajería, y sin ello el globo de no
+   * leídos se quedaba puesto mientras uno está leyendo justo esa conversación.
+   * Se avisa a la lista por el mismo socket que ya escucha, para que el
+   * contador baje sin recargar.
+   */
+  useEffect(() => {
+    void fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/read`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).catch(() => {});
+  }, [lineId, chat]);
+
   // Lo escrito aparece al instante. Esperar al servidor para pintar lo que
   // acabas de escribir se siente roto aunque tarde 200 ms.
   const [conPendientes, anadirPendiente] = useOptimistic(

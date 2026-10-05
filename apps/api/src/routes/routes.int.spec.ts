@@ -527,6 +527,62 @@ run("nombres de conversaciones", () => {
   });
 });
 
+run("estados y no leídos", () => {
+  it("los estados NO salen entre las conversaciones", async () => {
+    /*
+     * Llegan todos a la misma dirección, así que como conversación no
+     * significan nada: colados en la lista ponían «Estados» con el nombre del
+     * último que publicó, que no es de nadie.
+     */
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "SBX-est-1", remoteJid: "status@broadcast", fromMe: false },
+      pushName: "Quien publica", kind: "text", text: "un estado", timestamp: Date.now(),
+    });
+    await new Promise((r) => setTimeout(r, 700));
+
+    const { data } = await j<{ data: { address: string }[] }>(
+      await call(`/v1/lines/${LINE}/chats?limit=200`));
+    expect(data.map((c) => c.address)).not.toContain("status@broadcast");
+  });
+
+  it("pero sí en su propia vista, agrupados por quién publicó", async () => {
+    const { data } = await j<{ data: { address: string; items: unknown[] }[] }>(
+      await call(`/v1/lines/${LINE}/statuses`));
+    expect(data.length).toBeGreaterThan(0);
+    expect(data[0]!.items.length).toBeGreaterThan(0);
+  });
+
+  it("abrir una conversación pone su contador a cero", async () => {
+    // Sin esto, el globo de no leídos se quedaba puesto mientras uno está
+    // leyendo justo esa conversación.
+    const chat = "51900111999@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900111999", text: "uno" }),
+    });
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900111999", text: "dos" }),
+    });
+
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const { data } = await j<{ data: { unreadCount: number } }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+      if (data.unreadCount > 0) break;
+      if (Date.now() > limite) throw new Error("no llegó a tener pendientes");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(chat)}/read`, {
+      method: "POST", body: "{}",
+    });
+    expect(res.status).toBe(200);
+
+    const { data } = await j<{ data: { unreadCount: number } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+    expect(data.unreadCount).toBe(0);
+  });
+});
+
 run("eliminar una conversación", () => {
   const CHAT_BORRAR = "51900555666@s.whatsapp.net";
 

@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { Chat, Linea } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { cuando, resumen } from "@/lib/formato";
 import { Avatar } from "@/componentes/piezas";
 import {
-  IconoArchivar, IconoBuscar, IconoCerrar, IconoMas, IconoPapelera, IconoSilenciar,
+  IconoArchivar, IconoBuscar, IconoCanal, IconoCerrar, IconoMas, IconoPapelera,
+  IconoSilenciar,
 } from "@/componentes/iconos";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { useRouter } from "next/navigation";
@@ -31,7 +32,17 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   const [busqueda, setBusqueda] = useState("");
   const { conectado, suscribir } = useEventos(linea.id);
   const params = useParams<{ chatId?: string }>();
+  const ruta = usePathname();
+  const enEstados = ruta.endsWith("/estados");
   const abierto = params.chatId ? decodeURIComponent(params.chatId) : null;
+  // La conversación abierta no tiene pendientes: el contador avisaba de algo
+  // que se tiene delante.
+  useEffect(() => {
+    if (!abierto) return;
+    setChats((prev) => prev.map((c) =>
+      c.address === abierto && c.unreadCount > 0 ? { ...c, unreadCount: 0 } : c));
+  }, [abierto]);
+
   const menu = useMenu();
   const [sobre, setSobre] = useState<Chat | null>(null);
   const router = useRouter();
@@ -233,6 +244,28 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
           )}
         </div>
       </header>
+
+      {/*
+        Los estados tienen su propia entrada, arriba y fija: no son una
+        conversación y mezclarlos con ellas los dejaba con el nombre del último
+        que publicó, que no es de nadie.
+      */}
+      <Link
+        href={`/lineas/${linea.id}/estados`}
+        className={`flex items-center gap-3 border-b border-(--color-borde) px-4 py-2.5 transition-colors duration-150 ${
+          enEstados ? "bg-(--color-acento-tenue)" : "hover:bg-(--color-hundido)"
+        }`}
+      >
+        <span className="flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-(--color-acento) text-(--color-acento)">
+          <IconoCanal className="size-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Estados</span>
+          <span className="block text-xs text-(--color-tenue)">
+            Lo que publican, de las últimas 24 horas
+          </span>
+        </span>
+      </Link>
 
       <div className="scroll-discreto flex-1 overflow-y-auto">
         {visibles.length === 0 ? (
