@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
+  type Contact as Contacto,
   Browsers, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion,
   type WAMessage, type WASocket,
 } from "baileys";
@@ -296,12 +297,42 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       });
     });
 
-    ev.on("contacts.update", (contacts) => {
+    /*
+     * Los contactos llegan por DOS eventos y hacen falta los dos.
+     *
+     * `contacts.upsert` es el volcado inicial de la agenda al enlazar —de ahí
+     * salen casi todos los nombres guardados— y `contacts.update` son los
+     * cambios posteriores. Escuchando solo el segundo, una cuenta recién
+     * enlazada se queda sin un solo nombre de agenda hasta que alguien se
+     * renombre.
+     */
+    const anotarContactos = (contacts: readonly Partial<Contacto>[]): void => {
       for (const c of contacts) {
+        if (!c.id) continue;
         void this.emit("contact.updated", line.orgId, lineId, {
-          address: c.id, pushName: c.notify ?? null, name: c.name ?? null,
+          address: c.id,
+          // `name` es el que TÚ le pusiste en tu agenda; `notify` el que esa
+          // persona se puso a sí misma. Son dos datos distintos y los dos
+          // valen: el tuyo manda al enseñarlo, el suyo es el recambio.
+          savedName: c.name ?? c.verifiedName ?? null,
+          pushName: c.notify ?? null,
+          ...(c.imgUrl !== undefined ? { imgUrl: c.imgUrl } : {}),
         });
       }
+    };
+
+    ev.on("contacts.upsert", anotarContactos);
+    ev.on("contacts.update", anotarContactos);
+    /*
+     * Y el volcado del historial, que es de donde sale la AGENDA.
+     *
+     * Los nombres que uno guarda no viajan en los mensajes ni en la
+     * sincronización de estado: llegan aquí, con el volcado inicial. Sin
+     * escuchar esto, una cuenta puede tener ciento sesenta contactos conocidos
+     * y ni un solo nombre de los que su dueño les puso.
+     */
+    ev.on("messaging-history.set", ({ contacts }) => {
+      if (contacts?.length) anotarContactos(contacts);
     });
 
     ev.on("chats.update", (chats) => {
@@ -681,6 +712,23 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   async blockContact(lineId: LineId, address: Address, bloquear: boolean): Promise<void> {
     const { socket } = this.#require(lineId);
     await socket.updateBlockStatus(address.value, bloquear ? "block" : "unblock");
+  }
+
+  async resyncContacts(lineId: LineId): Promise<void> {
+    const { socket } = this.#require(lineId);
+    /*
+     * `critical_unblock_low` es la colección donde WhatsApp guarda la agenda.
+     * El `false` dice que NO es la sincronización inicial: pedirla como
+     * inicial haría bajar el historial entero otra vez.
+     */
+    await socket.resyncAppState(["critical_unblock_low"], false);
+  }
+
+  async profilePictureUrl(lineId: LineId, address: Address): Promise<string | null> {
+    const { socket } = this.#require(lineId);
+    // Quien tiene la foto oculta devuelve un error, no un hueco: eso no es un
+    // fallo del sistema, es una respuesta.
+    return (await socket.profilePictureUrl(address.value, "image").catch(() => undefined)) ?? null;
   }
 
   async contactProfile(lineId: LineId, address: Address): Promise<ContactProfile> {

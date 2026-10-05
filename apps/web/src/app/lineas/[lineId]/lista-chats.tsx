@@ -7,7 +7,11 @@ import type { Chat, Linea } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { cuando, resumen } from "@/lib/formato";
 import { Avatar } from "@/componentes/piezas";
-import { IconoBuscar, IconoCerrar } from "@/componentes/iconos";
+import {
+  IconoArchivar, IconoBuscar, IconoCerrar, IconoMas, IconoPapelera, IconoSilenciar,
+} from "@/componentes/iconos";
+import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
+import { useRouter } from "next/navigation";
 
 /**
  * La columna de conversaciones.
@@ -28,6 +32,81 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   const { conectado, suscribir } = useEventos(linea.id);
   const params = useParams<{ chatId?: string }>();
   const abierto = params.chatId ? decodeURIComponent(params.chatId) : null;
+  const menu = useMenu();
+  const [sobre, setSobre] = useState<Chat | null>(null);
+  const router = useRouter();
+
+  /**
+   * Las acciones de una conversación.
+   *
+   * Cada una dice EXACTAMENTE lo que hace, y el aviso de confirmación también:
+   * «vaciar» toca WhatsApp y «quitar» no, y confundirlas es perder mensajes de
+   * verdad o creer que se perdieron cuando siguen ahí.
+   */
+  const acciones = (c: Chat): OpcionMenu[] => {
+    const pedir = async (ruta: string, init: RequestInit): Promise<boolean> => {
+      const r = await fetch(`/api/omni/v1/lines/${linea.id}${ruta}`, init);
+      return r.ok;
+    };
+    const dir = encodeURIComponent(c.address);
+
+    return [
+      {
+        texto: "Silenciar un año",
+        Icono: IconoSilenciar,
+        onSelect: async () => {
+          const hasta = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+          await pedir(`/chats/${dir}/mute`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ until: hasta }),
+          });
+        },
+      },
+      {
+        texto: "Archivar",
+        Icono: IconoArchivar,
+        onSelect: async () => {
+          await pedir(`/chats/${dir}/archive`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ archived: true }),
+          });
+        },
+      },
+      {
+        texto: "Vaciar en WhatsApp",
+        peligro: true,
+        Icono: IconoPapelera,
+        onSelect: async () => {
+          if (!confirm(
+            `Se vaciará «${c.displayName}» TAMBIÉN en WhatsApp, en tu teléfono y en `
+            + "los demás dispositivos enlazados. Quien esté al otro lado conserva los suyos.",
+          )) return;
+          if (await pedir(`/chats/${dir}/messages`, { method: "DELETE" })) {
+            setChats((prev) => prev.map((x) =>
+              x.address === c.address ? { ...x, ultimo: null, unreadCount: 0 } : x));
+            router.refresh();
+          }
+        },
+      },
+      {
+        texto: "Quitar de esta lista",
+        peligro: true,
+        Icono: IconoCerrar,
+        onSelect: async () => {
+          if (!confirm(
+            `Se quita «${c.displayName}» de Omni. En WhatsApp sigue entera, y si `
+            + "llega un mensaje nuevo volverá a aparecer aquí.",
+          )) return;
+          if (await pedir(`/chats/${dir}`, { method: "DELETE" })) {
+            setChats((prev) => prev.filter((x) => x.address !== c.address));
+            if (abierto === c.address) router.push(`/lineas/${linea.id}`);
+          }
+        },
+      },
+    ];
+  };
 
   useEffect(() => suscribir(async (evento, data) => {
     if (!evento.startsWith("message.") && !evento.startsWith("chat.")) return;
@@ -143,11 +222,12 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                   <Link
                     href={`/lineas/${linea.id}/chats/${encodeURIComponent(c.address)}`}
                     aria-current={activo ? "page" : undefined}
-                    className={`flex items-center gap-3 px-4 py-2.5 transition-colors duration-150 ${
+                    onContextMenu={(e) => { setSobre(c); menu.enContexto(e); }}
+                    className={`group/fila relative flex items-center gap-3 px-4 py-2.5 transition-colors duration-150 ${
                       activo ? "bg-(--color-acento-tenue)" : "hover:bg-(--color-hundido)"
                     }`}
                   >
-                    <Avatar nombre={c.displayName} direccion={c.address} kind={c.kind} />
+                    <Avatar nombre={c.displayName} direccion={c.address} kind={c.kind} url={c.avatarUrl} />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline justify-between gap-2">
                         <span className="truncate text-sm font-medium">{c.displayName}</span>
@@ -170,10 +250,30 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                               : c.address}
                         </span>
                         {c.unreadCount > 0 && (
-                          <span className="flex min-w-5 shrink-0 justify-center rounded-full bg-(--color-acento) px-1.5 text-[11px] leading-5 font-semibold text-(--color-sobre-acento)">
+                          <span className="flex min-w-5 shrink-0 justify-center rounded-full bg-(--color-acento) px-1.5 text-[11px] leading-5 font-semibold text-(--color-sobre-acento) group-hover/fila:hidden">
                             {c.unreadCount > 99 ? "99+" : c.unreadCount}
                           </span>
                         )}
+                        {/*
+                          Aparece al pasar por encima, en el sitio del contador.
+                          El clic derecho hace lo mismo, pero sin algo visible
+                          nadie sabría que hay opciones.
+                        */}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Opciones de ${c.displayName}`}
+                          onClick={(e) => { setSobre(c); menu.enBoton(e); }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.preventDefault();
+                            setSobre(c);
+                            menu.enBoton(e as unknown as React.MouseEvent<HTMLElement>);
+                          }}
+                          className="hidden size-5 shrink-0 items-center justify-center rounded text-(--color-tenue) group-hover/fila:flex hover:text-(--color-texto)"
+                        >
+                          <IconoMas className="size-4" />
+                        </span>
                       </span>
                     </span>
                   </Link>
@@ -183,6 +283,11 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
           </ul>
         )}
       </div>
+      <Menu
+        punto={menu.punto}
+        opciones={sobre ? acciones(sobre) : []}
+        onCerrar={menu.cerrar}
+      />
     </aside>
   );
 }

@@ -527,6 +527,66 @@ run("nombres de conversaciones", () => {
   });
 });
 
+run("los dos nombres de un contacto", () => {
+  const CHAT_NOMBRES = "51900333444@s.whatsapp.net";
+
+  it("el que TÚ guardaste gana al que esa persona se puso", async () => {
+    /*
+     * Los dos se guardan y los dos valen: el tuyo manda al enseñarlo porque
+     * lo elegiste para reconocerla, y el suyo es el recambio cuando no la
+     * tienes en la agenda. Pisar uno con el otro perdería información.
+     */
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "SBX-nom-1", remoteJid: CHAT_NOMBRES, fromMe: false },
+      pushName: "Como se llama él",
+      kind: "text", text: "hola", timestamp: Date.now(),
+    });
+    await esperarNombre(CHAT_NOMBRES, "Como se llama él");
+
+    await container.runtime.publish("contact.updated", LINE, {
+      address: CHAT_NOMBRES,
+      savedName: "Como lo guardé yo",
+      pushName: "Como se llama él",
+    });
+    await esperarNombre(CHAT_NOMBRES, "Como lo guardé yo");
+
+    // Y el suyo sigue ahí: la ficha los enseña por separado.
+    const { data } = await j<{ data: { savedName: string; pushName: string } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT_NOMBRES)}`));
+    expect(data.savedName).toBe("Como lo guardé yo");
+    expect(data.pushName).toBe("Como se llama él");
+  });
+
+  it("un evento con solo el nombre propio NO borra el que guardaste", async () => {
+    // Es lo que pasa cada vez que alguien se renombra: llega su nombre nuevo y
+    // nada más. Si pisara, perderías tu agenda sin tocar nada.
+    await container.runtime.publish("contact.updated", LINE, {
+      address: CHAT_NOMBRES,
+      pushName: "Nombre nuevo suyo",
+    });
+    await new Promise((r) => setTimeout(r, 600));
+
+    const { data } = await j<{ data: { displayName: string; savedName: string; pushName: string } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT_NOMBRES)}`));
+    expect(data.savedName).toBe("Como lo guardé yo");
+    expect(data.pushName).toBe("Nombre nuevo suyo");
+    expect(data.displayName).toBe("Como lo guardé yo");
+  });
+
+  async function esperarNombre(chat: string, esperado: string): Promise<void> {
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const res = await call(`/v1/lines/${LINE}/chats/${enc(chat)}`);
+      if (res.status === 200) {
+        const { data } = await j<{ data: { displayName: string } }>(res);
+        if (data.displayName === esperado) return;
+      }
+      if (Date.now() > limite) throw new Error(`el nombre no llegó a ser «${esperado}»`);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+});
+
 run("reintento de envíos", () => {
   it("un mensaje entregado NO se puede reintentar", async () => {
     // Reintentar uno entregado sería mandarlo dos veces al destinatario.

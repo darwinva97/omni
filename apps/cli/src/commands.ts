@@ -587,6 +587,25 @@ export const COMMANDS: readonly Command[] = [
     },
   },
   {
+    name: "chat:quitar",
+    summary: "Quitar una conversación de nuestra lista; en WhatsApp sigue",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}`),
+  },
+  {
+    name: "contactos:sincronizar",
+    summary: "Volver a pedir la agenda y las fotos de perfil de una línea",
+    operation: "POST /v1/lines/{lineId}/contacts/sync",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    run: (c, a) => c.request("POST", `/v1/lines/${req(a, 0, "linea")}/contacts/sync`),
+  },
+  {
     name: "identidad",
     summary: "El teléfono detrás de un LID, o el LID de un teléfono",
     operation: "GET /v1/lines/{lineId}/identity/{address}",

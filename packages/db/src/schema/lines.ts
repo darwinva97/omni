@@ -110,6 +110,15 @@ export const chatTable = pgTable(
     kind: text("kind").notNull(), // pn | lid | group | newsletter | broadcast
     title: text("title"),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    /**
+     * Foto de perfil, como CLAVE del almacén y no como URL.
+     *
+     * La que da WhatsApp caduca en horas: guardarla sería tener fotos rotas la
+     * semana siguiente. Vive en el chat y no en el contacto porque un grupo
+     * también tiene foto y no tiene fila de contacto.
+     */
+    avatarKey: text("avatar_key"),
+    avatarSyncedAt: timestamp("avatar_synced_at", { withTimezone: true }),
     unreadCount: integer("unread_count").notNull().default(0),
     archived: boolean("archived").notNull().default(false),
     pinned: boolean("pinned").notNull().default(false),

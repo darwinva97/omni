@@ -56,6 +56,7 @@ export function FichaContacto({
           direccion={info.address}
           kind={info.kind}
           tamano="lg"
+          url={info.avatarUrl}
         />
         <div className="min-w-0">
           <p className="text-base font-semibold wrap-anywhere">{info.displayName}</p>
@@ -64,6 +65,24 @@ export function FichaContacto({
       </div>
 
       <dl className="divide-y divide-(--color-borde-sutil) px-4 text-sm">
+        {/*
+          Los dos nombres, cada uno dicho por lo que es.
+          Saber que alguien está guardado como «Juan» y se llama a sí mismo
+          «Juan Pérez — Ventas» es información útil, no ruido: explica por qué
+          la lista dice una cosa y el teléfono de otro dice otra.
+        */}
+        {info.savedName && (
+          <div className="py-3">
+            <dt className="text-xs text-(--color-tenue)">En tu agenda</dt>
+            <dd className="mt-0.5 font-medium">{info.savedName}</dd>
+          </div>
+        )}
+        {info.pushName && info.pushName !== info.savedName && (
+          <div className="py-3">
+            <dt className="text-xs text-(--color-tenue)">Se llama a sí mismo</dt>
+            <dd className="mt-0.5">{info.pushName}</dd>
+          </div>
+        )}
         {info.phone && (
           <div className="py-3">
             <dt className="text-xs text-(--color-tenue)">Teléfono</dt>
@@ -81,9 +100,9 @@ export function FichaContacto({
             {info.address}
           </dd>
         </div>
-        {info.title && info.title !== info.displayName && (
+        {info.kind === "group" && info.title && (
           <div className="py-3">
-            <dt className="text-xs text-(--color-tenue)">Nombre en la red</dt>
+            <dt className="text-xs text-(--color-tenue)">Asunto del grupo</dt>
             <dd className="mt-0.5">{info.title}</dd>
           </div>
         )}

@@ -92,6 +92,23 @@ export interface ChannelDriverOptional {
   setEphemeral?(lineId: LineId, chat: Address, segundos: number): Promise<void>;
   blockContact?(lineId: LineId, address: Address, bloquear: boolean): Promise<void>;
   contactProfile?(lineId: LineId, address: Address): Promise<ContactProfile>;
+  /**
+   * URL de la foto de perfil, o `null` si no tiene o no se puede ver.
+   *
+   * Sirve igual para una persona y para un grupo. Caduca, así que quien la
+   * reciba debe descargarla, no guardarla: una URL de WhatsApp guardada es una
+   * foto rota a los pocos días.
+   */
+  profilePictureUrl?(lineId: LineId, address: Address): Promise<string | null>;
+  /**
+   * Vuelve a pedir la agenda a la red.
+   *
+   * Los nombres que TÚ guardaste no llegan en los mensajes: viajan en la
+   * sincronización de estado, que ocurre al enlazar y no se repite al
+   * reconectar. Sin esto, una línea enlazada antes de que existiera esta
+   * función se queda sin un solo nombre de agenda para siempre.
+   */
+  resyncContacts?(lineId: LineId): Promise<void>;
   /** Reenvía un mensaje ya existente a otra conversación. */
   forwardMessage?(lineId: LineId, origen: ForwardSource, hacia: Address): Promise<SendReceipt>;
   /** Etiquetas de WhatsApp Business, las de la propia red. */

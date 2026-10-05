@@ -15,6 +15,19 @@ import type { Container } from "./container.js";
  * que no se parece a un teléfono, así que sin nombre resuelto la lista de
  * conversaciones no se puede leer.
  */
+/**
+ * La foto de perfil se firma al LEER, como cualquier otro medio.
+ *
+ * Guardar la URL firmada en la base la dejaría caducada al día siguiente, que
+ * es exactamente el fallo que tiene guardar la URL original de WhatsApp.
+ * Dura más que la de un mensaje porque un avatar se pinta en cada fila de la
+ * lista y se vuelve a pedir en cada navegación.
+ */
+async function urlDeAvatar(container: Container, key: string | null | undefined): Promise<string | null> {
+  if (!key) return null;
+  return container.storage.signedUrl(key, 24 * 3600).catch(() => null);
+}
+
 /** Cuánto vale una URL de medio. Lo justo para abrir la conversación y verla. */
 const MEDIA_URL_TTL = 3600;
 
@@ -55,6 +68,12 @@ const ChatSchema = z.object({
   kind: z.string(),
   displayName: z.string(),
   title: z.string().nullable(),
+  /** El que TÚ le pusiste en tu agenda. Manda al enseñarlo. */
+  savedName: z.string().nullable(),
+  /** El que esa persona se puso a sí misma. Es el recambio. */
+  pushName: z.string().nullable(),
+  /** Foto de perfil, con URL firmada. `null` si no tiene o no se puede ver. */
+  avatarUrl: z.string().nullable(),
   /** El teléfono detrás de un LID, cuando lo sabemos. */
   phone: z.string().nullable(),
   lastMessageAt: z.string().nullable(),
@@ -68,6 +87,7 @@ interface FilaDeChat {
   address: string; kind: string; title: string | null;
   lastMessageAt: Date | null; unreadCount: number;
   pushName: string | null; savedName: string | null; phone: string | null;
+  avatarKey?: string | null; avatarUrl?: string | null;
   ultimo?: string | null; ultimoPropio?: boolean;
 }
 
@@ -108,16 +128,27 @@ async function ultimosMensajes(
 /**
  * Qué nombre gana, de mejor a peor.
  *
- * El nombre guardado en la agenda manda sobre el que el contacto se ha puesto
- * a sí mismo; el asunto de un grupo sobre cualquier otra cosa; y si no hay
- * nada, el teléfono antes que el LID, porque un teléfono sí se reconoce.
+ * 1. El asunto de un GRUPO, que no tiene recambio posible.
+ * 2. El nombre que TÚ le pusiste en tu agenda: lo elegiste para reconocerlo.
+ * 3. El que esa persona se puso a sí misma, que es lo que hay cuando no la
+ *    tienes guardada.
+ * 4. El teléfono, que al menos se reconoce.
+ * 5. La dirección, que con el direccionamiento por LID no identifica a nadie,
+ *    y por eso es el último recurso y no el primero.
+ *
+ * Los dos nombres se devuelven ADEMÁS del resuelto: la ficha del contacto los
+ * enseña por separado, porque saber que alguien se llama «Juan» en tu agenda y
+ * «Juan Pérez — Ventas» en WhatsApp es información, no ruido.
  */
 function presentarChat(r: FilaDeChat) {
   const telefono = r.phone ? r.phone.split("@")[0]! : null;
   const displayName =
-    r.title?.trim() ||
+    // El título solo manda en lo que no es una persona: en un chat
+    // individual lo tiene que decidir la agenda, no un nombre heredado.
+    (r.kind === "group" || r.kind === "broadcast" ? r.title?.trim() : null) ||
     r.savedName?.trim() ||
     r.pushName?.trim() ||
+    r.title?.trim() ||
     (telefono ? `+${telefono}` : null) ||
     (r.kind === "group" ? "Grupo sin nombre" : r.address.split("@")[0]!);
 
@@ -126,6 +157,9 @@ function presentarChat(r: FilaDeChat) {
     kind: r.kind,
     displayName,
     title: r.title,
+    savedName: r.savedName,
+    pushName: r.pushName,
+    avatarUrl: r.avatarUrl ?? null,
     phone: r.phone,
     lastMessageAt: r.lastMessageAt?.toISOString() ?? null,
     unreadCount: r.unreadCount,
@@ -453,6 +487,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .select({
           address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
+          avatarKey: chatTable.avatarKey,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           phone: identityMapTable.phone,
         })
@@ -473,13 +508,13 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         : rows;
 
       const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
-      return c.json({
-        data: visible.map((r) => presentarChat({
-          ...r,
-          ultimo: ultimos.get(r.address)?.texto ?? null,
-          ultimoPropio: ultimos.get(r.address)?.propio ?? false,
-        })),
-      }, 200);
+      const data = await Promise.all(visible.map(async (r) => presentarChat({
+        ...r,
+        avatarUrl: await urlDeAvatar(container, r.avatarKey),
+        ultimo: ultimos.get(r.address)?.texto ?? null,
+        ultimoPropio: ultimos.get(r.address)?.propio ?? false,
+      })));
+      return c.json({ data }, 200);
     },
   );
 
@@ -505,6 +540,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .select({
           address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
+          avatarKey: chatTable.avatarKey,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           phone: identityMapTable.phone,
         })
@@ -525,6 +561,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       return c.json({
         data: presentarChat({
           ...rows[0],
+          avatarUrl: await urlDeAvatar(container, rows[0].avatarKey),
           ultimo: ultimo?.texto ?? null,
           ultimoPropio: ultimo?.propio ?? false,
         }),

@@ -58,6 +58,23 @@ export function exigirFormatoDelMedio(campo: string, mimeType: string): void {
  */
 export const INBOUND_MEDIA_QUEUE = "inbound-media";
 
+/**
+ * Las fotos de perfil se traen en su propia cola.
+ *
+ * La URL que da WhatsApp caduca en horas, así que hay que DESCARGARLA, y eso
+ * es una petición de red por conversación: hacerlo dentro de la ingesta ataría
+ * la llegada de un mensaje a bajarse una foto. Aparte, además, porque fallar
+ * al traer una foto no debe reintentarse con la misma insistencia que un
+ * mensaje perdido.
+ */
+export const AVATAR_QUEUE = "avatars";
+
+export interface AvatarJob {
+  readonly lineId: string;
+  readonly orgId: string;
+  readonly address: string;
+}
+
 export interface InboundMediaJob {
   readonly lineId: string;
   readonly orgId: string;
@@ -98,6 +115,8 @@ export interface RuntimeDeps {
   readonly dispatcher: WebhookDispatcher;
   /** Convierte lo que graba un navegador a lo que WhatsApp reproduce. */
   readonly conversor?: Conversor;
+  /** Para bajar las fotos de perfil. Inyectable para poder probarlo sin red. */
+  readonly fetchImpl?: typeof fetch;
   readonly storage: Storage;
   readonly now?: () => number;
   readonly newId?: () => string;
@@ -140,6 +159,7 @@ export class EngineRuntime {
   readonly #newId: () => string;
   #outboundWorker: Subscription | null = null;
   #mediaWorker: Subscription | null = null;
+  #avatarWorker: Subscription | null = null;
   readonly #oyentes: ((e: EventEnvelope) => Promise<void> | void)[] = [];
 
   constructor(deps: RuntimeDeps) {
@@ -529,6 +549,12 @@ export class EngineRuntime {
    */
   start(concurrency = 8): void {
     if (concurrency <= 0) return;
+    this.#avatarWorker = this.#deps.queue.process<AvatarJob>(
+      AVATAR_QUEUE,
+      async (job) => { await this.#descargarAvatar(job); },
+      // Poca concurrencia: son fotos, y traerlas no debe competir con enviar.
+      { concurrency: 2 },
+    );
     this.#mediaWorker = this.#deps.queue.process<InboundMediaJob>(
       INBOUND_MEDIA_QUEUE,
       async (job) => { await this.#descargarMedio(job); },
@@ -814,6 +840,101 @@ export class EngineRuntime {
     return guardados;
   }
 
+  /**
+   * Vuelve a pedir la agenda y encola las fotos que falten.
+   *
+   * Es lo que pone al día una línea enlazada antes: los nombres de agenda
+   * llegan por la sincronización de estado, que no se repite sola, y las fotos
+   * solo se piden cuando llega un mensaje.
+   */
+  async sincronizarContactos(lineId: string): Promise<{ fotos: number }> {
+    const line = await this.#line(lineId);
+    const driver = this.driverFor(line.channelKind);
+    await driver.resyncContacts?.(lineId as LineId);
+
+    const chats = await this.#deps.db
+      .select({ address: chatTable.address })
+      .from(chatTable)
+      .where(and(eq(chatTable.lineId, lineId), isNull(chatTable.avatarKey)));
+    for (const c of chats) {
+      await this.encolarAvatar(lineId, line.orgId, c.address, true);
+    }
+    return { fotos: chats.length };
+  }
+
+  /**
+   * Pide traer la foto de una conversación, si toca.
+   *
+   * No se pide en cada mensaje: con `forzar` apagado solo entra la que no
+   * tenga foto o la tenga de hace más de una semana. Una foto de perfil cambia
+   * cada mucho, y bajarla en cada mensaje sería una petición por mensaje para
+   * obtener exactamente lo mismo.
+   */
+  async encolarAvatar(
+    lineId: string, orgId: string, address: string, forzar: boolean,
+  ): Promise<void> {
+    if (!forzar) {
+      const filas = await this.#deps.db
+        .select({ key: chatTable.avatarKey, syncedAt: chatTable.avatarSyncedAt })
+        .from(chatTable)
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, address)))
+        .limit(1);
+      const fila = filas[0];
+      if (!fila) return;
+      const fresca = fila.syncedAt
+        && Date.now() - fila.syncedAt.getTime() < 7 * 24 * 3600 * 1000;
+      if (fila.key && fresca) return;
+      if (!fila.key && fresca) return;
+    }
+
+    await this.#deps.queue.enqueue<AvatarJob>(
+      AVATAR_QUEUE,
+      { lineId, orgId, address },
+      {
+        partitionKey: `line:${lineId}`,
+        // Una sola petición viva por conversación: sin esto, una ráfaga de
+        // diez mensajes encolaría diez descargas de la misma foto.
+        idempotencyKey: `avatar:${lineId}:${address}`,
+        maxAttempts: 2,
+        backoffMs: 30_000,
+      },
+    ).catch(() => {});
+  }
+
+  /** Trae la foto de perfil de una conversación y la guarda. */
+  async #descargarAvatar(job: AvatarJob): Promise<void> {
+    const line = await this.#line(job.lineId);
+    const driver = this.driverFor(line.channelKind);
+
+    // Se marca el intento ANTES de hacerlo: así una cuenta sin foto no se
+    // vuelve a pedir en cada mensaje durante una semana.
+    const marcar = async (key: string | null): Promise<void> => {
+      await this.#deps.db
+        .update(chatTable)
+        .set({ avatarSyncedAt: new Date(), ...(key ? { avatarKey: key } : {}) })
+        .where(and(eq(chatTable.lineId, job.lineId), eq(chatTable.address, job.address)));
+    };
+
+    if (!driver.profilePictureUrl) { await marcar(null); return; }
+
+    const url = await driver.profilePictureUrl(job.lineId as LineId, parseAddress(job.address));
+    if (!url) { await marcar(null); return; }
+
+    const res = await (this.#deps.fetchImpl ?? fetch)(url);
+    if (!res.ok) { await marcar(null); return; }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength === 0) { await marcar(null); return; }
+
+    const clave = mediaKey({
+      orgId: job.orgId, lineId: job.lineId,
+      messageId: `avatar-${job.address}`, fileName: "avatar.jpg",
+    });
+    const guardado = await this.#deps.storage.put(clave, bytes, {
+      mimeType: res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg",
+    });
+    await marcar(guardado.key);
+  }
+
   /** Trae el fichero de un mensaje entrante y lo guarda en el almacén. */
   async #descargarMedio(job: InboundMediaJob): Promise<void> {
     const line = await this.#line(job.lineId);
@@ -896,9 +1017,49 @@ export class EngineRuntime {
       key?: { remoteJid?: string; participant?: string; fromMe?: boolean };
       pushName?: string | null;
       group?: string; subject?: string;
+      address?: string; savedName?: string | null; imgUrl?: string | null;
     };
 
     try {
+      /*
+       * La agenda: dos nombres distintos que se guardan los DOS.
+       *
+       * `savedName` es el que tú le pusiste y `pushName` el que esa persona se
+       * puso a sí misma. Al enseñarlo gana el tuyo, pero el suyo no se tira:
+       * es el recambio cuando no tienes a alguien guardado, y además cambia
+       * por su cuenta sin que tú hagas nada.
+       */
+      if (envelope.event === "contact.updated" && d.address) {
+        const quien = tryParseAddress(d.address);
+        if (!quien) return;
+        const guardado = d.savedName?.trim();
+        const propio = d.pushName?.trim();
+        if (guardado || propio) {
+          await this.#deps.db
+            .insert(contactTable)
+            .values({
+              id: `ct-${envelope.lineId}-${quien.value}`,
+              lineId: envelope.lineId, address: quien.value,
+              ...(guardado ? { savedName: guardado } : {}),
+              ...(propio ? { pushName: propio } : {}),
+            })
+            .onConflictDoUpdate({
+              target: [contactTable.lineId, contactTable.address],
+              set: {
+                // Solo se pisa lo que viene con valor: un evento que trae el
+                // nombre propio no puede borrar el que tú guardaste.
+                ...(guardado ? { savedName: guardado } : {}),
+                ...(propio ? { pushName: propio } : {}),
+                updatedAt: new Date(),
+              },
+            });
+        }
+        // `imgUrl` con el valor "changed" significa que la foto cambió: hay
+        // que volver a traerla, no que venga la nueva en el evento.
+        if (d.imgUrl !== undefined) await this.encolarAvatar(envelope.lineId, envelope.orgId, quien.value, true);
+        return;
+      }
+
       if (envelope.event === "group.updated" && d.group && d.subject) {
         await this.#ponerTitulo(envelope.lineId, d.group, d.subject);
         return;
@@ -934,8 +1095,15 @@ export class EngineRuntime {
       }
       if (chat.kind !== "pn" && chat.kind !== "lid") return;
       if (!nombre) return;
+      /*
+       * El `pushName` NO se escribe como título del chat.
+       *
+       * El título manda sobre todo lo demás al enseñar, y si se llenara con el
+       * nombre que alguien se puso a sí mismo, ganaría al que TÚ le guardaste
+       * en la agenda. Se queda en la ficha del contacto, que es su sitio, y el
+       * orden lo decide quien lo enseña.
+       */
       await this.#ponerNombreContacto(envelope.lineId, chat, nombre);
-      await this.#ponerTitulo(envelope.lineId, chat.value, nombre);
     } catch {
       // Saber el nombre es una mejora, no un requisito: que falle no puede
       // costar el mensaje.
@@ -1030,6 +1198,10 @@ export class EngineRuntime {
      * Al revés, el trabajador podría llegar a actualizar un mensaje que
      * todavía no existe y la descarga se perdería sin dejar rastro.
      */
+    // La foto de la conversación, una vez: `encolarAvatar` se desentiende sola
+    // si ya hay una reciente.
+    await this.encolarAvatar(envelope.lineId, envelope.orgId, chat.value, false);
+
     if (MEDIA_KINDS.has(d.kind ?? "text")) {
       await this.#deps.queue.enqueue<InboundMediaJob>(
         INBOUND_MEDIA_QUEUE,
@@ -1080,6 +1252,7 @@ export class EngineRuntime {
   }
 
   async stop(): Promise<void> {
+    await this.#avatarWorker?.stop();
     await this.#mediaWorker?.stop();
     await this.#outboundWorker?.stop();
     for (const off of this.#unsubscribes) off();

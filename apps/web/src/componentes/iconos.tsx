@@ -163,6 +163,30 @@ export const IconoBloquear = (p: Props) => (
   <Base {...p}><circle cx="12" cy="12" r="8.5" /><path d="m6 6 12 12" /></Base>
 );
 
+/** Tres puntos: «hay más opciones aquí». Dibujado, no el glifo `⋮`. */
+export const IconoMas = (p: Props) => (
+  <Base {...p}>
+    <circle cx="12" cy="5" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="19" r="1.1" fill="currentColor" stroke="none" />
+  </Base>
+);
+
+export const IconoCopiar = (p: Props) => (
+  <Base {...p}>
+    <rect x="8" y="8" width="12" height="12" rx="2.5" />
+    <path d="M16 8V5.5a2 2 0 0 0-2-2H5.5a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2H8" />
+  </Base>
+);
+
+export const IconoDescargar = (p: Props) => (
+  <Base {...p}><path d="M12 3.5v11m0 0 4-4m-4 4-4-4M4.5 20h15" /></Base>
+);
+
+export const IconoReenviar = (p: Props) => (
+  <Base {...p}><path d="M13 5.5 20 12l-7 6.5V15c-6 0-8 2.5-9 4.5.5-7 4.5-9 9-9z" /></Base>
+);
+
 export const IconoPapelera = (p: Props) => (
   <Base {...p}>
     <path d="M4 6.5h16M9 6.5V4h6v2.5M6.5 6.5 7.5 21h9l1-14.5" /><path d="M10.5 10.5v6M13.5 10.5v6" />

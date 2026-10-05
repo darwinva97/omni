@@ -279,6 +279,60 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "delete", path: "/v1/lines/{lineId}/chats/{chatId}",
+      tags: ["chats"], summary: "Quitar una conversación de NUESTRA lista",
+      description:
+        "Borra lo que guardamos de ella: sus mensajes y su ficha. NO la borra " +
+        "en WhatsApp —ahí sigue, con todo— y si llega un mensaje nuevo vuelve a " +
+        "aparecer. Para vaciarla también en la red está `DELETE .../messages`.",
+      request: { params: lineChat },
+      responses: {
+        200: json(z.object({ data: z.object({ deleted: z.number() }) }), "quitada"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId, chatId } = c.req.valid("param");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("chat.clear"), { lineId, chat });
+
+      const borrados = await container.dbh.db
+        .delete(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.chatId, chat.value)))
+        .returning({ id: messageTable.id });
+      const { chatTable } = await import("@omni/db");
+      await container.dbh.db
+        .delete(chatTable)
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)));
+      return c.json({ data: { deleted: borrados.length } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/contacts/sync",
+      tags: ["contactos"], summary: "Volver a pedir la agenda y las fotos de perfil",
+      description:
+        "Los nombres que guardaste en tu agenda viajan en la sincronización de " +
+        "estado, que ocurre al enlazar y no se repite al reconectar. Esto la pide " +
+        "otra vez y encola las fotos de perfil que falten.",
+      request: { params: z.object({ lineId: z.string() }) },
+      responses: {
+        202: json(z.object({ data: z.object({ fotos: z.number() }) }), "pedido"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId } = c.req.valid("param");
+      await authorize(c.get("principal"), routeOf("contact.list"), { lineId });
+      const res = await container.runtime.sincronizarContactos(lineId);
+      // 202: la agenda llega por eventos, no en esta respuesta.
+      return c.json({ data: res }, 202);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get", path: "/v1/lines/{lineId}/identity/{address}",
       tags: ["contactos"], summary: "El teléfono detrás de un LID, o el LID de un teléfono",
       description:

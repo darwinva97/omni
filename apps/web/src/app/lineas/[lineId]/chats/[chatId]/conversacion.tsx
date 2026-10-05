@@ -9,7 +9,11 @@ import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
-import { IconoAdjuntar, IconoCerrar, IconoEnviar, IconoInfo } from "@/componentes/iconos";
+import {
+  IconoAdjuntar, IconoCerrar, IconoCopiar, IconoDescargar, IconoEnviar,
+  IconoInfo, IconoPapelera,
+} from "@/componentes/iconos";
+import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { campoPara, ETIQUETAS, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 
@@ -180,6 +184,54 @@ export function Conversacion({
     }
   };
 
+  const menu = useMenu();
+  const [sobre, setSobre] = useState<Mensaje | null>(null);
+
+  /**
+   * Las acciones de un mensaje.
+   *
+   * Solo aparecen las que de verdad se pueden hacer con ESE mensaje: borrar
+   * para todos solo en los propios —WhatsApp no deja borrar el de otro— y
+   * descargar solo cuando hay fichero. Un menú con opciones que fallan al
+   * pulsarlas es peor que un menú corto.
+   */
+  const accionesMensaje = (m: Mensaje): OpcionMenu[] => {
+    const opciones: OpcionMenu[] = [];
+
+    if (m.body) {
+      opciones.push({
+        texto: "Copiar texto",
+        Icono: IconoCopiar,
+        onSelect: () => navigator.clipboard.writeText(m.body!),
+      });
+    }
+    if (m.media) {
+      opciones.push({
+        texto: "Descargar",
+        Icono: IconoDescargar,
+        onSelect: () => { window.open(m.media!.url, "_blank", "noreferrer"); },
+      });
+    }
+    if (m.fromMe && m.providerMessageId) {
+      opciones.push({
+        texto: "Borrar para todos",
+        peligro: true,
+        Icono: IconoPapelera,
+        onSelect: async () => {
+          if (!confirm("Se borrará para todos en esta conversación.")) return;
+          const r = await fetch(
+            `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId!)}`,
+            { method: "DELETE" },
+          );
+          if (r.ok) {
+            setMensajes((prev) => prev.filter((x) => x.id !== m.id));
+          }
+        },
+      });
+    }
+    return opciones;
+  };
+
   const esGrupo = info?.kind === "group";
   const nombre = info?.displayName ?? chat;
   const detalle = info?.phone
@@ -190,7 +242,13 @@ export function Conversacion({
     <div className="flex h-full">
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
-          <Avatar nombre={nombre} direccion={chat} kind={info?.kind ?? "pn"} tamano="sm" />
+          <Avatar
+            nombre={nombre}
+            direccion={chat}
+            kind={info?.kind ?? "pn"}
+            tamano="sm"
+            url={info?.avatarUrl}
+          />
           <button
             type="button"
             onClick={() => setFicha((v) => !v)}
@@ -254,6 +312,7 @@ export function Conversacion({
                 )}
 
                 <div
+                  onContextMenu={(e) => { setSobre(m); menu.enContexto(e); }}
                   className={`mensaje-nuevo flex ${m.fromMe ? "justify-end" : "justify-start"} ${
                     primeroDeTanda ? "mt-2" : ""
                   }`}
@@ -459,6 +518,12 @@ export function Conversacion({
           </button>
         </form>
       </div>
+
+      <Menu
+        punto={menu.punto}
+        opciones={sobre ? accionesMensaje(sobre) : []}
+        onCerrar={menu.cerrar}
+      />
 
       {ficha && info && (
         <FichaContacto

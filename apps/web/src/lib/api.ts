@@ -65,6 +65,12 @@ export interface Chat {
   /** Lo que hay que ENSEÑAR. La dirección es el detalle. */
   displayName: string;
   title: string | null;
+  /** El que tú le pusiste en tu agenda. */
+  savedName: string | null;
+  /** El que esa persona se puso a sí misma. */
+  pushName: string | null;
+  /** Foto de perfil, ya firmada. */
+  avatarUrl: string | null;
   /** El teléfono detrás de un LID, cuando se sabe. */
   phone: string | null;
   lastMessageAt: string | null; unreadCount: number;

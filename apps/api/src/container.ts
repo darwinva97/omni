@@ -145,6 +145,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
     box: new SecretBox(config.OMNI_MASTER_KEY),
     dispatcher,
     ...(hayConversor ? { conversor } : {}),
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
   });
 
   const drivers: ChannelDriver[] = [];
