@@ -354,8 +354,28 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
 
     ev.on("chats.update", (chats) => {
       for (const c of chats) {
+        /*
+         * Se emite lo que CAMBIÓ, no lo que falta.
+         *
+         * WhatsApp manda una actualización con solo los campos tocados, así
+         * que un `?? null` convertía «esto no cambió» en «esto se puso a
+         * nada»: silenciar desde el teléfono llegaba aquí como un chat
+         * archivado y sin pendientes. `undefined` se omite, y quien lo reciba
+         * sabe distinguir ambas cosas.
+         */
         void this.emit("chat.updated", line.orgId, lineId, {
-          chat: c.id, unreadCount: c.unreadCount ?? null, archived: c.archived ?? null,
+          chat: c.id,
+          ...(c.unreadCount !== undefined ? { unreadCount: c.unreadCount } : {}),
+          ...(c.archived !== undefined ? { archived: c.archived } : {}),
+          ...(c.pinned !== undefined ? { pinned: Boolean(c.pinned) } : {}),
+          /*
+           * El silencio se guarda como INSTANTE, que es como lo entiende
+           * WhatsApp: «hasta las seis», no «ocho horas». Una duración
+           * guardada caduca mal en cuanto el proceso se reinicia.
+           */
+          ...(c.muteEndTime !== undefined
+            ? { mutedUntil: c.muteEndTime ? Number(c.muteEndTime) : null }
+            : {}),
         });
       }
     });

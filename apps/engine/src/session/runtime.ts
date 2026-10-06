@@ -702,6 +702,14 @@ export class EngineRuntime {
        * mensajes— lo cubre `#aplicarProtocolo`, porque según la versión del
        * cliente llega por uno o por el otro.
        */
+      /*
+       * Lo que se toca en el teléfono se refleja aquí.
+       *
+       * Silenciar, archivar o fijar una conversación desde WhatsApp llegaba
+       * como evento y no lo guardaba nadie: el panel seguía sonando por un
+       * chat que su dueño había silenciado hacía semanas.
+       */
+      if (envelope.event === "chat.updated") await this.#aplicarCambioDeChat(envelope);
       if (envelope.event === "message.deleted") {
         const d = envelope.data as { key?: { id?: string } };
         await this.#marcarRetirado(envelope.lineId, d.key?.id, envelope.timestamp);
@@ -1393,6 +1401,40 @@ export class EngineRuntime {
     // a veces el nombre. Se aceptan los dos en vez de apostar por uno.
     if (protocolo.type !== REVOKE && protocolo.type !== "REVOKE") return;
     await this.#marcarRetirado(envelope.lineId, protocolo.key?.id, envelope.timestamp);
+  }
+
+  /**
+   * Refleja en la fila del chat lo que cambió en WhatsApp.
+   *
+   * Solo lo que VIENE en el evento: una actualización trae los campos
+   * tocados, y escribir los ausentes como nulos borraría el estado real. Si no
+   * cambió nada que guardemos, no se toca la base.
+   */
+  async #aplicarCambioDeChat(envelope: EventEnvelope): Promise<void> {
+    const d = envelope.data as {
+      chat?: string; archived?: boolean; pinned?: boolean;
+      mutedUntil?: number | null; unreadCount?: number;
+    };
+    if (!d.chat) return;
+    const direccion = tryParseAddress(d.chat);
+    if (!direccion) return;
+
+    const cambios: Partial<typeof chatTable.$inferInsert> = {};
+    if (d.archived !== undefined) cambios.archived = d.archived;
+    if (d.pinned !== undefined) cambios.pinned = d.pinned;
+    if (d.mutedUntil !== undefined) {
+      cambios.muteUntil = d.mutedUntil ? new Date(d.mutedUntil) : null;
+    }
+    if (d.unreadCount !== undefined) cambios.unreadCount = Math.max(0, d.unreadCount);
+    if (Object.keys(cambios).length === 0) return;
+
+    await this.#deps.db
+      .update(chatTable)
+      .set(cambios)
+      .where(and(
+        eq(chatTable.lineId, envelope.lineId),
+        eq(chatTable.address, direccion.value),
+      ));
   }
 
   /** Deja dicho que un mensaje fue retirado, sin perder lo que decía. */

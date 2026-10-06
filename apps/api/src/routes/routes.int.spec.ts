@@ -437,10 +437,10 @@ run("nombres de conversaciones", () => {
      * ingesta. Aprender el nombre antes de crearla perdía justo el mensaje que
      * lo trae, y el nombre no aparecía hasta el segundo.
      */
-    const chat = "51900777888@s.whatsapp.net";
+    const chat = "51901000003@s.whatsapp.net";
     await call(`/v1/sandbox/lines/${LINE}/inbound`, {
       method: "POST",
-      body: JSON.stringify({ from: "51900777888", text: "hola", pushName: "Grace Hopper" }),
+      body: JSON.stringify({ from: "51901000003", text: "hola", pushName: "Grace Hopper" }),
     });
 
     const limite = Date.now() + 6000;
@@ -749,11 +749,11 @@ run("estados y no leídos", () => {
 });
 
 run("eliminar una conversación", () => {
-  const CHAT_BORRAR = "51900555666@s.whatsapp.net";
+  const CHAT_BORRAR = "51901000002@s.whatsapp.net";
 
   it("por defecto se quita solo de aquí, y en la red sigue", async () => {
     await call(`/v1/sandbox/lines/${LINE}/inbound`, {
-      method: "POST", body: JSON.stringify({ from: "51900555666", text: "hola" }),
+      method: "POST", body: JSON.stringify({ from: "51901000002", text: "hola" }),
     });
     await esperarChat(CHAT_BORRAR, true);
 
@@ -771,7 +771,7 @@ run("eliminar una conversación", () => {
      * aparezca. Vaciar deja el chat en la lista sin mensajes; esto lo quita.
      */
     await call(`/v1/sandbox/lines/${LINE}/inbound`, {
-      method: "POST", body: JSON.stringify({ from: "51900555666", text: "otra vez" }),
+      method: "POST", body: JSON.stringify({ from: "51901000002", text: "otra vez" }),
     });
     await esperarChat(CHAT_BORRAR, true);
 
@@ -1022,6 +1022,115 @@ run("organización y limpieza", () => {
     expect(data.slug).toBe("rutas");
     expect(data.lines).toBeGreaterThan(0);
     expect(data.linesByChannel["sandbox"]).toBeGreaterThan(0);
+  });
+
+  /** Espera a que la ingesta —que es asíncrona— haya creado la conversación. */
+  async function esperarChat(chat: string): Promise<void> {
+    await esperar(
+      async () => (await call(`/v1/lines/${LINE}/chats/${enc(chat)}`)).status === 200,
+      `la conversación ${chat} apareció`,
+    );
+  }
+
+  async function esperar(cumple: () => Promise<boolean>, que: string): Promise<void> {
+    const limite = Date.now() + 6000;
+    for (;;) {
+      if (await cumple()) return;
+      if (Date.now() > limite) throw new Error(`no se cumplió: ${que}`);
+      await new Promise((r) => setTimeout(r, 70));
+    }
+  }
+
+  it("silenciar una conversación se guarda AQUÍ, no solo en el transporte", async () => {
+    /*
+     * Antes solo se le decía a WhatsApp. El panel no sabía que estaba
+     * silenciada hasta que volviera el evento de chat, y mientras tanto seguía
+     * sonando por ella: justo en el momento en que alguien acaba de pedir que
+     * se calle.
+     */
+    const chat = "51901000001@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000001", text: "ruidoso" }),
+    });
+    await esperarChat(chat);
+
+    const hasta = new Date(Date.now() + 8 * 3600 * 1000).toISOString();
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(chat)}/mute`, {
+      method: "POST", body: JSON.stringify({ until: hasta }),
+    });
+    expect(res.status).toBe(200);
+
+    const { data } = await j<{ data: { mutedUntil: string | null } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+    expect(data.mutedUntil).not.toBeNull();
+    expect(new Date(data.mutedUntil!).getTime()).toBe(new Date(hasta).getTime());
+
+    // Y reactivar la devuelve a sonar.
+    await call(`/v1/lines/${LINE}/chats/${enc(chat)}/mute`, {
+      method: "POST", body: JSON.stringify({ until: null }),
+    });
+    const { data: tras } = await j<{ data: { mutedUntil: string | null } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+    expect(tras.mutedUntil).toBeNull();
+  });
+
+  it("lo que se silencia desde el teléfono también calla aquí", async () => {
+    const chat = "51901000002@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000002", text: "hola" }),
+    });
+    await esperarChat(chat);
+
+    const hasta = Date.now() + 7 * 24 * 3600 * 1000;
+    await container.runtime.publish("chat.updated", LINE, {
+      chat, mutedUntil: hasta, archived: true,
+    });
+
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const { data } = await j<{ data: { mutedUntil: string | null; archived: boolean } }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+      if (data.mutedUntil !== null) {
+        expect(new Date(data.mutedUntil).getTime()).toBe(hasta);
+        expect(data.archived).toBe(true);
+        break;
+      }
+      if (Date.now() > limite) throw new Error("el silencio del teléfono no llegó a la base");
+      await new Promise((r) => setTimeout(r, 60));
+    }
+  });
+
+  it("una actualización de chat NO borra lo que no menciona", async () => {
+    /*
+     * WhatsApp manda solo los campos que cambiaron. Tomar los ausentes por
+     * nulos hacía que archivar desde el teléfono desilenciara la conversación
+     * de paso, sin que nadie lo hubiera pedido.
+     */
+    const chat = "51901000003@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000003", text: "hola" }),
+    });
+    await esperarChat(chat);
+
+    const hasta = Date.now() + 8 * 3600 * 1000;
+    await container.runtime.publish("chat.updated", LINE, { chat, mutedUntil: hasta });
+    await esperar(async () => {
+      const { data } = await j<{ data: { mutedUntil: string | null } }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+      return data.mutedUntil !== null;
+    }, "el silencio se guardó");
+
+    // Un cambio que solo habla de archivado no puede tocar el silencio.
+    await container.runtime.publish("chat.updated", LINE, { chat, archived: true });
+    await esperar(async () => {
+      const { data } = await j<{ data: { archived: boolean } }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+      return data.archived;
+    }, "el archivado se guardó");
+
+    const { data } = await j<{ data: { mutedUntil: string | null } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}`));
+    expect(data.mutedUntil).not.toBeNull();
   });
 
   it("vaciar una conversación la vacía en el transporte y borra nuestra copia", async () => {

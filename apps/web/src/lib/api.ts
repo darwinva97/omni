@@ -77,6 +77,15 @@ export interface Chat {
   /** Resumen del último mensaje, para la lista. */
   ultimo: string | null;
   ultimoPropio: boolean;
+  /**
+   * Silenciada en WhatsApp hasta este instante.
+   *
+   * Es el silencio de la cuenta, no un ajuste de este panel: lo que callas
+   * aquí queda callado en el teléfono, y al revés.
+   */
+  mutedUntil?: string | null;
+  archived?: boolean;
+  pinned?: boolean;
 }
 
 export interface Medio {

@@ -186,6 +186,37 @@ export const IconoSticker = (p: Props) => (
   </Base>
 );
 
+/** Campana: los avisos. La rayada es «no me avises». */
+export const IconoCampana = (p: Props) => (
+  <Base {...p}>
+    <path d="M6 9a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6.5H4c.5-1 2-2.5 2-6.5Z" />
+    <path d="M10 19a2 2 0 0 0 4 0" />
+  </Base>
+);
+
+export const IconoCampanaTachada = (p: Props) => (
+  <Base {...p}>
+    <path d="M8.5 5.2A6 6 0 0 1 18 9c0 4 1.5 5.5 2 6.5H9" />
+    <path d="M5.5 9A6 6 0 0 1 6 6.5M6 9c0 4-1.5 5.5-2 6.5h2" />
+    <path d="M10 19a2 2 0 0 0 4 0M3.5 3.5l17 17" />
+  </Base>
+);
+
+/** Altavoz con ondas: el sonido. */
+export const IconoSonido = (p: Props) => (
+  <Base {...p}>
+    <path d="M4 10v4a1 1 0 0 0 1 1h3l5 4V5L8 9H5a1 1 0 0 0-1 1Z" />
+    <path d="M16.5 9.5a3.5 3.5 0 0 1 0 5M19 7a7 7 0 0 1 0 10" />
+  </Base>
+);
+
+/** Un chincheta: la conversación fijada arriba. */
+export const IconoFijar = (p: Props) => (
+  <Base {...p}>
+    <path d="M9 3h6l-1 6 3.5 3.5H6.5L10 9 9 3Z" /><path d="M12 12.5V21" />
+  </Base>
+);
+
 export const IconoCopiar = (p: Props) => (
   <Base {...p}>
     <rect x="8" y="8" width="12" height="12" rx="2.5" />

@@ -93,6 +93,15 @@ const ChatSchema = z.object({
   /** Resumen del último mensaje, para la lista. `null` si aún no hay ninguno. */
   ultimo: z.string().nullable(),
   ultimoPropio: z.boolean(),
+  /**
+   * Silenciada en WhatsApp hasta este instante.
+   *
+   * Es el silencio de la cuenta, el mismo que se ve en el teléfono, no un
+   * ajuste de este panel: silenciar aquí silencia allí y al revés.
+   */
+  mutedUntil: z.string().nullable(),
+  archived: z.boolean().default(false),
+  pinned: z.boolean().default(false),
 }).openapi("Chat");
 
 interface FilaDeChat {
@@ -101,6 +110,7 @@ interface FilaDeChat {
   pushName: string | null; savedName: string | null; phone: string | null;
   avatarKey?: string | null; avatarUrl?: string | null;
   ultimo?: string | null; ultimoPropio?: boolean;
+  muteUntil?: Date | null; archived?: boolean; pinned?: boolean;
 }
 
 /**
@@ -188,6 +198,9 @@ function presentarChat(r: FilaDeChat) {
     unreadCount: r.unreadCount,
     ultimo: r.ultimo ?? null,
     ultimoPropio: r.ultimoPropio ?? false,
+    mutedUntil: r.muteUntil?.toISOString() ?? null,
+    archived: r.archived ?? false,
+    pinned: r.pinned ?? false,
   };
 }
 import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
@@ -518,6 +531,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
           avatarKey: chatTable.avatarKey,
+          muteUntil: chatTable.muteUntil, archived: chatTable.archived,
+          pinned: chatTable.pinned,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           phone: identityMapTable.phone,
         })
@@ -735,6 +750,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
           avatarKey: chatTable.avatarKey,
+          muteUntil: chatTable.muteUntil, archived: chatTable.archived,
+          pinned: chatTable.pinned,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           phone: identityMapTable.phone,
         })

@@ -509,6 +509,21 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const driver = await driverOf(lineId);
       assertCapability(driver, "chat.mute");
       await driver.muteChat!(lineId as LineId, chat, until ? new Date(until).getTime() : null);
+
+      /*
+       * Y se guarda aquí también.
+       *
+       * Antes solo se le decía a WhatsApp. El aviso vuelve por el evento de
+       * chat, pero puede tardar o perderse en una reconexión, y hasta entonces
+       * el panel seguía sonando por una conversación que acabas de silenciar
+       * —que es justo el momento en que más molesta—.
+       */
+      const { chatTable } = await import("@omni/db");
+      await container.dbh.db
+        .update(chatTable)
+        .set({ muteUntil: until ? new Date(until) : null })
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)));
+
       return c.json({ data: { ok: true } }, 200);
     },
   );

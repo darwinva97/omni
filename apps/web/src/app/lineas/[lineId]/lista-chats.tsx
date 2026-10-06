@@ -8,11 +8,16 @@ import { useEventos } from "@/lib/eventos";
 import { cuando, resumen } from "@/lib/formato";
 import { Avatar } from "@/componentes/piezas";
 import {
-  IconoArchivar, IconoBuscar, IconoCanal, IconoCerrar, IconoMas, IconoPapelera,
-  IconoSilenciar,
+  IconoArchivar, IconoBuscar, IconoCampana, IconoCampanaTachada, IconoCanal,
+  IconoCerrar, IconoMas, IconoPapelera, IconoSilenciar,
 } from "@/componentes/iconos";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { useRouter } from "next/navigation";
+import { AjustesAvisos } from "@/componentes/ajustes-avisos";
+import { Silenciar } from "@/componentes/silenciar";
+import {
+  avisar, prepararSonido, silenciado, usePreferencias, useTituloConPendientes,
+} from "@/lib/notificaciones";
 
 /**
  * La columna de conversaciones.
@@ -45,7 +50,24 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
 
   const menu = useMenu();
   const [sobre, setSobre] = useState<Chat | null>(null);
+  const [silenciando, setSilenciando] = useState<Chat | null>(null);
+  const [ajustes, setAjustes] = useState(false);
   const router = useRouter();
+
+  /*
+   * Los avisos.
+   *
+   * Viven aquí y no en la conversación abierta porque lo que hay que avisar es
+   * precisamente lo que NO se está mirando, y esta lista es la única que ve
+   * todas las conversaciones de la línea a la vez.
+   */
+  const { prefs } = usePreferencias();
+  useEffect(prepararSonido, []);
+  const pendientes = useMemo(
+    () => chats.reduce((n, c) => n + (silenciado(c.mutedUntil) ? 0 : c.unreadCount), 0),
+    [chats],
+  );
+  useTituloConPendientes(pendientes, prefs.contadorEnTitulo);
 
   /**
    * Las acciones de una conversación.
@@ -59,6 +81,32 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     if (abierto === c.address) router.push(`/lineas/${linea.id}`);
   };
 
+  /**
+   * Silencia o reactiva, en WhatsApp y aquí.
+   *
+   * La lista se actualiza sin esperar al servidor: el silencio se pide justo
+   * cuando una conversación está molestando, y un segundo de retraso es un
+   * aviso más.
+   */
+  const callar = async (c: Chat, hasta: Date | null): Promise<void> => {
+    setChats((prev) => prev.map((x) =>
+      x.address === c.address ? { ...x, mutedUntil: hasta?.toISOString() ?? null } : x));
+    const r = await fetch(
+      `/api/omni/v1/lines/${linea.id}/chats/${encodeURIComponent(c.address)}/mute`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ until: hasta?.toISOString() ?? null }),
+      },
+    );
+    // Si falla, se deshace: dejarlo puesto en la lista sería prometer un
+    // silencio que WhatsApp no ha aplicado.
+    if (!r.ok) {
+      setChats((prev) => prev.map((x) =>
+        x.address === c.address ? { ...x, mutedUntil: c.mutedUntil } : x));
+    }
+  };
+
   const acciones = (c: Chat): OpcionMenu[] => {
     const pedir = async (ruta: string, init: RequestInit): Promise<boolean> => {
       const r = await fetch(`/api/omni/v1/lines/${linea.id}${ruta}`, init);
@@ -67,18 +115,19 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     const dir = encodeURIComponent(c.address);
 
     return [
-      {
-        texto: "Silenciar un año",
-        Icono: IconoSilenciar,
-        onSelect: async () => {
-          const hasta = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
-          await pedir(`/chats/${dir}/mute`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ until: hasta }),
-          });
-        },
-      },
+      silenciado(c.mutedUntil)
+        ? {
+            texto: "Reactivar",
+            Icono: IconoCampana,
+            onSelect: async () => { await callar(c, null); },
+          }
+        : {
+            // Abre el diálogo de plazos en vez de silenciar de golpe: «un año»
+            // era la única opción y es la que menos se quiere casi siempre.
+            texto: "Silenciar",
+            Icono: IconoSilenciar,
+            onSelect: () => setSilenciando(c),
+          },
       {
         texto: "Archivar",
         Icono: IconoArchivar,
@@ -156,6 +205,21 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     const texto = (data["text"] as string | null) ?? null;
     const tipo = String(data["kind"] ?? "text");
 
+    /*
+     * Lo que cambia en WhatsApp llega por su evento.
+     *
+     * Silenciar desde el teléfono tiene que callar este panel al instante; si
+     * no, el silencio solo valdría donde se pulsó.
+     */
+    if (evento === "chat.updated") {
+      const mudo = data["mutedUntil"];
+      if (mudo !== undefined) {
+        setChats((prev) => prev.map((x) => x.address === direccion
+          ? { ...x, mutedUntil: mudo ? new Date(Number(mudo)).toISOString() : null }
+          : x));
+      }
+    }
+
     setChats((prev) => {
       const i = prev.findIndex((c) => c.address === direccion);
       if (i < 0) return prev;
@@ -180,14 +244,40 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
 
     // Una conversación que no estaba en la lista no se puede pintar con lo que
     // trae el evento: el nombre hay que resolverlo, y eso vive en el servidor.
-    if (!chats.some((c) => c.address === direccion)) {
+    const conocida = chats.find((c) => c.address === direccion);
+    let chat = conocida;
+    if (!conocida) {
       const r = await fetch(`/api/omni/v1/lines/${linea.id}/chats/${encodeURIComponent(direccion)}`);
       if (!r.ok) return;
       const { data: nuevo } = (await r.json()) as { data: Chat };
+      chat = nuevo;
       setChats((prev) =>
         prev.some((c) => c.address === nuevo.address) ? prev : [nuevo, ...prev]);
     }
-  }), [linea.id, chats, suscribir, abierto]);
+
+    /*
+     * El aviso, con sus cuatro condiciones.
+     *
+     * Entrante, de otra persona, de una conversación que no se tiene abierta y
+     * que no está silenciada. Las cuatro juntas: avisar de lo propio, o de lo
+     * que ya se está leyendo, es ruido que enseña a ignorar el aviso.
+     *
+     * El aviso se manda DESPUÉS de resolver el nombre: «mensaje de
+     * 51988777666@lid» no identifica a nadie.
+     */
+    if (
+      evento === "message.received" && !key.fromMe && direccion !== abierto
+      && chat && !silenciado(chat.mutedUntil)
+    ) {
+      avisar(prefs, {
+        titulo: chat.displayName,
+        cuerpo: resumen(tipo, texto),
+        etiqueta: direccion,
+        alPulsar: () => router.push(
+          `/lineas/${linea.id}/chats/${encodeURIComponent(direccion)}`),
+      });
+    }
+  }), [linea.id, chats, suscribir, abierto, prefs, router]);
 
   const visibles = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -212,18 +302,47 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
               {linea.address ? `+${linea.address.split("@")[0]}` : linea.channelKind}
             </p>
           </div>
-          <span
-            title={conectado ? "Recibiendo en vivo" : "Reconectando"}
-            className="flex items-center gap-1.5 text-xs text-(--color-tenue)"
-          >
+          <div className="relative flex shrink-0 items-center gap-1.5">
             <span
-              aria-hidden
-              className={`size-2 rounded-full ${
-                conectado ? "bg-(--color-exito)" : "bg-(--color-apagado)"
+              title={conectado ? "Recibiendo en vivo" : "Reconectando"}
+              className="flex items-center gap-1.5 text-xs text-(--color-tenue)"
+            >
+              <span
+                aria-hidden
+                className={`size-2 rounded-full ${
+                  conectado ? "bg-(--color-exito)" : "bg-(--color-apagado)"
+                }`}
+              />
+              {conectado ? "en vivo" : "…"}
+            </span>
+
+            {/*
+              Los ajustes de aviso, aquí arriba: es donde se mira cuando algo
+              acaba de sonar y se quiere que deje de hacerlo.
+            */}
+            <button
+              type="button"
+              onClick={() => setAjustes((v) => !v)}
+              aria-label="Avisos"
+              aria-expanded={ajustes}
+              title={
+                prefs.sonido || prefs.escritorio
+                  ? "Avisos activados"
+                  : "Avisos en silencio"
+              }
+              className={`flex size-8 items-center justify-center rounded-lg transition-colors duration-150 ${
+                ajustes
+                  ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+                  : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
               }`}
-            />
-            {conectado ? "en vivo" : "…"}
-          </span>
+            >
+              {prefs.sonido || prefs.escritorio
+                ? <IconoCampana className="size-4.5" />
+                : <IconoCampanaTachada className="size-4.5" />}
+            </button>
+
+            {ajustes && <AjustesAvisos onCerrar={() => setAjustes(false)} />}
+          </div>
         </div>
 
         <div className="relative mt-3">
@@ -293,7 +412,15 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                     <Avatar nombre={c.displayName} direccion={c.address} kind={c.kind} url={c.avatarUrl} />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-sm font-medium">{c.displayName}</span>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-sm font-medium">{c.displayName}</span>
+                          {silenciado(c.mutedUntil) && (
+                            <IconoCampanaTachada
+                              titulo="Silenciada"
+                              className="size-3.5 shrink-0 text-(--color-apagado)"
+                            />
+                          )}
+                        </span>
                         <span
                           className={`shrink-0 text-[11px] ${
                             c.unreadCount > 0
@@ -313,7 +440,13 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                               : c.address}
                         </span>
                         {c.unreadCount > 0 && (
-                          <span className="flex min-w-5 shrink-0 justify-center rounded-full bg-(--color-acento) px-1.5 text-[11px] leading-5 font-semibold text-(--color-sobre-acento) group-hover/fila:hidden">
+                          <span
+                            className={`flex min-w-5 shrink-0 justify-center rounded-full px-1.5 text-[11px] leading-5 font-semibold group-hover/fila:hidden ${
+                              silenciado(c.mutedUntil)
+                                ? "bg-(--color-hundido) text-(--color-tenue)"
+                                : "bg-(--color-acento) text-(--color-sobre-acento)"
+                            }`}
+                          >
                             {c.unreadCount > 99 ? "99+" : c.unreadCount}
                           </span>
                         )}
@@ -351,6 +484,13 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         opciones={sobre ? acciones(sobre) : []}
         onCerrar={menu.cerrar}
       />
+      {silenciando && (
+        <Silenciar
+          nombre={silenciando.displayName}
+          onCerrar={() => setSilenciando(null)}
+          onElegir={(hasta) => callar(silenciando, hasta)}
+        />
+      )}
     </aside>
   );
 }

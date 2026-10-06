@@ -92,7 +92,8 @@ export function resumen(kind: string, body: string | null): string {
   const nombres: Record<string, string> = {
     image: "Foto", video: "Vídeo", audio: "Audio", sticker: "Sticker",
     document: "Documento", location: "Ubicación", contact: "Contacto",
-    poll: "Encuesta", reaction: "Reacción",
+    poll: "Encuesta", template: "Plantilla", buttons: "Mensaje con botones",
+    list: "Mensaje con lista", unknown: "Mensaje no compatible",
   };
   return nombres[kind] ?? "Mensaje";
 }
