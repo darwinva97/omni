@@ -199,6 +199,74 @@ run("runtime del motor, de punta a punta", () => {
     expect(hook!.headers["x-omni-signature"]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
   });
 
+  it("una reacción no se cuela en el hilo como si fuera un mensaje", async () => {
+    /*
+     * WhatsApp entrega la reacción por el mismo canal que los mensajes. Al
+     * guardarla como fila propia, el hilo se llenaba de burbujas vacías con la
+     * palabra «reaction» dentro y la conversación quedaba enterrada entre
+     * ellas. Se vio en un grupo real con 108 de estas.
+     */
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    await H.driver.inbound(asLineId(LINE), "51988777666", "la pregunta");
+    await settle(400);
+
+    const antes = await h.db.select().from(messageTable).where(eq(messageTable.lineId, LINE));
+    await H.runtime.publish("message.received", LINE, {
+      key: { id: "REACCION-1", remoteJid: "51988777666@s.whatsapp.net" },
+      kind: "reaction", text: "👍", timestamp: Date.now(),
+    });
+    await settle(300);
+
+    const despues = await h.db.select().from(messageTable).where(eq(messageTable.lineId, LINE));
+    expect(despues).toHaveLength(antes.length);
+  });
+
+  it("un mensaje retirado se marca y no se pierde lo que decía", async () => {
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    await H.driver.inbound(asLineId(LINE), "51988777666", "me arrepiento de esto");
+    await settle(400);
+
+    const [fila] = await h.db.select().from(messageTable)
+      .where(and(eq(messageTable.lineId, LINE), eq(messageTable.fromMe, false)));
+    expect(fila!.deletedAt).toBeNull();
+
+    await H.runtime.publish("message.deleted", LINE, {
+      key: { id: fila!.providerMessageId, remoteJid: "51988777666@s.whatsapp.net" },
+    });
+    await settle(300);
+
+    const [tras] = await h.db.select().from(messageTable)
+      .where(eq(messageTable.id, fila!.id));
+    expect(tras!.deletedAt).not.toBeNull();
+    // La fila se marca, no se borra: quien audita necesita saber qué decía.
+    expect(tras!.body).toBe("me arrepiento de esto");
+  });
+
+  it("un protocolMessage de retirada marca el original y no añade burbuja", async () => {
+    // Según la versión del cliente, la retirada llega por `messages.delete` o
+    // colada entre los mensajes como `protocolMessage`. Las dos cuentan.
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    await H.driver.inbound(asLineId(LINE), "51988777666", "esto se va a retirar");
+    await settle(400);
+
+    const [fila] = await h.db.select().from(messageTable)
+      .where(and(eq(messageTable.lineId, LINE), eq(messageTable.fromMe, false)));
+
+    await H.runtime.publish("message.received", LINE, {
+      key: { id: "PROTO-1", remoteJid: "51988777666@s.whatsapp.net" },
+      kind: "system", timestamp: Date.now(),
+      raw: { message: { protocolMessage: { key: { id: fila!.providerMessageId }, type: 0 } } },
+    });
+    await settle(300);
+
+    const todas = await h.db.select().from(messageTable).where(eq(messageTable.lineId, LINE));
+    expect(todas.find((m) => m.providerMessageId === "PROTO-1")).toBeUndefined();
+    expect(todas.find((m) => m.id === fila!.id)!.deletedAt).not.toBeNull();
+  });
+
   it("un envío se acepta enseguida, se encola y acaba enviado", async () => {
     await H.runtime.connect(LINE);
     await H.driver.scan(asLineId(LINE), "51999888777");

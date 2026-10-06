@@ -10,8 +10,8 @@ import { Medio } from "@/componentes/medio";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
-  IconoAdjuntar, IconoCerrar, IconoCopiar, IconoDescargar, IconoEnviar,
-  IconoInfo, IconoPapelera, IconoSticker, IconoVolver,
+  IconoAdjuntar, IconoBloquear, IconoCerrar, IconoCopiar, IconoDescargar,
+  IconoEnviar, IconoInfo, IconoPapelera, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
 import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
@@ -24,6 +24,19 @@ const MEDIOS = new Set(["image", "sticker", "video", "audio", "document"]);
 
 /** Un sticker va suelto, sin burbuja: con fondo se ve peor que en WhatsApp. */
 const SIN_BURBUJA = new Set(["sticker"]);
+
+/**
+ * Cómo se llama en castellano lo que no se pinta con su propio aspecto.
+ *
+ * Es lo que se lee cuando un mensaje no trae texto: antes salía el nombre
+ * interno del tipo —«poll», «template»— dentro de la burbuja, que no le dice
+ * nada a nadie.
+ */
+const ETIQUETA: Record<string, string> = {
+  poll: "Encuesta", contact: "Contacto", location: "Ubicación",
+  template: "Plantilla", buttons: "Mensaje con botones", list: "Mensaje con lista",
+  unknown: "Mensaje no compatible", system: "Aviso del sistema",
+};
 
 export function Conversacion({
   lineId,
@@ -121,8 +134,67 @@ export function Conversacion({
       return;
     }
 
+    /*
+     * Una reacción NO es un mensaje.
+     *
+     * Llega por el mismo canal, y sin esto se añadía al hilo como una burbuja
+     * vacía con la palabra «reaction» dentro. Es un dato SOBRE otro mensaje:
+     * su sitio es el del mensaje al que apunta.
+     *
+     * Se aplica por identificador y sin mirar la conversación, como los
+     * acuses: el chat de una reacción puede venir con otra forma de la misma
+     * dirección, y filtrar por él dejaba la reacción sin aparecer nunca.
+     */
+    if (evento === "message.reaction") {
+      const emoji = String(data["emoji"] ?? "").trim();
+      const mia = key.fromMe === true;
+      setMensajes((prev) => prev.map((x) => {
+        if (x.providerMessageId !== key.id) return x;
+        const lista = (x.reacciones ?? []).map((r) => ({ ...r }));
+
+        // De cada persona solo puede haber una: la nueva retira la anterior.
+        // La nuestra se sabe cuál era; la ajena no —el modelo agrupa por
+        // emoji, no por persona— y esa se corrige al recargar.
+        if (mia) {
+          const i = lista.findIndex((r) => r.mia);
+          const previa = lista[i];
+          if (previa) {
+            if (previa.cuantas > 1) { previa.cuantas--; previa.mia = false; }
+            else lista.splice(i, 1);
+          }
+        }
+
+        // Un emoji vacío es cómo WhatsApp dice «la retiro».
+        if (emoji) {
+          const igual = lista.find((r) => r.emoji === emoji);
+          if (igual) { igual.cuantas++; igual.mia = igual.mia || mia; }
+          else lista.push({ emoji, cuantas: 1, mia });
+        }
+        return { ...x, reacciones: lista };
+      }));
+      return;
+    }
+
+    // Retirado por quien lo escribió: se marca donde está, no se quita de la
+    // lista, para que quien lee vea que ahí hubo algo.
+    if (evento === "message.deleted") {
+      setMensajes((prev) =>
+        prev.map((x) => (x.providerMessageId === key.id ? { ...x, deleted: true } : x)));
+      return;
+    }
+
     if (evento === "message.upsert") return;
     if (key.remoteJid !== chat) return;
+
+    /*
+     * Lo que no es contenido no entra en el hilo.
+     *
+     * Una reacción ya se aplicó arriba, y un `protocolMessage` es una orden
+     * sobre otro mensaje. El motor tampoco los guarda, así que pintarlos aquí
+     * creaba burbujas que desaparecían al recargar.
+     */
+    const kind = String(data["kind"] ?? "text");
+    if (kind === "reaction" || kind === "system") return;
 
     setMensajes((prev) => {
       if (key.id && prev.some((x) => x.providerMessageId === key.id)) return prev;
@@ -152,7 +224,7 @@ export function Conversacion({
         id: key.id ?? crypto.randomUUID(),
         providerMessageId: key.id ?? null,
         fromMe: key.fromMe ?? false,
-        kind: String(data["kind"] ?? "text"),
+        kind,
         body: (data["text"] as string | null) ?? null,
         state: key.fromMe ? "sent" : "delivered",
         timestamp: new Date(Number(data["timestamp"] ?? Date.now())).toISOString(),
@@ -363,7 +435,17 @@ export function Conversacion({
             const primeroDeTanda = nuevoDia || anterior?.fromMe !== m.fromMe;
             const ultimoDeTanda = !siguiente || siguiente.fromMe !== m.fromMe
               || !mismoDia(siguiente.timestamp, m.timestamp);
-            const suelto = SIN_BURBUJA.has(m.kind) && m.media != null;
+            const suelto = SIN_BURBUJA.has(m.kind) && m.media != null && !m.deleted;
+            /*
+             * Lo que este transporte no supo leer.
+             *
+             * No es de nadie y no dice nada, así que no merece una burbuja con
+             * remitente y acuse: un aviso centrado, como el separador de día.
+             */
+            const esAviso = (m.kind === "system" || m.kind === "unknown")
+              && !m.body && !m.deleted;
+            // Hay texto donde meter la hora: el cuerpo, o el aviso de retirado.
+            const conTexto = m.deleted || Boolean(m.body);
 
             return (
               <li key={m.id}>
@@ -375,6 +457,17 @@ export function Conversacion({
                   </div>
                 )}
 
+                {esAviso ? (
+                  <div className="flex justify-center py-1.5">
+                    <span
+                      title="Llegó un mensaje de un tipo que WhatsApp no deja leer a este transporte. Queda guardado tal cual vino."
+                      className="rounded-full bg-(--color-panel)/70 px-3 py-1 text-[11px] text-(--color-apagado)"
+                    >
+                      Mensaje no compatible
+                      <time className="ml-1.5" dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                    </span>
+                  </div>
+                ) : (
                 <div
                   onContextMenu={(e) => { setSobre(m); menu.enContexto(e); }}
                   className={`mensaje-nuevo flex ${m.fromMe ? "justify-end" : "justify-start"} ${
@@ -411,7 +504,18 @@ export function Conversacion({
                       </p>
                     )}
 
-                    {MEDIOS.has(m.kind) ? (
+                    {m.deleted ? (
+                      /*
+                        Quien lo escribió lo retiró. Se dice, no se esconde: un
+                        hueco donde había algo deja a quien lee sin saber si
+                        perdió un mensaje o nunca hubo ninguno.
+                      */
+                      <p className="text-sm italic text-(--color-apagado)">
+                        <IconoBloquear className="mr-1.5 inline-block size-3.5 -translate-y-px" />
+                        Se eliminó este mensaje
+                        <Firma mensaje={m} />
+                      </p>
+                    ) : MEDIOS.has(m.kind) ? (
                       <div className="space-y-1">
                         <Medio kind={m.kind} medio={m.media} error={m.mediaError} />
                         {/* El pie, cuando lo trae: en WhatsApp una foto puede
@@ -425,15 +529,17 @@ export function Conversacion({
                       </div>
                     ) : (
                       <p className="text-sm wrap-anywhere whitespace-pre-wrap">
-                        {m.body ?? <em className="text-(--color-tenue)">{m.kind}</em>}
-                        <Firma mensaje={m} />
+                        {m.body ?? (
+                          <em className="text-(--color-tenue)">
+                            {ETIQUETA[m.kind] ?? m.kind}
+                          </em>
+                        )}
+                        {/* La firma solo va DENTRO cuando hay texto donde
+                            meterla; sin él se pintaba la hora dos veces. */}
+                        {m.body && <Firma mensaje={m} />}
                       </p>
                     )}
 
-                    {/*
-                      Cuando no hay texto donde meter la hora —una foto sola, un
-                      sticker— va debajo, que es lo único que queda.
-                    */}
                     {(m.reacciones?.length ?? 0) > 0 && (
                       <span
                         className={`absolute -bottom-2.5 flex gap-0.5 ${
@@ -470,7 +576,11 @@ export function Conversacion({
                       </span>
                     )}
 
-                    {(!m.body || suelto) && (
+                    {/*
+                      Cuando no hay texto donde meter la hora —una foto sola, un
+                      sticker— va debajo, que es lo único que queda.
+                    */}
+                    {(!conTexto || suelto) && (
                       <span
                         className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] text-(--color-apagado) ${
                           suelto ? "pr-1" : ""
@@ -482,6 +592,7 @@ export function Conversacion({
                     )}
                   </div>
                 </div>
+                )}
               </li>
             );
           })}

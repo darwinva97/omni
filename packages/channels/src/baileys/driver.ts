@@ -3,6 +3,7 @@ import { Boom } from "@hapi/boom";
 import makeWASocket, {
   type Contact as Contacto,
   Browsers, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion,
+  normalizeMessageContent,
   type WAMessage, type WASocket,
 } from "baileys";
 import {
@@ -440,6 +441,14 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
 
   async #onMessage(lineId: string, line: LineRuntime, m: WAMessage): Promise<void> {
     if (!m.key.remoteJid) return;
+    /*
+     * Un sobre sin contenido no es un mensaje.
+     *
+     * WhatsApp manda nodos que solo llevan datos de cifrado o de contexto. No
+     * ha pasado nada que contar, y publicarlos llenaba el hilo de avisos de
+     * «mensaje no compatible»: eran la mitad de los que salían así.
+     */
+    if (esVacio(m)) return;
     const clientMessageId = m.key.id ? line.porProveedor.get(m.key.id) : undefined;
     const payload = {
       key: normalizeKey(m.key),
@@ -1085,34 +1094,136 @@ export function ackToState(status: number | null | undefined): DeliveryState | n
  * `extendedTextMessage.text`, y uno con medio lleva el texto en su `caption`.
  * Asumir sólo la primera forma es el fallo más común al integrar con WhatsApp.
  */
+/**
+ * El contenido real, sin envoltorios.
+ *
+ * WhatsApp mete el mensaje dentro de otro cuando es efímero, de una sola vez,
+ * editado, o un documento con pie. Sin desenvolverlo, un PDF con texto llegaba
+ * como «mensaje no compatible» porque arriba solo estaba la caja.
+ *
+ * Lo desenvuelve Baileys y no nosotros a propósito: la lista de envoltorios
+ * crece con cada versión del protocolo —en la instalada ya son nueve— y la
+ * nuestra se quedaría atrás en silencio.
+ */
+function contenido(m: WAMessage): Record<string, unknown> | null {
+  const normalizado = normalizeMessageContent(m.message ?? undefined);
+  return (normalizado as Record<string, unknown> | undefined) ?? null;
+}
+
+/** De dónde sale el texto de un mensaje, por tipo de nodo. */
+const CAMPOS_CON_TEXTO = [
+  "extendedTextMessage", "imageMessage", "videoMessage", "documentMessage",
+  "audioMessage", "ptvMessage",
+] as const;
+
 export function extractText(message: object | null | undefined): string | null {
   if (!message) return null;
-  const m = message as Record<string, { text?: string; caption?: string } | string | undefined>;
+  const crudo = normalizeMessageContent(message as never) ?? message;
+  const m = crudo as Record<string, unknown>;
   if (typeof m["conversation"] === "string") return m["conversation"];
-  for (const campo of ["extendedTextMessage", "imageMessage", "videoMessage", "documentMessage"]) {
-    const nodo = m[campo];
-    if (nodo && typeof nodo === "object") {
-      const valor = nodo.text ?? nodo.caption;
-      if (typeof valor === "string") return valor;
-    }
+
+  for (const campo of CAMPOS_CON_TEXTO) {
+    const nodo = m[campo] as { text?: string; caption?: string } | undefined;
+    const valor = nodo?.text ?? nodo?.caption;
+    if (typeof valor === "string" && valor !== "") return valor;
   }
+
+  /*
+   * Plantillas y mensajes interactivos: lo que escribió el negocio está varios
+   * niveles adentro y en tres sitios distintos según cómo se compuso. Se
+   * buscan los tres; sin esto una plantilla —y las manda cualquier empresa—
+   * se veía como un mensaje vacío.
+   */
+  const plantilla = dentro(m, "templateMessage");
+  const deLaPlantilla = texto(dentro(plantilla, "interactiveMessageTemplate")?.["body"])
+    ?? texto(dentro(plantilla, "hydratedTemplate")?.["hydratedContentText"])
+    ?? texto(dentro(plantilla, "hydratedFourRowTemplate")?.["hydratedContentText"]);
+  if (deLaPlantilla) return deLaPlantilla;
+
+  for (const campo of ["interactiveMessage", "buttonsMessage", "listMessage"]) {
+    const nodo = dentro(m, campo);
+    const valor = texto(nodo?.["body"]) ?? texto(nodo?.["contentText"])
+      ?? texto(nodo?.["description"]);
+    if (valor) return valor;
+  }
+
+  // Lo que respondió quien PULSÓ un botón: para el hilo es su respuesta.
+  for (const campo of [
+    "templateButtonReplyMessage", "buttonsResponseMessage", "listResponseMessage",
+  ]) {
+    const nodo = m[campo] as Record<string, unknown> | undefined;
+    const valor = nodo?.["selectedDisplayText"] ?? nodo?.["selectedButtonId"]
+      ?? nodo?.["title"];
+    if (typeof valor === "string" && valor !== "") return valor;
+  }
+
   return null;
 }
 
+/** Un hijo de un nodo, cuando es un objeto; `undefined` en cualquier otro caso. */
+function dentro(
+  nodo: Record<string, unknown> | undefined, campo: string,
+): Record<string, unknown> | undefined {
+  const hijo = nodo?.[campo];
+  return hijo && typeof hijo === "object" ? hijo as Record<string, unknown> : undefined;
+}
+
+/** Un nodo de texto de WhatsApp: a veces `{text}`, a veces la cadena pelada. */
+function texto(nodo: unknown): string | null {
+  if (typeof nodo === "string") return nodo === "" ? null : nodo;
+  const valor = (nodo as { text?: unknown } | undefined)?.text;
+  return typeof valor === "string" && valor !== "" ? valor : null;
+}
+
+/**
+ * Nodos que acompañan a un mensaje sin ser el mensaje.
+ *
+ * Si un sobre no trae NADA más que estos, no ha pasado nada que contar: son
+ * datos de cifrado y de contexto. Llegaban al hilo como «mensaje no
+ * compatible», y eran la mitad de los que aparecían así.
+ */
+const SIN_CONTENIDO = new Set([
+  "messageContextInfo", "senderKeyDistributionMessage", "deviceSentMessage",
+  /*
+   * La cabecera de un álbum y el registro de una llamada no llevan contenido
+   * propio: las fotos del álbum llegan después una a una, y la llamada ya va
+   * por su propio evento (`call.received`). Enseñarlos en el hilo era pintar
+   * dos veces lo mismo, y encima como ilegible.
+   */
+  "albumMessage", "call",
+]);
+
+/** `true` si el sobre no lleva nada que una persona pueda leer. */
+export function esVacio(m: WAMessage): boolean {
+  const msg = contenido(m);
+  if (!msg) return true;
+  return Object.keys(msg).every((k) => SIN_CONTENIDO.has(k));
+}
+
 export function messageKind(m: WAMessage): MessageKind {
-  const msg = m.message as Record<string, unknown> | null | undefined;
+  const msg = contenido(m);
   if (!msg) return "unknown";
   if (msg["conversation"] || msg["extendedTextMessage"]) return "text";
   if (msg["imageMessage"]) return "image";
-  if (msg["videoMessage"]) return "video";
+  if (msg["videoMessage"] || msg["ptvMessage"]) return "video";
   if (msg["audioMessage"]) return "audio";
   if (msg["documentMessage"]) return "document";
   if (msg["stickerMessage"]) return "sticker";
-  if (msg["locationMessage"]) return "location";
+  if (msg["locationMessage"] || msg["liveLocationMessage"]) return "location";
   if (msg["contactMessage"] || msg["contactsArrayMessage"]) return "contact";
   if (msg["pollCreationMessage"] || msg["pollCreationMessageV3"]) return "poll";
   if (msg["reactionMessage"]) return "reaction";
   if (msg["protocolMessage"]) return "system";
+  // Plantillas e interactivos: lo que manda una empresa. Son mensajes de
+  // verdad, con texto y botones, y se trataban como ilegibles.
+  if (msg["templateMessage"] || msg["interactiveMessage"]) return "template";
+  if (msg["buttonsMessage"]) return "buttons";
+  if (msg["listMessage"]) return "list";
+  // Una respuesta a un botón es, para el hilo, lo que esa persona contestó.
+  if (
+    msg["templateButtonReplyMessage"] || msg["buttonsResponseMessage"]
+    || msg["listResponseMessage"] || msg["interactiveResponseMessage"]
+  ) return "text";
   return "unknown";
 }
 

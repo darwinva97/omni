@@ -90,6 +90,12 @@ export interface InboundMediaJob {
 /** Los tipos de mensaje que llevan fichero detrás. */
 const MEDIA_KINDS = new Set(["image", "video", "audio", "document", "sticker"]);
 
+/** Un `protocolMessage` de WhatsApp: a qué mensaje apunta y qué pide. */
+type Protocolo = { key?: { id?: string }; type?: number | string };
+
+/** `Message.ProtocolMessage.Type.REVOKE`: «elimina aquel mensaje». */
+const REVOKE = 0;
+
 /** Ventana de la reserva de idempotencia. Ver el comentario en `send`. */
 export const IDEMPOTENCY_RESERVE_SECONDS = 120;
 
@@ -688,6 +694,18 @@ export class EngineRuntime {
       await this.#aprenderNombre(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
       if (envelope.event === "message.reaction") await this.#aplicarReaccion(envelope);
+      /*
+       * Un mensaje retirado se MARCA, no se borra.
+       *
+       * Es el camino limpio: Baileys avisa por `messages.delete` cuando quien
+       * escribió retira algo. El otro camino —un `protocolMessage` entre los
+       * mensajes— lo cubre `#aplicarProtocolo`, porque según la versión del
+       * cliente llega por uno o por el otro.
+       */
+      if (envelope.event === "message.deleted") {
+        const d = envelope.data as { key?: { id?: string } };
+        await this.#marcarRetirado(envelope.lineId, d.key?.id, envelope.timestamp);
+      }
       if (envelope.event === "session.connected" || envelope.event === "session.status") {
         const data = envelope.data as { state?: string; self?: string };
         if (data.state) await this.#setStatus(envelope.lineId, data.state);
@@ -1193,7 +1211,27 @@ export class EngineRuntime {
       key: { id: string; remoteJid: string; participant?: string };
       kind?: MessageKind; text?: string | null; timestamp?: number;
       clientMessageId?: string;
+      raw?: { message?: { protocolMessage?: Protocolo } };
     };
+
+    /*
+     * Una reacción NO es un mensaje.
+     *
+     * WhatsApp la entrega por el mismo canal que los mensajes, pero es un dato
+     * SOBRE otro mensaje: un pulgar que alguien pone a lo que dijiste. Al
+     * guardarla como fila propia, el hilo se llenaba de burbujas vacías con la
+     * palabra «reaction» dentro, y la conversación real quedaba enterrada
+     * entre ellas. Su sitio es la tabla de reacciones, y ahí llega por su
+     * propio evento.
+     */
+    if (d.kind === "reaction") return;
+
+    // Y un `protocolMessage` tampoco: es una orden sobre el hilo.
+    if (d.kind === "system") {
+      await this.#aplicarProtocolo(envelope, d.raw?.message?.protocolMessage);
+      return;
+    }
+
     const chat = parseAddress(d.key.remoteJid);
     const when = new Date(d.timestamp ?? envelope.timestamp);
 
@@ -1334,6 +1372,40 @@ export class EngineRuntime {
         target: [reactionTable.lineId, reactionTable.providerMessageId, reactionTable.reactor],
         set: { emoji, at: new Date() },
       });
+  }
+
+  /**
+   * Aplica un `protocolMessage`.
+   *
+   * No es un mensaje: es una orden sobre el hilo, y de las que WhatsApp manda
+   * por aquí solo una cambia lo que se lee —REVOKE, «elimina aquel mensaje»—.
+   * Guardarla como fila propia hacía lo peor de dos mundos: aparecía una
+   * burbuja vacía con la palabra «system» dentro Y el mensaje borrado seguía
+   * en su sitio como si nadie lo hubiera retirado.
+   *
+   * La fila original se marca, no se borra. Quien audita una conversación
+   * necesita saber que ahí hubo algo y qué decía; el panel ya se encarga de
+   * enseñarlo como retirado.
+   */
+  async #aplicarProtocolo(envelope: EventEnvelope, protocolo?: Protocolo): Promise<void> {
+    if (!protocolo) return;
+    // Baileys entrega el enum tal cual lo trae el protobuf: a veces el número,
+    // a veces el nombre. Se aceptan los dos en vez de apostar por uno.
+    if (protocolo.type !== REVOKE && protocolo.type !== "REVOKE") return;
+    await this.#marcarRetirado(envelope.lineId, protocolo.key?.id, envelope.timestamp);
+  }
+
+  /** Deja dicho que un mensaje fue retirado, sin perder lo que decía. */
+  async #marcarRetirado(lineId: string, providerMessageId: string | undefined, cuando: number)
+    : Promise<void> {
+    if (!providerMessageId) return;
+    await this.#deps.db
+      .update(messageTable)
+      .set({ deletedAt: new Date(cuando) })
+      .where(and(
+        eq(messageTable.lineId, lineId),
+        eq(messageTable.providerMessageId, providerMessageId),
+      ));
   }
 
   async #applyReceipt(envelope: EventEnvelope): Promise<void> {

@@ -91,7 +91,7 @@ export default async function Estados({
                       <Medio kind={m.kind} medio={m.media} error={m.mediaError} />
                     ) : (
                       <p className="flex min-h-28 items-center justify-center rounded-lg bg-(--color-hundido) px-3 py-4 text-center text-sm">
-                        {m.body ?? <em className="text-(--color-tenue)">{m.kind}</em>}
+                        {m.body ?? <em className="text-(--color-tenue)">Sin texto</em>}
                       </p>
                     )}
                     {m.media && m.body && (

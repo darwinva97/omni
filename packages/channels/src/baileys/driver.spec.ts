@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
-import { BaileysDriver, ackToState, deterministicMessageId, extractText, messageKind } from "./driver.js";
+import {
+  BaileysDriver, ackToState, deterministicMessageId, esVacio, extractText, messageKind,
+} from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
 
@@ -58,6 +60,58 @@ describe("extracción de texto", () => {
     expect(extractText({ stickerMessage: {} })).toBeNull();
     expect(extractText(null)).toBeNull();
   });
+
+  it("desenvuelve el mensaje efímero, el de una vez y el documento con pie", () => {
+    // Sin desenvolver, un PDF con texto o una foto de una sola vez llegaban
+    // como «mensaje no compatible»: arriba solo estaba la caja.
+    expect(extractText({ ephemeralMessage: { message: { conversation: "efímero" } } }))
+      .toBe("efímero");
+    expect(extractText({ viewOnceMessageV2: { message: { imageMessage: { caption: "una vez" } } } }))
+      .toBe("una vez");
+    expect(extractText({
+      documentWithCaptionMessage: { message: { documentMessage: { caption: "el informe" } } },
+    })).toBe("el informe");
+  });
+
+  it("lee el texto de una plantilla de empresa", () => {
+    // Las manda cualquier negocio y el texto va varios niveles adentro: se
+    // veían como mensajes vacíos.
+    expect(extractText({
+      templateMessage: { interactiveMessageTemplate: { body: { text: "Hola 👋" } } },
+    })).toBe("Hola 👋");
+    expect(extractText({
+      templateMessage: { hydratedTemplate: { hydratedContentText: "tu pedido llegó" } },
+    })).toBe("tu pedido llegó");
+  });
+
+  it("lee lo que contestó quien pulsó un botón", () => {
+    expect(extractText({ buttonsResponseMessage: { selectedDisplayText: "Sí, continuar" } }))
+      .toBe("Sí, continuar");
+  });
+});
+
+describe("sobres vacíos", () => {
+  it("un sobre que solo lleva datos de cifrado o de contexto no es un mensaje", () => {
+    /*
+     * Son la mitad de los que aparecían en el hilo como «mensaje no
+     * compatible». No ha pasado nada que contar: ni se publican.
+     */
+    const v = (message: unknown) => esVacio({ message } as never);
+    expect(v({ messageContextInfo: {} })).toBe(true);
+    expect(v({ senderKeyDistributionMessage: {} })).toBe(true);
+    expect(v({ messageContextInfo: {}, senderKeyDistributionMessage: {} })).toBe(true);
+    expect(v(null)).toBe(true);
+    // La cabecera de un álbum y el registro de una llamada tampoco: lo que
+    // cuentan llega por su lado —las fotos sueltas, el evento de llamada—.
+    expect(v({ albumMessage: { expectedImageCount: 3 } })).toBe(true);
+    expect(v({ call: { callKey: "x" } })).toBe(true);
+  });
+
+  it("pero uno con contenido al lado de esos datos sí lo es", () => {
+    const v = (message: unknown) => esVacio({ message } as never);
+    expect(v({ messageContextInfo: {}, conversation: "hola" })).toBe(false);
+    expect(v({ ephemeralMessage: { message: { conversation: "hola" } } })).toBe(false);
+  });
 });
 
 describe("tipo de mensaje", () => {
@@ -71,6 +125,24 @@ describe("tipo de mensaje", () => {
     expect(k({ protocolMessage: {} })).toBe("system");
     expect(k(null)).toBe("unknown");
     expect(k({ algoNuevo: {} })).toBe("unknown");
+  });
+
+  it("clasifica lo que manda una empresa, en vez de darlo por ilegible", () => {
+    const k = (message: unknown) => messageKind({ message } as never);
+    expect(k({ templateMessage: {} })).toBe("template");
+    expect(k({ interactiveMessage: {} })).toBe("template");
+    expect(k({ buttonsMessage: {} })).toBe("buttons");
+    expect(k({ listMessage: {} })).toBe("list");
+    // Pulsar un botón es contestar: para el hilo, eso es texto.
+    expect(k({ buttonsResponseMessage: {} })).toBe("text");
+  });
+
+  it("mira DENTRO del envoltorio, no la caja", () => {
+    const k = (message: unknown) => messageKind({ message } as never);
+    expect(k({ viewOnceMessageV2: { message: { imageMessage: {} } } })).toBe("image");
+    expect(k({ documentWithCaptionMessage: { message: { documentMessage: {} } } }))
+      .toBe("document");
+    expect(k({ ephemeralMessage: { message: { audioMessage: {} } } })).toBe("audio");
   });
 });
 

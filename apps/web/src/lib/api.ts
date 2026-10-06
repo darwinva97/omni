@@ -102,6 +102,8 @@ export interface Mensaje {
   mediaError?: string | null;
   /** Reacciones agrupadas por emoji. */
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
+  /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */
+  deleted?: boolean;
 }
 
 export interface Yo {

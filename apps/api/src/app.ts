@@ -65,6 +65,14 @@ const MensajeSchema = z.object({
   reacciones: z.array(z.object({
     emoji: z.string(), cuantas: z.number(), mia: z.boolean(),
   })).default([]),
+  /**
+   * Retirado por quien lo escribió.
+   *
+   * El cuerpo sigue viniendo a propósito: la fila no se borra, se marca, y
+   * quien audita una conversación necesita saber qué decía lo que se retiró.
+   * El panel enseña el aviso, no el texto.
+   */
+  deleted: z.boolean().default(false),
 }).openapi("Mensaje");
 
 const ChatSchema = z.object({
@@ -106,24 +114,35 @@ async function ultimosMensajes(
   container: Container, lineId: string, direcciones: readonly string[],
 ): Promise<Map<string, { texto: string; propio: boolean }>> {
   if (direcciones.length === 0) return new Map();
+  /*
+   * El último mensaje CUENTA incluso si lo retiraron.
+   *
+   * Saltárselo hacía que la conversación pareciera inactiva desde antes de lo
+   * que fue: el adelanto enseñaba un mensaje de ayer cuando el de hoy existió
+   * y se borró. Se enseña que hubo algo y que ya no está.
+   */
   const filas = await container.dbh.sql<
-    { chat_id: string; kind: string; body: string | null; from_me: boolean }[]
+    { chat_id: string; kind: string; body: string | null; from_me: boolean;
+      retirado: boolean }[]
   >`
-    SELECT DISTINCT ON (chat_id) chat_id, kind, body, from_me
+    SELECT DISTINCT ON (chat_id)
+      chat_id, kind, body, from_me, deleted_at IS NOT NULL AS retirado
     FROM message
     WHERE line_id = ${lineId} AND chat_id = ANY(${direcciones as string[]})
-      AND deleted_at IS NULL
     ORDER BY chat_id, timestamp DESC`;
 
   const nombres: Record<string, string> = {
     image: "Foto", video: "Vídeo", audio: "Audio", sticker: "Sticker",
     document: "Documento", location: "Ubicación", contact: "Contacto",
-    poll: "Encuesta", reaction: "Reacción",
+    poll: "Encuesta", template: "Plantilla", buttons: "Mensaje con botones",
+    list: "Mensaje con lista", unknown: "Mensaje no compatible",
   };
   return new Map(filas.map((f) => [
     f.chat_id,
     {
-      texto: f.body?.trim() || nombres[f.kind] || "Mensaje",
+      texto: f.retirado
+        ? "Se eliminó este mensaje"
+        : f.body?.trim() || nombres[f.kind] || "Mensaje",
       propio: f.from_me,
     },
   ]));
@@ -622,6 +641,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           eq(messageTable.lineId, lineId),
           eq(messageTable.chatId, "status@broadcast"),
           gte(messageTable.timestamp, desde),
+          // Un estado retirado no está publicado: no se enseña.
+          isNull(messageTable.deletedAt),
         ))
         .orderBy(desc(messageTable.timestamp))
         .limit(500);
@@ -682,6 +703,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
             : null,
           mediaError: null,
           reacciones: [],
+          deleted: false,
         }))),
       })));
 
@@ -856,6 +878,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
          */
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
+        deleted: r.deletedAt !== null,
       })));
 
       return c.json({
