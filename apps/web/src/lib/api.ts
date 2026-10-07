@@ -113,6 +113,23 @@ export interface Mensaje {
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
   /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */
   deleted?: boolean;
+  /** A qué mensaje responde, ya resuelto por la API. */
+  replyTo?: Cita | null;
+}
+
+export interface Cita {
+  id: string;
+  fromMe: boolean;
+  senderName: string | null;
+  kind: string;
+  body: string | null;
+  /** Miniatura del citado, cuando lo tenemos y lleva fichero. */
+  thumbUrl: string | null;
+  /**
+   * `false` cuando el original no está en esta base: la cita se enseña igual
+   * —WhatsApp manda una copia dentro— pero no se puede saltar a ella.
+   */
+  disponible: boolean;
 }
 
 export interface Yo {

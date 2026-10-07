@@ -24,7 +24,7 @@ export default async function ChatAbierto({
    * terminar la acción: el estado optimista de React se descarta al acabar y
    * lo que queda debajo no lo incluye. Parecía no haberse enviado cuando sí.
    */
-  async function enviar(texto: string): Promise<Mensaje | null> {
+  async function enviar(texto: string, replyTo?: string): Promise<Mensaje | null> {
     "use server";
     const limpio = texto.trim();
     if (!limpio) return null;
@@ -34,7 +34,13 @@ export default async function ChatAbierto({
     const clientMessageId = `panel-${crypto.randomUUID()}`;
     const res = await apiFetch<{ clientMessageId: string; messageId: string; state: string }>(
       `/v1/lines/${lineId}/messages`,
-      { method: "POST", body: JSON.stringify({ to: chat, text: limpio, clientMessageId }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          to: chat, text: limpio, clientMessageId,
+          ...(replyTo ? { replyTo } : {}),
+        }),
+      },
     );
     return {
       id: res.messageId, providerMessageId: null, clientMessageId: res.clientMessageId,
@@ -53,6 +59,7 @@ export default async function ChatAbierto({
   async function enviarMedio(
     campo: string, storageKey: string, pie: string, fileName: string,
     extra: Record<string, unknown> = {},
+    replyTo?: string,
   ): Promise<Mensaje | null> {
     "use server";
     const clientMessageId = `panel-${crypto.randomUUID()}`;
@@ -71,6 +78,7 @@ export default async function ChatAbierto({
           // `ptt` llega desde la grabadora: es lo que distingue una nota de voz
           // de un fichero de audio adjunto.
           ...extra,
+          ...(replyTo ? { replyTo } : {}),
           clientMessageId,
         }),
       },

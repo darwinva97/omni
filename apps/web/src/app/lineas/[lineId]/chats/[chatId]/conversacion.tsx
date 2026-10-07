@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useOptimistic, useRef, useState, startTransition } from "react";
-import type { Chat, Medio as TipoMedio, Mensaje } from "@/lib/api";
+import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { diaDeSeparador, hora, mismoDia } from "@/lib/formato";
 import { Acuse, Avatar } from "@/componentes/piezas";
@@ -11,13 +11,26 @@ import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
   IconoAdjuntar, IconoBloquear, IconoCerrar, IconoCopiar, IconoDescargar,
-  IconoEnviar, IconoInfo, IconoPapelera, IconoSticker, IconoVolver,
+  IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
 import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { Reacciones, Stickers } from "@/componentes/stickers";
 import { campoPara, ETIQUETAS, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
+
+/** De un mensaje del hilo a la cita que lo representa. */
+function citaDeMensaje(m: Mensaje): CitaDe {
+  return {
+    id: m.providerMessageId ?? m.id,
+    fromMe: m.fromMe,
+    senderName: m.senderName ?? null,
+    kind: m.kind,
+    body: m.body,
+    thumbUrl: m.media?.url ?? null,
+    disponible: true,
+  };
+}
 
 /** Los tipos que se pintan como fichero y no como texto. */
 const MEDIOS = new Set(["image", "sticker", "video", "audio", "document"]);
@@ -50,10 +63,11 @@ export function Conversacion({
   chat: string;
   info: Chat | null;
   iniciales: Mensaje[];
-  enviar: (texto: string) => Promise<Mensaje | null>;
+  enviar: (texto: string, replyTo?: string) => Promise<Mensaje | null>;
   enviarMedio: (
     campo: string, storageKey: string, pie: string, fileName: string,
     extra?: Record<string, unknown>,
+    replyTo?: string,
   ) => Promise<Mensaje | null>;
 }) {
   const [mensajes, setMensajes] = useState<Mensaje[]>(iniciales);
@@ -220,6 +234,30 @@ export function Conversacion({
         }
       }
 
+      /*
+       * La cita, resuelta con lo que ya está en pantalla.
+       *
+       * El evento trae el identificador del citado y una copia de su
+       * contenido, pero no el nombre de quien lo escribió ni su miniatura: eso
+       * lo resuelve la API al cargar. Si el citado está en el hilo se saca de
+       * ahí —sale completo, con miniatura—; si no, se pinta con la copia, que
+       * es lo que WhatsApp también hace.
+       */
+      const citaEvento = data["replyTo"] as
+        { id?: string; author?: string | null; kind?: string; text?: string | null }
+        | undefined;
+      let cita: CitaDe | null = null;
+      if (citaEvento?.id) {
+        const original = prev.find((x) => x.providerMessageId === citaEvento.id);
+        cita = original
+          ? citaDeMensaje(original)
+          : {
+              id: citaEvento.id, fromMe: false, senderName: null,
+              kind: citaEvento.kind ?? "unknown", body: citaEvento.text ?? null,
+              thumbUrl: null, disponible: false,
+            };
+      }
+
       return [...prev, {
         id: key.id ?? crypto.randomUUID(),
         providerMessageId: key.id ?? null,
@@ -228,6 +266,7 @@ export function Conversacion({
         body: (data["text"] as string | null) ?? null,
         state: key.fromMe ? "sent" : "delivered",
         timestamp: new Date(Number(data["timestamp"] ?? Date.now())).toISOString(),
+        ...(cita ? { replyTo: cita } : {}),
       }];
     });
   }), [chat, suscribir]);
@@ -246,6 +285,7 @@ export function Conversacion({
 
   const mandarFichero = async (
     file: File, campo: CampoDeMedio, pie: string, extra: Record<string, unknown> = {},
+    replyTo?: string, cita?: CitaDe | null,
   ): Promise<void> => {
     setProblema(null);
     setSubiendo(true);
@@ -260,10 +300,12 @@ export function Conversacion({
       }
       const { data } = (await r.json()) as { data: { storageKey: string } };
 
-      const enviado = await enviarMedio(campo, data.storageKey, pie, file.name, extra);
+      const enviado = await enviarMedio(
+        campo, data.storageKey, pie, file.name, extra, replyTo);
       if (enviado) {
+        const conCita = cita ? { ...enviado, replyTo: cita } : enviado;
         setMensajes((prev) =>
-          prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
+          prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
       }
       setAdjunto(null);
       if (selector.current) selector.current.value = "";
@@ -280,6 +322,29 @@ export function Conversacion({
   const [sobre, setSobre] = useState<Mensaje | null>(null);
   const [stickers, setStickers] = useState(false);
   const [reaccionando, setReaccionando] = useState<string | null>(null);
+  const [respondiendo, setRespondiendo] = useState<Mensaje | null>(null);
+  const [senalado, setSenalado] = useState<string | null>(null);
+  const campo = useRef<HTMLInputElement>(null);
+
+  /**
+   * Sube al mensaje citado y lo señala.
+   *
+   * Solo se puede si está CARGADO: el hilo trae los últimos cien, y una cita
+   * puede apuntar a algo de hace meses. Cuando no está, la cita no es pulsable
+   * en vez de desplazar a ninguna parte y dejar a quien lo pulsó perdido.
+   */
+  const saltarA = (id: string): (() => void) | null => {
+    const destino = mensajes.find((x) => x.providerMessageId === id);
+    if (!destino) return null;
+    return () => {
+      document.getElementById(`mensaje-${destino.id}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      setSenalado(destino.id);
+      // Se quita solo: una marca permanente dejaría el hilo lleno de
+      // mensajes resaltados sin que nadie los haya vuelto a pedir.
+      setTimeout(() => setSenalado((x) => (x === destino.id ? null : x)), 1200);
+    };
+  };
 
   /** Reacciona a un mensaje. Repetir el mismo emoji la retira, como WhatsApp. */
   const reaccionar = async (m: Mensaje, emoji: string): Promise<void> => {
@@ -319,6 +384,21 @@ export function Conversacion({
   const accionesMensaje = (m: Mensaje): OpcionMenu[] => {
     const opciones: OpcionMenu[] = [];
 
+    /*
+     * Primera, y solo con identificador del proveedor: WhatsApp cita por el
+     * identificador que él asignó, y uno recién enviado todavía no lo tiene.
+     * Ofrecerlo igual mandaría una respuesta que llega sin cita.
+     */
+    if (m.providerMessageId && !m.deleted) {
+      opciones.push({
+        texto: "Responder",
+        Icono: IconoResponder,
+        onSelect: () => {
+          setRespondiendo(m);
+          campo.current?.focus();
+        },
+      });
+    }
     if (m.body) {
       opciones.push({
         texto: "Copiar texto",
@@ -435,7 +515,8 @@ export function Conversacion({
             const primeroDeTanda = nuevoDia || anterior?.fromMe !== m.fromMe;
             const ultimoDeTanda = !siguiente || siguiente.fromMe !== m.fromMe
               || !mismoDia(siguiente.timestamp, m.timestamp);
-            const suelto = SIN_BURBUJA.has(m.kind) && m.media != null && !m.deleted;
+            const suelto = SIN_BURBUJA.has(m.kind) && m.media != null && !m.deleted
+              && !m.replyTo;
             /*
              * Lo que este transporte no supo leer.
              *
@@ -448,7 +529,11 @@ export function Conversacion({
             const conTexto = m.deleted || Boolean(m.body);
 
             return (
-              <li key={m.id}>
+              <li
+                key={m.id}
+                id={`mensaje-${m.id}`}
+                className={senalado === m.id ? "mensaje-senalado" : undefined}
+              >
                 {nuevoDia && (
                   <div className="flex justify-center py-3">
                     <span className="rounded-full bg-(--color-panel) px-3 py-1 text-[11px] font-medium text-(--color-tenue) shadow-[0_1px_2px_rgba(0,0,0,0.06)]">
@@ -502,6 +587,19 @@ export function Conversacion({
                       >
                         {m.senderName}
                       </p>
+                    )}
+
+                    {/*
+                      La cita va DENTRO de la burbuja y antes del contenido,
+                      como en WhatsApp: fuera parecería otro mensaje, y debajo
+                      se leería al revés de como se escribió.
+                    */}
+                    {m.replyTo && !m.deleted && (
+                      <Cita
+                        cita={m.replyTo}
+                        propia={m.fromMe}
+                        onSaltar={m.replyTo.disponible ? saltarA(m.replyTo.id) : null}
+                      />
                     )}
 
                     {m.deleted ? (
@@ -647,6 +745,30 @@ export function Conversacion({
           </div>
         )}
 
+        {/*
+          A quién se está respondiendo, encima del campo.
+          Va aquí y no dentro del formulario porque se ve ANTES de escribir: es
+          lo que confirma que la respuesta va a ese mensaje y no al aire.
+        */}
+        {respondiendo && (
+          <div className="flex items-center gap-2 border-t border-(--color-borde) bg-(--color-panel) px-3 pt-2 md:px-4">
+            <span className="flex items-center gap-2 text-(--color-tenue)">
+              <IconoResponder className="size-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <Cita cita={citaDeMensaje(respondiendo)} propia={false} onSaltar={null} />
+            </div>
+            <button
+              type="button"
+              onClick={() => setRespondiendo(null)}
+              aria-label="No responder a ese mensaje"
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+            >
+              <IconoCerrar className="size-4" />
+            </button>
+          </div>
+        )}
+
         <form
           ref={formulario}
           action={async (formData) => {
@@ -654,6 +776,16 @@ export function Conversacion({
 
             // Con adjunto, lo escrito es el PIE y no otro mensaje: dos
             // mensajes separados no es lo que se pidió al escribir junto.
+            /*
+             * La cita se toma y se suelta ANTES de enviar.
+             *
+             * Si se dejara puesta hasta que el servidor conteste, lo siguiente
+             * que se escriba —y se escribe rápido— saldría citando también.
+             */
+            const citado = respondiendo;
+            setRespondiendo(null);
+            const citaLocal = citado ? citaDeMensaje(citado) : null;
+
             if (adjunto) {
               formulario.current?.reset();
               await mandarFichero(
@@ -661,6 +793,8 @@ export function Conversacion({
                 // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
                 // llama «GIF»; sin la marca llega como un vídeo normal.
                 adjunto.gif && adjunto.campo === "video" ? { gifPlayback: true } : {},
+                citado?.providerMessageId ?? undefined,
+                citaLocal,
               );
               return;
             }
@@ -669,10 +803,18 @@ export function Conversacion({
             formulario.current?.reset();
             startTransition(() => anadirPendiente(texto));
 
-            const enviado = await enviar(texto);
+            const enviado = await enviar(texto, citado?.providerMessageId ?? undefined);
             if (enviado) {
+              /*
+               * La cita se pinta con lo que YA tenemos aquí.
+               *
+               * El servidor la devolvería resuelta en la siguiente carga, pero
+               * esperar a eso dejaría la respuesta sin cita unos segundos,
+               * justo la que se acaba de mandar.
+               */
+              const conCita = citaLocal ? { ...enviado, replyTo: citaLocal } : enviado;
               setMensajes((prev) =>
-                prev.some((x) => x.id === enviado.id) ? prev : [...prev, enviado]);
+                prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
             }
           }}
           className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
@@ -755,6 +897,7 @@ export function Conversacion({
           </span>
 
           <input
+            ref={campo}
             name="texto"
             autoComplete="off"
             placeholder={adjunto ? "Añade un pie (opcional)…" : "Escribe un mensaje"}
@@ -796,6 +939,72 @@ export function Conversacion({
  * pantalla sin decir nada. El hueco en blanco reserva el sitio para que la
  * hora no se monte encima de la última palabra.
  */
+/**
+ * La cita de un mensaje que responde a otro.
+ *
+ * Es la forma de WhatsApp y cada parte está por algo:
+ *
+ * - **Barra de color a la izquierda** del color de quien escribió el citado,
+ *   el mismo que lleva su nombre en los grupos. Es lo que permite ver de un
+ *   vistazo a quién se está respondiendo sin leer el nombre.
+ * - **Fondo un paso más oscuro** que la burbuja, no un color distinto: la cita
+ *   es la misma burbuja mirando atrás, no un mensaje dentro de otro.
+ * - **Una sola línea** de texto, recortada. La cita sitúa; el mensaje que
+ *   importa es el de debajo, y una cita de seis líneas lo entierra.
+ * - **Miniatura a la derecha** cuando el citado lleva foto o vídeo: reconocer
+ *   una imagen por su miniatura es inmediato y por el texto «Foto» no.
+ * - **Pulsable** para subir al original, con un destello al llegar.
+ */
+function Cita({
+  cita, propia, onSaltar,
+}: {
+  cita: CitaDe;
+  /** Si la burbuja que la contiene es nuestra: cambia el fondo, no la cita. */
+  propia: boolean;
+  onSaltar: (() => void) | null;
+}) {
+  const quien = cita.fromMe ? "Tú" : cita.senderName ?? "Alguien";
+  /*
+   * El color sale de QUIEN escribió el citado, no de quien responde: así la
+   * cita de Ana es del color de Ana en toda la conversación. Lo propio va con
+   * el acento, que es el color que ya tiene lo nuestro en el panel.
+   */
+  const color = cita.fromMe
+    ? "var(--color-acento-fuerte)"
+    : `oklch(var(--l-remitente) 0.12 ${tonoDe(cita.senderName ?? cita.id)})`;
+
+  const Caja = onSaltar ? "button" : "div";
+  return (
+    <Caja
+      {...(onSaltar
+        ? { type: "button" as const, onClick: onSaltar,
+            title: `Ir al mensaje de ${quien}` }
+        : {})}
+      className={`mb-1 flex w-full items-stretch gap-2 overflow-hidden rounded-md text-left ${
+        propia ? "bg-(--color-cita-propia)" : "bg-(--color-cita-ajena)"
+      } ${onSaltar ? "cursor-pointer hover:brightness-[0.97]" : ""}`}
+    >
+      <span aria-hidden className="w-1 shrink-0" style={{ background: color }} />
+      <span className="min-w-0 flex-1 py-1 pr-1">
+        <span className="block truncate text-xs font-semibold" style={{ color }}>
+          {quien}
+        </span>
+        <span className="block truncate text-xs text-(--color-tenue)">
+          {cita.body?.trim() || ETIQUETA[cita.kind] || "Mensaje"}
+        </span>
+      </span>
+      {cita.thumbUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={cita.thumbUrl}
+          alt=""
+          className="size-12 shrink-0 object-cover"
+        />
+      )}
+    </Caja>
+  );
+}
+
 function Firma({ mensaje }: { mensaje: Mensaje }) {
   return (
     <>

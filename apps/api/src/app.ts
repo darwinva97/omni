@@ -73,6 +73,30 @@ const MensajeSchema = z.object({
    * El panel enseña el aviso, no el texto.
    */
   deleted: z.boolean().default(false),
+  /**
+   * A qué mensaje responde, ya resuelto.
+   *
+   * Viene resuelto y no como un identificador suelto a propósito: pintar la
+   * cita obliga a saber quién la escribió y qué decía, y dejar eso al cliente
+   * significa una petición por burbuja citada.
+   */
+  replyTo: z.object({
+    id: z.string(),
+    fromMe: z.boolean(),
+    senderName: z.string().nullable(),
+    kind: z.string(),
+    body: z.string().nullable(),
+    /** Miniatura del citado, cuando lo tenemos y lleva fichero. */
+    thumbUrl: z.string().nullable(),
+    /**
+     * `false` cuando el original no está en esta base.
+     *
+     * La cita se enseña igual —WhatsApp manda una copia dentro del mensaje que
+     * responde— pero no se puede saltar a ella, y el panel debe saberlo para
+     * no ofrecer un salto que no lleva a ninguna parte.
+     */
+    disponible: z.boolean(),
+  }).nullable().default(null),
 }).openapi("Mensaje");
 
 const ChatSchema = z.object({
@@ -103,6 +127,17 @@ const ChatSchema = z.object({
   archived: z.boolean().default(false),
   pinned: z.boolean().default(false),
 }).openapi("Chat");
+
+/**
+ * Lo único que nos interesa del nodo original: la copia de la cita.
+ *
+ * WhatsApp manda dentro del mensaje que responde una copia del citado, y es lo
+ * que permite enseñar la cita de algo que no está en esta base. Se lee de ahí
+ * y no se vuelve a pedir a la red, que ya no lo daría.
+ */
+interface CrudoConCita {
+  replyTo?: { id: string; author?: string | null; kind?: string; text?: string | null };
+}
 
 interface FilaDeChat {
   address: string; kind: string; title: string | null;
@@ -173,6 +208,68 @@ async function ultimosMensajes(
  * enseña por separado, porque saber que alguien se llama «Juan» en tu agenda y
  * «Juan Pérez — Ventas» en WhatsApp es información, no ruido.
  */
+/**
+ * La cita de un mensaje que responde a otro.
+ *
+ * Dos orígenes y en este orden: el mensaje original de NUESTRA base, que es el
+ * bueno —tiene su estado actual, su fichero y su nombre resuelto—, y si no
+ * está, la copia que WhatsApp metió dentro del mensaje que responde.
+ *
+ * El segundo no es un apaño: es la única forma de enseñar la cita de algo
+ * anterior al enlace de la línea, y WhatsApp hace exactamente lo mismo. Lo que
+ * cambia es que entonces no se puede saltar al original, y eso se dice con
+ * `disponible` en vez de ofrecer un salto que no lleva a ningún sitio.
+ */
+async function citaDe(
+  container: Container,
+  replyToId: string | null,
+  crudo: CrudoConCita | null,
+  originales: Map<string, {
+    fromMe: boolean; senderAddress: string; kind: string; body: string | null;
+    mediaKey: string | null;
+  }>,
+  nombres: Map<string, string>,
+  chat: string,
+): Promise<{
+  id: string; fromMe: boolean; senderName: string | null; kind: string;
+  body: string | null; thumbUrl: string | null; disponible: boolean;
+} | null> {
+  if (!replyToId) return null;
+
+  const quien = (direccion: string | null | undefined): string | null => {
+    if (!direccion || direccion === chat) return null;
+    return nombres.get(direccion) ?? `+${direccion.split("@")[0]}`;
+  };
+
+  const original = originales.get(replyToId);
+  if (original) {
+    return {
+      id: replyToId,
+      fromMe: original.fromMe,
+      senderName: original.fromMe ? null : quien(original.senderAddress),
+      kind: original.kind,
+      body: original.body,
+      thumbUrl: original.mediaKey
+        ? await container.storage.signedUrl(original.mediaKey, MEDIA_URL_TTL)
+        : null,
+      disponible: true,
+    };
+  }
+
+  const copia = crudo?.replyTo;
+  if (!copia) return null;
+  return {
+    id: replyToId,
+    // Sin el original no se sabe de quién era: sin autor, el panel lo dice.
+    fromMe: false,
+    senderName: quien(copia.author),
+    kind: copia.kind ?? "unknown",
+    body: copia.text ?? null,
+    thumbUrl: null,
+    disponible: false,
+  };
+}
+
 function presentarChat(r: FilaDeChat) {
   const telefono = r.phone ? r.phone.split("@")[0]! : null;
   const displayName =
@@ -719,6 +816,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           mediaError: null,
           reacciones: [],
           deleted: false,
+          // Un estado no responde a nada: no hay hilo donde citar.
+          replyTo: null,
         }))),
       })));
 
@@ -816,10 +915,54 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
        * Solo hace falta en los grupos, y ahí hay pocas personas distintas
        * aunque haya cien mensajes: se piden los remitentes únicos y se reparten.
        */
-      const remitentes = [...new Set(
-        rows.filter((r) => !r.fromMe && r.senderAddress && r.senderAddress !== chat.value)
-          .map((r) => r.senderAddress!),
+      /*
+       * Las citas se resuelven ANTES de los nombres.
+       *
+       * Quien escribió un mensaje citado puede no haber escrito nada en esta
+       * página —se cita a alguien de hace un mes— y su nombre hace falta igual:
+       * entra en la misma consulta de nombres, no en otra.
+       */
+      const citados = [...new Set(
+        rows.map((r) => r.replyToId).filter((x): x is string => x !== null),
       )];
+      const originales = new Map<string, {
+        fromMe: boolean; senderAddress: string; kind: string; body: string | null;
+        mediaKey: string | null;
+      }>();
+      if (citados.length > 0) {
+        const filas = await container.dbh.db
+          .select({
+            providerMessageId: messageTable.providerMessageId,
+            fromMe: messageTable.fromMe, senderAddress: messageTable.senderAddress,
+            kind: messageTable.kind, body: messageTable.body,
+            mediaKey: messageTable.mediaKey, deletedAt: messageTable.deletedAt,
+          })
+          .from(messageTable)
+          .where(and(
+            eq(messageTable.lineId, lineId),
+            inArray(messageTable.providerMessageId, citados),
+          ));
+        for (const f of filas) {
+          if (!f.providerMessageId) continue;
+          originales.set(f.providerMessageId, {
+            fromMe: f.fromMe, senderAddress: f.senderAddress, kind: f.kind,
+            // Un original retirado no vuelve a enseñar su texto por la puerta
+            // de atrás de una cita.
+            body: f.deletedAt ? null : f.body,
+            mediaKey: f.deletedAt ? null : f.mediaKey,
+          });
+        }
+      }
+
+      const remitentes = [...new Set([
+        ...rows.filter((r) => !r.fromMe && r.senderAddress && r.senderAddress !== chat.value)
+          .map((r) => r.senderAddress!),
+        ...[...originales.values()]
+          .filter((o) => !o.fromMe && o.senderAddress !== chat.value)
+          .map((o) => o.senderAddress),
+        ...rows.map((r) => (r.raw as CrudoConCita | null)?.replyTo?.author)
+          .filter((x): x is string => typeof x === "string"),
+      ])];
       const nombres = new Map<string, string>();
       if (remitentes.length > 0) {
         const contactos = await container.dbh.db
@@ -896,6 +1039,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
         deleted: r.deletedAt !== null,
+        replyTo: await citaDe(container, r.replyToId, r.raw as CrudoConCita | null,
+          originales, nombres, chat.value),
       })));
 
       return c.json({

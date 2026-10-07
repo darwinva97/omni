@@ -228,6 +228,11 @@ export const IconoDescargar = (p: Props) => (
   <Base {...p}><path d="M12 3.5v11m0 0 4-4m-4 4-4-4M4.5 20h15" /></Base>
 );
 
+/** Flecha curva a la izquierda: responder. La espejada es reenviar. */
+export const IconoResponder = (p: Props) => (
+  <Base {...p}><path d="M11 5.5 4 12l7 6.5V15c6 0 8 2.5 9 4.5-.5-7-4.5-9-9-9z" /></Base>
+);
+
 export const IconoReenviar = (p: Props) => (
   <Base {...p}><path d="M13 5.5 20 12l-7 6.5V15c-6 0-8 2.5-9 4.5.5-7 4.5-9 9-9z" /></Base>
 );

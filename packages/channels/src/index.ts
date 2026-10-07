@@ -2,8 +2,8 @@ export * from "./port.js";
 export * from "./sandbox/driver.js";
 export { runChannelContract, type DriverUnderTest } from "./contract/suite.js";
 export {
-  BaileysDriver, BAILEYS_DESCRIPTOR, ackToState, esVacio, extractText, messageKind,
-  type RegistroBaileys,
+  BaileysDriver, BAILEYS_DESCRIPTOR, ackToState, esVacio, extractReply, extractText,
+  messageKind, type RegistroBaileys,
 } from "./baileys/driver.js";
 export { BlobAuthStore } from "./baileys/auth-store.js";
 export { comprobarOpcionales, PARES_OPCIONALES, type FaltaOpcional } from "./baileys/opcionales.js";

@@ -1219,6 +1219,7 @@ export class EngineRuntime {
       key: { id: string; remoteJid: string; participant?: string };
       kind?: MessageKind; text?: string | null; timestamp?: number;
       clientMessageId?: string;
+      replyTo?: { id: string };
       raw?: { message?: { protocolMessage?: Protocolo } };
     };
 
@@ -1283,6 +1284,11 @@ export class EngineRuntime {
         lineId: envelope.lineId, chatId: chat.value, providerMessageId: d.key.id,
         senderAddress: d.key.participant ?? chat.value, fromMe: propio,
         kind: d.kind ?? "text", body: d.text ?? null,
+        /*
+         * A qué responde. La copia del original viaja en `raw`, así que la
+         * cita se puede enseñar aunque el mensaje citado no esté en la base.
+         */
+        replyToId: d.replyTo?.id ?? null,
         // Lo escrito desde el teléfono ya salió: nace enviado, no en cola.
         state: propio ? "sent" : "delivered",
         raw: envelope.data as never,

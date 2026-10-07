@@ -1032,6 +1032,16 @@ run("organización y limpieza", () => {
     );
   }
 
+  async function esperarValor<T>(dame: () => Promise<T | null>, que: string): Promise<T> {
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const v = await dame();
+      if (v !== null) return v;
+      if (Date.now() > limite) throw new Error(`no se cumplió: ${que}`);
+      await new Promise((r) => setTimeout(r, 70));
+    }
+  }
+
   async function esperar(cumple: () => Promise<boolean>, que: string): Promise<void> {
     const limite = Date.now() + 6000;
     for (;;) {
@@ -1040,6 +1050,91 @@ run("organización y limpieza", () => {
       await new Promise((r) => setTimeout(r, 70));
     }
   }
+
+  it("una respuesta llega con su cita RESUELTA: quién y qué decía", async () => {
+    /*
+     * La cita viene resuelta desde la API y no como un identificador suelto a
+     * propósito: pintarla obliga a saber quién escribió el original y qué
+     * decía, y dejar eso al cliente es una petición por burbuja citada.
+     */
+    const chat = "51901000010@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000010", text: "¿lo tienes?" }),
+    });
+    await esperarChat(chat);
+
+    const [fila] = await dbh.sql<{ provider_message_id: string }[]>`
+      SELECT provider_message_id FROM message
+      WHERE line_id = ${LINE} AND chat_id = ${chat} AND from_me = false
+      ORDER BY timestamp DESC LIMIT 1`;
+    const original = fila!.provider_message_id;
+
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "RESP-1", remoteJid: chat },
+      kind: "text", text: "sí, aquí está", timestamp: Date.now(),
+      replyTo: { id: original, author: chat, kind: "text", text: "¿lo tienes?" },
+    });
+
+    await esperar(async () => {
+      const { data } = await j<{ data: { providerMessageId: string | null }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=10`));
+      return data.some((m) => m.providerMessageId === "RESP-1");
+    }, "la respuesta se guardó");
+
+    const { data } = await j<{
+      data: {
+        providerMessageId: string | null;
+        replyTo: { id: string; body: string | null; disponible: boolean } | null;
+      }[];
+    }>(await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=10`));
+
+    const respuesta = data.find((m) => m.providerMessageId === "RESP-1");
+    expect(respuesta?.replyTo).not.toBeNull();
+    expect(respuesta!.replyTo!.id).toBe(original);
+    expect(respuesta!.replyTo!.body).toBe("¿lo tienes?");
+    // Está en nuestra base, así que el panel puede saltar a ella.
+    expect(respuesta!.replyTo!.disponible).toBe(true);
+
+    // Y lo que no responde a nada no se inventa una cita.
+    const suelto = data.find((m) => m.providerMessageId === original);
+    expect(suelto?.replyTo).toBeNull();
+  });
+
+  it("la cita de un mensaje que no tenemos se enseña igual, pero sin salto", async () => {
+    /*
+     * Pasa con todo lo anterior al enlace de la línea. WhatsApp mete una copia
+     * del citado dentro del mensaje que responde, y es la única forma de
+     * enseñar esa cita. Lo que no se puede es saltar al original, y eso se
+     * dice con `disponible: false` en vez de ofrecer un salto a ninguna parte.
+     */
+    const chat = "51901000011@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000011", text: "hola" }),
+    });
+    await esperarChat(chat);
+
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "RESP-2", remoteJid: chat },
+      kind: "text", text: "sobre lo de ayer", timestamp: Date.now(),
+      replyTo: {
+        id: "NUNCA-ESTUVO-AQUI", author: chat, kind: "image", text: "el plano",
+      },
+    });
+
+    const cita = await esperarValor(async () => {
+      const { data } = await j<{
+        data: {
+          providerMessageId: string | null;
+          replyTo: { kind: string; body: string | null; disponible: boolean } | null;
+        }[];
+      }>(await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=10`));
+      return data.find((m) => m.providerMessageId === "RESP-2")?.replyTo ?? null;
+    }, "la cita de copia llegó");
+
+    expect(cita.body).toBe("el plano");
+    expect(cita.kind).toBe("image");
+    expect(cita.disponible).toBe(false);
+  });
 
   it("silenciar una conversación se guarda AQUÍ, no solo en el transporte", async () => {
     /*

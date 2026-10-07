@@ -7,7 +7,7 @@
  * original.
  */
 import { createDatabase } from "@omni/db";
-import { messageKind, extractText, esVacio } from "@omni/channels";
+import { messageKind, extractText, esVacio, extractReply } from "@omni/channels";
 
 const { sql, close } = createDatabase(process.argv[2]!);
 const filas = await sql`
@@ -58,9 +58,36 @@ for (const f of filas) {
     WHERE id = ${f.id} AND timestamp = ${f.timestamp}`;
   reclasificados++;
 }
+/*
+ * Segunda pasada: a qué respondía cada mensaje.
+ *
+ * La cita siempre estuvo en el nodo original —WhatsApp la manda dentro del
+ * mensaje que responde— y no la leía nadie. Se recupera de ahí, junto con la
+ * copia del citado, que es lo que permite enseñar la cita de algo que no está
+ * en esta base.
+ */
+const sinCita = await sql`
+  SELECT id, timestamp, raw FROM message WHERE reply_to_id IS NULL AND raw IS NOT NULL`;
+
+let citas = 0;
+for (const f of sinCita) {
+  const envelope = (f.raw as { raw?: unknown })?.raw;
+  if (!envelope) continue;
+  const cita = extractReply(envelope as never);
+  if (!cita) continue;
+  await sql`
+    UPDATE message
+    SET reply_to_id = ${cita.id},
+        raw = jsonb_set(raw, '{replyTo}', ${JSON.stringify(cita)}::jsonb, true)
+    WHERE id = ${f.id} AND timestamp = ${f.timestamp}`;
+  citas++;
+}
+
 type Proto = { key?: { id?: string }; type?: number | string };
 
 console.log({
-  reacciones, protocolos, retirados, vaciados, reclasificados, revisados: filas.length,
+  reacciones, protocolos, retirados, vaciados, reclasificados,
+  revisados: filas.length,
+  citas, revisadosParaCita: sinCita.length,
 });
 await close();

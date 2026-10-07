@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
-  BaileysDriver, ackToState, deterministicMessageId, esVacio, extractText, messageKind,
+  BaileysDriver, ackToState, deterministicMessageId, esVacio, extractReply, extractText,
+  messageKind,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
@@ -87,6 +88,72 @@ describe("extracción de texto", () => {
   it("lee lo que contestó quien pulsó un botón", () => {
     expect(extractText({ buttonsResponseMessage: { selectedDisplayText: "Sí, continuar" } }))
       .toBe("Sí, continuar");
+  });
+});
+
+describe("a qué responde un mensaje", () => {
+  const cita = (message: unknown) => extractReply({ message } as never);
+
+  it("lee el identificador, el autor y una copia del citado", () => {
+    /*
+     * WhatsApp manda la cita COMPLETA dentro del mensaje que responde. Es lo
+     * que permite enseñarla cuando el original nunca pasó por aquí —de antes
+     * de enlazar la línea— y por eso se guarda la copia, no solo el id.
+     */
+    expect(cita({
+      extendedTextMessage: {
+        text: "sí, eso",
+        contextInfo: {
+          stanzaId: "ABC123",
+          participant: "51988777666@s.whatsapp.net",
+          quotedMessage: { conversation: "¿lo tienes?" },
+        },
+      },
+    })).toEqual({
+      id: "ABC123",
+      author: "51988777666@s.whatsapp.net",
+      kind: "text",
+      text: "¿lo tienes?",
+    });
+  });
+
+  it("el contextInfo NO está arriba: vive dentro del nodo del contenido", () => {
+    // Buscarlo en la raíz es el fallo evidente, y deja sin cita a todas las
+    // respuestas a una foto o a un audio, que es la mitad de ellas.
+    const c = cita({
+      imageMessage: {
+        caption: "mira",
+        contextInfo: { stanzaId: "FOTO1", quotedMessage: { audioMessage: {} } },
+      },
+    });
+    expect(c?.id).toBe("FOTO1");
+    expect(c?.kind).toBe("audio");
+    // Un audio no tiene texto, y eso NO es una cita vacía: el panel pone su
+    // etiqueta. Por eso se devuelve `null` y no cadena vacía.
+    expect(c?.text).toBeNull();
+  });
+
+  it("también dentro de un envoltorio", () => {
+    expect(cita({
+      ephemeralMessage: {
+        message: {
+          extendedTextMessage: {
+            text: "ya va",
+            contextInfo: { stanzaId: "EFI1", quotedMessage: { conversation: "¿y eso?" } },
+          },
+        },
+      },
+    })?.id).toBe("EFI1");
+  });
+
+  it("un mensaje que no responde a nada devuelve null", () => {
+    expect(cita({ conversation: "hola" })).toBeNull();
+    // Un `contextInfo` sin `stanzaId` no es una cita: lo llevan los mensajes
+    // reenviados y los que mencionan a alguien.
+    expect(cita({
+      extendedTextMessage: { text: "@alguien", contextInfo: { mentionedJid: ["x@lid"] } },
+    })).toBeNull();
+    expect(cita(null)).toBeNull();
   });
 });
 

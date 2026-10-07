@@ -3,7 +3,7 @@ import { Boom } from "@hapi/boom";
 import makeWASocket, {
   type Contact as Contacto,
   Browsers, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion,
-  normalizeMessageContent,
+  getContentType, normalizeMessageContent,
   type WAMessage, type WASocket,
 } from "baileys";
 import {
@@ -476,6 +476,11 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       kind: messageKind(m),
       text: extractText(m.message ?? null),
       timestamp: Number(m.messageTimestamp ?? 0) * 1000,
+      // La cita va con el mensaje, no se busca después: solo viene aquí.
+      ...(() => {
+        const cita = extractReply(m);
+        return cita ? { replyTo: cita } : {};
+      })(),
       // Solo cuando el envío salió de aquí; de lo ajeno no hay ninguno.
       ...(clientMessageId ? { clientMessageId } : {}),
       raw: m,
@@ -1219,6 +1224,43 @@ export function esVacio(m: WAMessage): boolean {
   if (!msg) return true;
   return Object.keys(msg).every((k) => SIN_CONTENIDO.has(k));
 }
+
+/**
+ * A qué mensaje responde, si responde a alguno.
+ *
+ * WhatsApp manda la cita COMPLETA dentro del mensaje que responde: el
+ * identificador del original, quién lo escribió y una copia de su contenido.
+ * Eso es lo que permite enseñar la cita de un mensaje que nunca pasó por aquí
+ * —de antes de enlazar la línea, o de una conversación que no se sincronizó—,
+ * y es por lo que se guarda la copia y no solo el identificador.
+ *
+ * El `contextInfo` no está arriba: vive dentro del nodo del contenido, y cada
+ * tipo tiene el suyo. Qué nodo es lo dice Baileys con `getContentType`.
+ */
+export function extractReply(m: WAMessage): {
+  id: string; author: string | null; kind: MessageKind; text: string | null;
+} | null {
+  const msg = contenido(m);
+  if (!msg) return null;
+  const tipo = getContentType(msg as never);
+  if (!tipo) return null;
+  const ctx = (msg[tipo] as { contextInfo?: Contexto } | undefined)?.contextInfo;
+  if (!ctx?.stanzaId) return null;
+
+  const citado = ctx.quotedMessage ?? null;
+  return {
+    id: ctx.stanzaId,
+    author: ctx.participant ?? null,
+    kind: citado ? messageKind({ message: citado } as WAMessage) : "unknown",
+    text: extractText(citado),
+  };
+}
+
+type Contexto = {
+  stanzaId?: string | null;
+  participant?: string | null;
+  quotedMessage?: object | null;
+};
 
 export function messageKind(m: WAMessage): MessageKind {
   const msg = contenido(m);
