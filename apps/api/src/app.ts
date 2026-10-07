@@ -1,7 +1,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
@@ -96,6 +96,23 @@ const MensajeSchema = z.object({
      * no ofrecer un salto que no lleva a ninguna parte.
      */
     disponible: z.boolean(),
+  }).nullable().default(null),
+  /**
+   * La encuesta, cuando el mensaje es una.
+   *
+   * Con sus votos ya contados: WhatsApp los manda cifrados y uno a uno, y
+   * contarlos en el cliente obligaría a repartir la clave de descifrado.
+   */
+  poll: z.object({
+    question: z.string(),
+    allowMultiple: z.boolean(),
+    totalVotes: z.number(),
+    options: z.array(z.object({
+      name: z.string(),
+      votes: z.number(),
+      /** Si esta línea votó esa opción. */
+      mine: z.boolean(),
+    })),
   }).nullable().default(null),
 }).openapi("Mensaje");
 
@@ -816,8 +833,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           mediaError: null,
           reacciones: [],
           deleted: false,
-          // Un estado no responde a nada: no hay hilo donde citar.
+          // Un estado no responde a nada ni es una encuesta: no hay hilo.
           replyTo: null,
+          poll: null,
         }))),
       })));
 
@@ -1015,6 +1033,63 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         }
       }
 
+      /*
+       * Las encuestas de la página, con sus votos, en DOS consultas.
+       *
+       * Una por encuesta sería un viaje por burbuja, y en un grupo donde se
+       * vota mucho eso es lo que convierte una conversación en una espera.
+       */
+      /*
+       * Nuestra propia dirección, para saber qué votamos nosotros.
+       *
+       * Sale de la línea y no de la sesión: lo que marca una opción como
+       * «mía» es el número de WhatsApp que votó, no quién mira el panel.
+       */
+      const [linea] = await container.dbh.db
+        .select({ address: lineTable.address })
+        .from(lineTable).where(eq(lineTable.id, lineId)).limit(1);
+      const propia = linea?.address ?? null;
+
+      const encuestas = new Map<string, {
+        question: string; allowMultiple: boolean; totalVotes: number;
+        options: { name: string; votes: number; mine: boolean }[];
+      }>();
+      const idsDeEncuesta = rows.filter((r) => r.kind === "poll")
+        .map((r) => r.providerMessageId).filter((x): x is string => x !== null);
+      if (idsDeEncuesta.length > 0) {
+        const cabeceras = await container.dbh.db
+          .select()
+          .from(pollTable)
+          .where(and(
+            eq(pollTable.lineId, lineId),
+            inArray(pollTable.providerMessageId, idsDeEncuesta),
+          ));
+        const votos = cabeceras.length > 0
+          ? await container.dbh.db
+              .select()
+              .from(pollVoteTable)
+              .where(inArray(pollVoteTable.pollId, cabeceras.map((c) => c.id)))
+          : [];
+
+        for (const cab of cabeceras) {
+          const mios = votos.filter((v) => v.pollId === cab.id);
+          const cuenta = cab.options.map((name, i) => ({
+            name,
+            votes: mios.filter((v) => v.selected.includes(i)).length,
+            // «Mío» es el voto de ESTA línea, que en un grupo es uno más.
+            mine: mios.some((v) => v.voter === propia && v.selected.includes(i)),
+          }));
+          encuestas.set(cab.providerMessageId, {
+            question: cab.question,
+            allowMultiple: cab.allowMultiple,
+            // Quien ha votado, no la suma de marcas: en una de opción
+            // múltiple, una persona que marca tres no son tres votantes.
+            totalVotes: mios.filter((v) => v.selected.length > 0).length,
+            options: cuenta,
+          });
+        }
+      }
+
       const data = await Promise.all(rows.map(async (r) => ({
         id: r.id, providerMessageId: r.providerMessageId,
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
@@ -1041,6 +1116,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         deleted: r.deletedAt !== null,
         replyTo: await citaDe(container, r.replyToId, r.raw as CrudoConCita | null,
           originales, nombres, chat.value),
+        poll: r.providerMessageId ? encuestas.get(r.providerMessageId) ?? null : null,
       })));
 
       return c.json({

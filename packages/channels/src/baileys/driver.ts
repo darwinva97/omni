@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
   type Contact as Contacto,
-  Browsers, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion,
-  getContentType, normalizeMessageContent,
+  Browsers, decryptPollVote, DisconnectReason, downloadMediaMessage,
+  fetchLatestBaileysVersion, getContentType, getKeyAuthor, normalizeMessageContent,
   type WAMessage, type WASocket,
 } from "baileys";
 import {
@@ -461,6 +461,27 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
 
   async #onMessage(lineId: string, line: LineRuntime, m: WAMessage): Promise<void> {
     if (!m.key.remoteJid) return;
+
+    /*
+     * Un voto de encuesta NO es un mensaje.
+     *
+     * Llega por el mismo canal que los mensajes, cifrado y apuntando a la
+     * encuesta a la que responde. Guardarlo como fila propia llenaba el hilo:
+     * una encuesta de un grupo de cincuenta personas son cincuenta burbujas
+     * vacías con «mensaje no compatible» dentro, que es como se vio.
+     *
+     * Aquí no se descifra: la clave está en la encuesta, que vive en la base,
+     * y el driver no la tiene. Se entrega el voto cifrado con todo lo que hace
+     * falta para abrirlo, y lo abre quien sí puede.
+     */
+    const estado = line.status;
+    const voto = extractPollVote(
+      m, estado.state === "connected" ? estado.self.value : undefined);
+    if (voto) {
+      await this.emit("poll.vote", line.orgId, lineId, voto);
+      return;
+    }
+
     /*
      * Un sobre sin contenido no es un mensaje.
      *
@@ -1223,6 +1244,130 @@ export function esVacio(m: WAMessage): boolean {
   const msg = contenido(m);
   if (!msg) return true;
   return Object.keys(msg).every((k) => SIN_CONTENIDO.has(k));
+}
+
+/**
+ * Unos bytes del protocolo, en base64, vengan como vengan.
+ *
+ * WhatsApp los entrega como `Uint8Array`, pero el nodo original se guarda tal
+ * cual en la base y al releerlo de JSON ya son una cadena en base64. Tratar la
+ * cadena como bytes la codifica otra vez: la clave sale distinta, el voto no
+ * abre, y no hay ningún error que lo diga. Pasó, y por eso esto existe.
+ */
+function enBase64(v: Uint8Array | string | null | undefined): string | null {
+  if (!v) return null;
+  return typeof v === "string" ? v : Buffer.from(v).toString("base64");
+}
+
+/**
+ * El voto cifrado de una encuesta, si el sobre es eso.
+ *
+ * Se devuelven los dos extremos que hacen falta para descifrarlo —quién creó
+ * la encuesta y quién votó—, porque la clave se deriva de ambos junto con el
+ * identificador de la encuesta. Sin uno de ellos el voto es ilegible.
+ */
+export function extractPollVote(m: WAMessage, propia?: string): {
+  poll: { id: string; author: string };
+  voter: string;
+  vote: { encPayload: string; encIv: string };
+  at: number;
+} | null {
+  const msg = contenido(m);
+  const nodo = msg?.["pollUpdateMessage"] as {
+    pollCreationMessageKey?: { id?: string; fromMe?: boolean; remoteJid?: string;
+      participant?: string };
+    vote?: { encPayload?: Uint8Array | string; encIv?: Uint8Array | string };
+    senderTimestampMs?: number | string;
+  } | undefined;
+  const clave = nodo?.pollCreationMessageKey;
+  if (!clave?.id || !nodo?.vote?.encPayload || !nodo.vote.encIv) return null;
+
+  /*
+   * `getKeyAuthor` de Baileys y no el participante a secas.
+   *
+   * Cuando la encuesta la creamos NOSOTROS —o el voto es nuestro— el autor no
+   * viene en la clave: es nuestra propia dirección, que hay que poner. Y la
+   * clave de cifrado se deriva de esas direcciones, así que equivocarse ahí no
+   * da un error, da un voto que no abre.
+   */
+  const autor = getKeyAuthor(clave as never, propia);
+  const votante = getKeyAuthor(m.key as never, propia);
+  if (!autor || !votante) return null;
+
+  return {
+    poll: { id: clave.id, author: autor },
+    voter: votante,
+    vote: {
+      encPayload: enBase64(nodo.vote.encPayload)!,
+      encIv: enBase64(nodo.vote.encIv)!,
+    },
+    at: Number(nodo.senderTimestampMs ?? Date.now()),
+  };
+}
+
+/**
+ * Abre un voto cifrado y dice qué opciones marcó quien votó.
+ *
+ * WhatsApp no manda el nombre de la opción: manda su SHA-256. Las opciones de
+ * la encuesta vienen aparte, se hashean igual y se emparejan. Es lo que
+ * permite enseñar «Martes 20: 7 votos» en vez de un montón de bytes.
+ *
+ * Vive aquí y no en el motor porque es conocimiento del protocolo, y el motor
+ * no debe saber cómo cifra WhatsApp. Lo que el motor pone es la clave, que
+ * sale de la encuesta guardada.
+ */
+export function descifrarVoto(
+  vote: { encPayload: string; encIv: string },
+  ctx: { pollId: string; pollAuthor: string; voter: string; secret: string },
+  opciones: readonly string[],
+): string[] {
+  const abierto = decryptPollVote(
+    {
+      encPayload: Buffer.from(vote.encPayload, "base64"),
+      encIv: Buffer.from(vote.encIv, "base64"),
+    },
+    {
+      pollEncKey: Buffer.from(ctx.secret, "base64"),
+      pollCreatorJid: ctx.pollAuthor,
+      pollMsgId: ctx.pollId,
+      voterJid: ctx.voter,
+    },
+  );
+
+  const porHash = new Map(
+    opciones.map((o) => [createHash("sha256").update(o).digest("hex"), o]),
+  );
+  return (abierto.selectedOptions ?? [])
+    .map((h) => porHash.get(Buffer.from(h).toString("hex")))
+    .filter((o): o is string => o !== undefined);
+}
+
+/** La pregunta y las opciones de una encuesta, de su nodo original. */
+export function encuestaDe(m: WAMessage): {
+  question: string; options: string[]; secret: string | null; multiple: boolean;
+} | null {
+  const msg = contenido(m);
+  const nodo = (msg?.["pollCreationMessage"] ?? msg?.["pollCreationMessageV3"]
+    ?? msg?.["pollCreationMessageV2"] ?? msg?.["pollCreationMessageV4"] ?? msg?.["pollCreationMessageV5"]) as {
+      name?: string;
+      options?: { optionName?: string }[];
+      selectableOptionsCount?: number;
+    } | undefined;
+  if (!nodo) return null;
+
+  const secreto = (msg?.["messageContextInfo"] as { messageSecret?: Uint8Array | string }
+    | undefined)?.messageSecret;
+  return {
+    question: nodo.name ?? "",
+    options: (nodo.options ?? []).map((o) => o.optionName ?? "").filter((o) => o !== ""),
+    secret: enBase64(secreto),
+    /*
+     * `0` significa «tantas como quieras», no «ninguna». Es lo que WhatsApp
+     * pone en una encuesta de opción múltiple, y leerlo al revés enseñaría
+     * «elige una» en una donde se pueden elegir varias.
+     */
+    multiple: (nodo.selectableOptionsCount ?? 0) !== 1,
+  };
 }
 
 /**

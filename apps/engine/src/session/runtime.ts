@@ -5,11 +5,11 @@ import {
   type SendMessageInput,
 } from "@omni/shared";
 import type { ChannelDriver, LineStatus, OutboundCommand } from "@omni/channels";
-import { assertCapability } from "@omni/channels";
+import { assertCapability, descifrarVoto, encuestaDe } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, reactionTable } from "@omni/db";
+import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, pollTable, pollVoteTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -694,6 +694,7 @@ export class EngineRuntime {
       await this.#aprenderNombre(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
       if (envelope.event === "message.reaction") await this.#aplicarReaccion(envelope);
+      if (envelope.event === "poll.vote") await this.#aplicarVoto(envelope);
       /*
        * Un mensaje retirado se MARCA, no se borra.
        *
@@ -1296,6 +1297,30 @@ export class EngineRuntime {
       .onConflictDoNothing();
 
     /*
+     * Una encuesta deja además su propia fila.
+     *
+     * Sin ella no hay dónde colgar los votos, que llegan después y por otro
+     * evento. La pregunta y las opciones viven en el nodo original, no en el
+     * cuerpo del mensaje.
+     */
+    if (d.kind === "poll") {
+      const encuesta = encuestaDe(d.raw as never);
+      if (encuesta) {
+        await this.#deps.db
+          .insert(pollTable)
+          .values({
+            id: `p-${envelope.lineId}-${d.key.id}`,
+            lineId: envelope.lineId, providerMessageId: d.key.id, chatId: chat.value,
+            question: encuesta.question, options: encuesta.options,
+            allowMultiple: encuesta.multiple,
+            createdBy: d.key.participant ?? chat.value,
+            at: when,
+          })
+          .onConflictDoNothing();
+      }
+    }
+
+    /*
      * El medio se encola DESPUÉS de tener la fila.
      *
      * Al revés, el trabajador podría llegar a actualizar un mensaje que
@@ -1441,6 +1466,90 @@ export class EngineRuntime {
         eq(chatTable.lineId, envelope.lineId),
         eq(chatTable.address, direccion.value),
       ));
+  }
+
+  /**
+   * Guarda un voto de encuesta, descifrándolo primero.
+   *
+   * La clave sale de la encuesta —de su `messageSecret`, que está en el nodo
+   * original guardado— junto con quién la creó y quién vota. Por eso esto vive
+   * aquí y no en el driver: el driver tiene el protocolo, pero la clave está
+   * en la base.
+   *
+   * Un voto que no se puede abrir se descarta en silencio y a propósito: pasa
+   * cuando la encuesta es anterior a esta línea y no tenemos su nodo. No es un
+   * fallo nuestro y no hay nada que reintentar.
+   */
+  async #aplicarVoto(envelope: EventEnvelope): Promise<void> {
+    const d = envelope.data as {
+      poll?: { id?: string; author?: string };
+      voter?: string;
+      vote?: { encPayload: string; encIv: string };
+      at?: number;
+    };
+    if (!d.poll?.id || !d.poll.author || !d.voter || !d.vote) return;
+
+    const [encuesta] = await this.#deps.db
+      .select({ id: pollTable.id, options: pollTable.options })
+      .from(pollTable)
+      .where(and(
+        eq(pollTable.lineId, envelope.lineId),
+        eq(pollTable.providerMessageId, d.poll.id),
+      ))
+      .limit(1);
+    if (!encuesta) return;
+
+    // El secreto vive en el nodo original del mensaje de la encuesta, que es
+    // lo único que no se puede derivar de nada más.
+    const [fila] = await this.#deps.db
+      .select({ raw: messageTable.raw })
+      .from(messageTable)
+      .where(and(
+        eq(messageTable.lineId, envelope.lineId),
+        eq(messageTable.providerMessageId, d.poll.id),
+      ))
+      .limit(1);
+    const secreto = encuestaDe(
+      (fila?.raw as { raw?: unknown } | null)?.raw as never,
+    )?.secret;
+    if (!secreto) return;
+
+    let elegidas: string[];
+    try {
+      elegidas = descifrarVoto(d.vote, {
+        pollId: d.poll.id, pollAuthor: d.poll.author, voter: d.voter, secret: secreto,
+      }, encuesta.options);
+    } catch {
+      return;
+    }
+
+    /*
+     * Se guardan ÍNDICES, no nombres.
+     *
+     * Dos opciones pueden llamarse igual, y un nombre guardado deja de
+     * emparejar si la encuesta se reinterpreta. El índice es lo que WhatsApp
+     * enseña: la posición en la lista.
+     */
+    const indices = elegidas
+      .map((o) => encuesta.options.indexOf(o))
+      .filter((i) => i >= 0);
+
+    /*
+     * Un voto SUSTITUYE al anterior de esa persona, no se suma.
+     *
+     * WhatsApp manda el estado completo de su voto cada vez que lo cambia, y
+     * una lista vacía significa «he retirado mi voto».
+     */
+    await this.#deps.db
+      .insert(pollVoteTable)
+      .values({
+        pollId: encuesta.id, voter: d.voter, selected: indices,
+        at: new Date(d.at ?? envelope.timestamp),
+      })
+      .onConflictDoUpdate({
+        target: [pollVoteTable.pollId, pollVoteTable.voter],
+        set: { selected: indices, at: new Date(d.at ?? envelope.timestamp) },
+      });
   }
 
   /** Deja dicho que un mensaje fue retirado, sin perder lo que decía. */

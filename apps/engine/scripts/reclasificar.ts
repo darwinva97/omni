@@ -7,7 +7,10 @@
  * original.
  */
 import { createDatabase } from "@omni/db";
-import { messageKind, extractText, esVacio, extractReply } from "@omni/channels";
+import {
+  messageKind, extractText, esVacio, extractReply, extractPollVote, encuestaDe,
+  descifrarVoto,
+} from "@omni/channels";
 
 const { sql, close } = createDatabase(process.argv[2]!);
 const filas = await sql`
@@ -83,11 +86,86 @@ for (const f of sinCita) {
   citas++;
 }
 
+/*
+ * Tercera pasada: las encuestas y sus votos.
+ *
+ * Un voto no es un mensaje, pero se guardó como uno: en un grupo real son 143
+ * burbujas de «mensaje no compatible» alrededor de una sola encuesta. El voto
+ * viene cifrado y la clave está en la encuesta, que también está guardada: con
+ * las dos cosas se puede abrir ahora lo que entonces no se abrió.
+ */
+const encuestas = await sql`
+  SELECT id, line_id, chat_id, provider_message_id, timestamp, raw, sender_address
+  FROM message WHERE kind = 'poll'`;
+
+let registradas = 0;
+const secretos = new Map<string, { id: string; options: string[]; secret: string }>();
+for (const f of encuestas) {
+  const e = encuestaDe((f.raw as { raw?: unknown })?.raw as never);
+  if (!e || !e.secret) continue;
+  const id = `p-${f.line_id}-${f.provider_message_id}`;
+  await sql`
+    INSERT INTO poll (id, line_id, provider_message_id, chat_id, question, options,
+                      allow_multiple, created_by, at)
+    VALUES (${id}, ${f.line_id}, ${f.provider_message_id}, ${f.chat_id}, ${e.question},
+            ${JSON.stringify(e.options)}::jsonb, ${e.multiple}, ${f.sender_address},
+            ${f.timestamp})
+    ON CONFLICT (id) DO NOTHING`;
+  secretos.set(`${f.line_id}:${f.provider_message_id}`, {
+    id, options: e.options, secret: e.secret,
+  });
+  registradas++;
+}
+
+const votosGuardados = await sql`
+  SELECT id, line_id, timestamp, raw FROM message
+  WHERE raw->'raw'->'message' ? 'pollUpdateMessage'`;
+
+/*
+ * Se borra DESPUÉS de guardar, nunca antes.
+ *
+ * Esto se escribió al revés la primera vez —borrar y luego intentar abrir— y
+ * un fallo en el descifrado se llevó por delante 143 votos reales que ya no se
+ * pueden recuperar. La fila es la única copia de lo que llegó: hasta que su
+ * contenido esté guardado en otro sitio, no se toca.
+ */
+let votos = 0, ilegibles = 0;
+for (const f of votosGuardados) {
+  const v = extractPollVote((f.raw as { raw?: unknown })?.raw as never);
+  const encuesta = v ? secretos.get(`${f.line_id}:${v.poll.id}`) : undefined;
+  if (!v || !encuesta) { ilegibles++; continue; }
+
+  try {
+    const elegidas = descifrarVoto(v.vote, {
+      pollId: v.poll.id, pollAuthor: v.poll.author, voter: v.voter,
+      secret: encuesta.secret,
+    }, encuesta.options);
+    const indices = elegidas.map((o) => encuesta.options.indexOf(o)).filter((i) => i >= 0);
+    await sql`
+      INSERT INTO poll_vote (poll_id, voter, selected, at)
+      VALUES (${encuesta.id}, ${v.voter}, ${JSON.stringify(indices)}::jsonb,
+              ${new Date(v.at)})
+      ON CONFLICT (poll_id, voter) DO UPDATE SET selected = EXCLUDED.selected,
+                                                 at = EXCLUDED.at`;
+  } catch {
+    ilegibles++;
+    continue;
+  }
+
+  // Ya está guardado como voto: aquí deja de ser un mensaje.
+  await sql`DELETE FROM message WHERE id = ${f.id} AND timestamp = ${f.timestamp}`;
+  votos++;
+}
+
 type Proto = { key?: { id?: string }; type?: number | string };
 
 console.log({
   reacciones, protocolos, retirados, vaciados, reclasificados,
   revisados: filas.length,
   citas, revisadosParaCita: sinCita.length,
+  encuestas: registradas, votos,
+  // Votos cuya encuesta no está aquí: se quedan como estaban, a la vista, en
+  // vez de desaparecer. Lo que no se sabe leer no se tira.
+  ilegiblesConservados: ilegibles,
 });
 await close();

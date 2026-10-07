@@ -23,6 +23,14 @@ export const eventNames = [
   "message.receipt",
   "message.reaction",
   "message.failed",
+  /*
+   * Un voto NO es un mensaje.
+   *
+   * WhatsApp lo entrega por el mismo canal, cifrado y apuntando a la encuesta
+   * a la que responde. Guardarlo como mensaje llenaba el hilo: una encuesta de
+   * un grupo de cincuenta personas son cincuenta burbujas vacías.
+   */
+  "poll.vote",
   // chats
   "chat.updated",
   "chat.read",
@@ -47,12 +55,9 @@ export const eventNames = [
   "history.synced",
   "label.updated",
   /*
-   * Deliberadamente AUSENTES hasta que exista quien los emita:
+   * La norma de esta lista: un evento entra cuando existe quien lo emite.
    *
-   * `poll.vote` — WhatsApp cifra los votos y agregarlos es frágil; anunciarlo
-   *   sin implementarlo dejaría a alguien esperando un evento que no llega.
-   *
-   * Un evento al que uno puede suscribirse y no recibir nunca es peor que su
+   * Uno al que uno puede suscribirse y no recibir nunca es peor que su
    * ausencia: el webhook se configura, se da por bueno y falla en silencio.
    */
 ] as const;

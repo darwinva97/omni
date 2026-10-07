@@ -115,6 +115,15 @@ export interface Mensaje {
   deleted?: boolean;
   /** A qué mensaje responde, ya resuelto por la API. */
   replyTo?: Cita | null;
+  /** La encuesta, con sus votos ya contados, cuando el mensaje es una. */
+  poll?: Encuesta | null;
+}
+
+export interface Encuesta {
+  question: string;
+  allowMultiple: boolean;
+  totalVotes: number;
+  options: { name: string; votes: number; mine: boolean }[];
 }
 
 export interface Cita {

@@ -7,6 +7,7 @@ import { diaDeSeparador, hora, mismoDia } from "@/lib/formato";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
+import { Encuesta } from "@/componentes/encuesta";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
@@ -613,6 +614,10 @@ export function Conversacion({
                         Se eliminó este mensaje
                         <Firma mensaje={m} />
                       </p>
+                    ) : m.poll ? (
+                      // Sin `Firma`: la encuesta no es un párrafo donde quepa
+                      // la hora flotando, así que va debajo como en una foto.
+                      <Encuesta datos={m.poll} />
                     ) : MEDIOS.has(m.kind) ? (
                       <div className="space-y-1">
                         <Medio kind={m.kind} medio={m.media} error={m.mediaError} />

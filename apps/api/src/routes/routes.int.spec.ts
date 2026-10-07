@@ -1051,6 +1051,105 @@ run("organización y limpieza", () => {
     }
   }
 
+  it("los votos de una encuesta se cuentan, y no aparecen como mensajes", async () => {
+    /*
+     * El camino completo y con cifrado REAL, que es la única forma de probar
+     * esto: la clave se deriva de la encuesta, de quién la creó y de quién
+     * vota, y equivocarse en cualquiera de los tres no da un error —da un voto
+     * que no abre—. Un doble no habría detectado nada.
+     *
+     * El motor lee el secreto de la base, donde los bytes ya son una cadena en
+     * base64. Esa relectura es donde estaba el fallo que costó 143 votos
+     * reales, y por eso la prueba pasa por ahí y no por memoria.
+     */
+    const { createHash, createCipheriv, createHmac } = await import("node:crypto");
+
+    const chat = "51901000020@s.whatsapp.net";
+    const pollId = "ENCUESTA-INT";
+    const autor = chat;
+    const votante = "51901000021@s.whatsapp.net";
+    const secreto = Buffer.alloc(32, 11);
+    const opciones = ["Martes 20", "Martes 27"];
+
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000020", text: "va encuesta" }),
+    });
+    await esperarChat(chat);
+
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: pollId, remoteJid: chat, participant: autor },
+      kind: "poll", text: null, timestamp: Date.now(),
+      raw: {
+        message: {
+          pollCreationMessageV3: {
+            name: "¿Qué día?",
+            options: opciones.map((o) => ({ optionName: o })),
+            selectableOptionsCount: 1,
+          },
+          // Como queda en la base al releerlo: una cadena, no bytes.
+          messageContextInfo: { messageSecret: secreto.toString("base64") },
+        },
+      },
+    });
+    await esperar(async () => {
+      const { data } = await j<{ data: { providerMessageId: string | null }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=20`));
+      return data.some((m) => m.providerMessageId === pollId);
+    }, "la encuesta se guardó");
+
+    const cifrar = (opcion: string, quien: string): { encPayload: string; encIv: string } => {
+      const firma = Buffer.concat([
+        Buffer.from(pollId), Buffer.from(autor), Buffer.from(quien),
+        Buffer.from("Poll Vote"), Buffer.from([1]),
+      ]);
+      const key0 = createHmac("sha256", Buffer.alloc(32)).update(secreto).digest();
+      const clave = createHmac("sha256", key0).update(firma).digest();
+      /*
+       * `PollVoteMessage` a mano: campo 1, `repeated bytes selectedOptions`.
+       * Escrito aquí y no con el codificador de Baileys para que la prueba no
+       * dependa del transporte —esta app no lo conoce— y para que compruebe el
+       * formato de verdad en vez de comprobar que una librería se entiende
+       * consigo misma.
+       */
+      const hash = createHash("sha256").update(opcion).digest();
+      const payload = Buffer.concat([Buffer.from([0x0a, hash.length]), hash]);
+      const iv = Buffer.alloc(12, 5);
+      const c = createCipheriv("aes-256-gcm", clave, iv);
+      c.setAAD(Buffer.from(`${pollId}\u0000${quien}`));
+      const cuerpo = Buffer.concat([c.update(payload), c.final(), c.getAuthTag()]);
+      return { encPayload: cuerpo.toString("base64"), encIv: iv.toString("base64") };
+    };
+
+    await container.runtime.publish("poll.vote", LINE, {
+      poll: { id: pollId, author: autor }, voter: votante,
+      vote: cifrar("Martes 27", votante), at: Date.now(),
+    });
+
+    const encuesta = await esperarValor(async () => {
+      const { data } = await j<{
+        data: {
+          providerMessageId: string | null;
+          poll: {
+            question: string; totalVotes: number;
+            options: { name: string; votes: number }[];
+          } | null;
+        }[];
+      }>(await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=20`));
+      const m = data.find((x) => x.providerMessageId === pollId);
+      return m?.poll && m.poll.totalVotes > 0 ? m.poll : null;
+    }, "el voto se contó");
+
+    expect(encuesta.question).toBe("¿Qué día?");
+    expect(encuesta.totalVotes).toBe(1);
+    expect(encuesta.options.find((o) => o.name === "Martes 27")?.votes).toBe(1);
+    expect(encuesta.options.find((o) => o.name === "Martes 20")?.votes).toBe(0);
+
+    // Y el voto NO está en el hilo: es lo que llenaba la conversación.
+    const { data: hilo } = await j<{ data: { kind: string }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=20`));
+    expect(hilo.filter((m) => m.kind === "unknown")).toHaveLength(0);
+  });
+
   it("una respuesta llega con su cita RESUELTA: quién y qué decía", async () => {
     /*
      * La cita viene resuelta desde la API y no como un identificador suelto a

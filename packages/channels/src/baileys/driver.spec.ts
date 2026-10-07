@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
-  BaileysDriver, ackToState, deterministicMessageId, esVacio, extractReply, extractText,
-  messageKind,
+  BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
+  extractPollVote, extractReply, extractText, messageKind,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
@@ -154,6 +154,172 @@ describe("a qué responde un mensaje", () => {
       extendedTextMessage: { text: "@alguien", contextInfo: { mentionedJid: ["x@lid"] } },
     })).toBeNull();
     expect(cita(null)).toBeNull();
+  });
+});
+
+describe("encuestas", () => {
+  it("lee la pregunta, las opciones y el secreto que abre los votos", () => {
+    const e = encuestaDe({
+      message: {
+        pollCreationMessageV3: {
+          name: "¿Qué día?",
+          options: [{ optionName: "Martes 20" }, { optionName: "Martes 27" }],
+          selectableOptionsCount: 1,
+        },
+        messageContextInfo: { messageSecret: new Uint8Array(32).fill(7) },
+      },
+    } as never);
+    expect(e?.question).toBe("¿Qué día?");
+    expect(e?.options).toEqual(["Martes 20", "Martes 27"]);
+    expect(e?.secret).toBe(Buffer.alloc(32, 7).toString("base64"));
+    expect(e?.multiple).toBe(false);
+  });
+
+  it("cero opciones seleccionables significa VARIAS, no ninguna", () => {
+    /*
+     * Es lo que WhatsApp pone en una encuesta de opción múltiple. Leerlo como
+     * «ninguna» enseñaría «una respuesta» justo donde se pueden marcar varias.
+     */
+    const e = encuestaDe({
+      message: {
+        pollCreationMessage: {
+          name: "¿Qué prefieres?",
+          options: [{ optionName: "A" }, { optionName: "B" }],
+          selectableOptionsCount: 0,
+        },
+      },
+    } as never);
+    expect(e?.multiple).toBe(true);
+  });
+
+  it("un voto NO es un mensaje: sale por su propio camino", () => {
+    /*
+     * Es lo que llenó un grupo real de 143 burbujas de «mensaje no
+     * compatible»: una encuesta y todo el equipo votando.
+     */
+    const v = extractPollVote({
+      key: { id: "VOTO1", remoteJid: "120@g.us", participant: "51988777666@s.whatsapp.net" },
+      message: {
+        pollUpdateMessage: {
+          pollCreationMessageKey: {
+            id: "ENCUESTA1", fromMe: false, remoteJid: "120@g.us",
+            participant: "51900111222@s.whatsapp.net",
+          },
+          vote: { encPayload: new Uint8Array([1, 2, 3]), encIv: new Uint8Array([4, 5]) },
+          senderTimestampMs: 1700000000000,
+        },
+      },
+    } as never);
+    expect(v?.poll.id).toBe("ENCUESTA1");
+    // Las DOS direcciones: la clave de descifrado se deriva de ambas, y
+    // confundirlas no da un error, da un voto que no abre.
+    expect(v?.poll.author).toBe("51900111222@s.whatsapp.net");
+    expect(v?.voter).toBe("51988777666@s.whatsapp.net");
+    expect(v?.at).toBe(1700000000000);
+  });
+
+  it("un mensaje normal no es un voto", () => {
+    expect(extractPollVote({ key: { id: "X" }, message: { conversation: "hola" } } as never))
+      .toBeNull();
+  });
+
+  it("lee el secreto Y la copia releída de la base, que ya no son bytes", () => {
+    /*
+     * Esta prueba existe por un fallo real y caro.
+     *
+     * El nodo original se guarda tal cual, y al releerlo de JSON los bytes ya
+     * son una cadena en base64. Codificarla otra vez daba una clave distinta y
+     * un voto que no abría —sin ningún error que lo dijera—, y el motor lee el
+     * secreto justamente de ahí.
+     */
+    const secreto = Buffer.alloc(32, 7).toString("base64");
+    const releida = encuestaDe({
+      message: {
+        pollCreationMessageV3: { name: "¿Qué día?", options: [{ optionName: "A" }] },
+        messageContextInfo: { messageSecret: secreto },
+      },
+    } as never);
+    expect(releida?.secret).toBe(secreto);
+
+    const voto = extractPollVote({
+      key: { id: "V", remoteJid: "120@g.us", participant: "51988777666@s.whatsapp.net" },
+      message: {
+        pollUpdateMessage: {
+          pollCreationMessageKey: { id: "E", participant: "51900111222@s.whatsapp.net" },
+          vote: { encPayload: "AQID", encIv: "BAU=" },
+        },
+      },
+    } as never);
+    expect(voto?.vote.encPayload).toBe("AQID");
+    expect(voto?.vote.encIv).toBe("BAU=");
+  });
+
+  it("descifrar un voto devuelve las opciones que se marcaron", async () => {
+    /*
+     * Ida y vuelta con el cifrado REAL de WhatsApp: se construye el voto con
+     * las mismas primitivas que usa el teléfono y se comprueba que vuelve.
+     * Una prueba contra un doble no diría nada: lo que falla aquí es la
+     * derivación de la clave, y eso solo se ve cifrando de verdad.
+     */
+    const { createHash, createCipheriv, createHmac } = await import("node:crypto");
+    const { proto } = await import("baileys");
+
+    const pollId = "ENCUESTA1";
+    const autor = "51900111222@s.whatsapp.net";
+    const votante = "51988777666@s.whatsapp.net";
+    const secreto = Buffer.alloc(32, 9);
+    const opciones = ["Martes 20", "Martes 27", "Sede san Isidro"];
+    const elegida = "Martes 27";
+
+    const firma = Buffer.concat([
+      Buffer.from(pollId), Buffer.from(autor), Buffer.from(votante),
+      Buffer.from("Poll Vote"), Buffer.from([1]),
+    ]);
+    const key0 = createHmac("sha256", Buffer.alloc(32)).update(secreto).digest();
+    const clave = createHmac("sha256", key0).update(firma).digest();
+
+    const payload = proto.Message.PollVoteMessage.encode({
+      selectedOptions: [createHash("sha256").update(elegida).digest()],
+    }).finish();
+
+    const iv = Buffer.alloc(12, 3);
+    const cifrador = createCipheriv("aes-256-gcm", clave, iv);
+    cifrador.setAAD(Buffer.from(`${pollId} ${votante}`));
+    const cuerpo = Buffer.concat([
+      cifrador.update(payload), cifrador.final(), cifrador.getAuthTag(),
+    ]);
+
+    /*
+     * El voto y la encuesta pasan por JSON antes de abrirse, que es por donde
+     * pasan de verdad: el motor los lee de la base. Si el ida y vuelta solo se
+     * probara con los bytes en memoria, el fallo del doble codificado no
+     * saldría aquí nunca.
+     */
+    const nodoEncuesta = JSON.parse(JSON.stringify({
+      message: {
+        pollCreationMessageV3: {
+          name: "¿Qué día?", options: opciones.map((o) => ({ optionName: o })),
+        },
+        messageContextInfo: { messageSecret: secreto.toString("base64") },
+      },
+    }));
+    const nodoVoto = JSON.parse(JSON.stringify({
+      key: { id: "V", remoteJid: "120@g.us", participant: votante },
+      message: {
+        pollUpdateMessage: {
+          pollCreationMessageKey: { id: pollId, participant: autor },
+          vote: { encPayload: cuerpo.toString("base64"), encIv: iv.toString("base64") },
+        },
+      },
+    }));
+
+    const e = encuestaDe(nodoEncuesta as never)!;
+    const v = extractPollVote(nodoVoto as never)!;
+    expect(descifrarVoto(
+      v.vote,
+      { pollId: v.poll.id, pollAuthor: v.poll.author, voter: v.voter, secret: e.secret! },
+      e.options,
+    )).toEqual([elegida]);
   });
 });
 
