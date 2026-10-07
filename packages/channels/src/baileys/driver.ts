@@ -1513,22 +1513,61 @@ function anclaBaileys(
 }
 
 /** La forma de Baileys para un canal, traducida a la nuestra. */
-function toNewsletterMetadata(m: {
+/**
+ * Un texto de canal tal como llega.
+ *
+ * Los tipos publicados de Baileys dicen cadena; lo que devuelve en ejecución es
+ * `{ text }`. Se aceptan las dos en vez de fiarse de los tipos: fiarse fue lo
+ * que dejó los canales sin nombre.
+ */
+type TextoDeCanal = string | { text?: string } | null | undefined;
+
+function textoDeCanal(v: TextoDeCanal): string | undefined {
+  if (typeof v === "string") return v || undefined;
+  return v?.text || undefined;
+}
+
+/**
+ * La forma de Baileys para un canal, traducida a la nuestra.
+ *
+ * Baileys devuelve DOS formas según la llamada. Crear un canal da la plana
+ * (`name`, `subscribers`); leer uno que ya existe da la respuesta cruda del
+ * servidor (`thread_metadata.name.text`, `subscribers_count` como cadena).
+ * Esto solo leía la plana, así que todo canal existente salía con el nombre
+ * vacío: se vio en un canal real que no había forma de que tuviera título.
+ */
+export function toNewsletterMetadata(m: {
   id: string; name?: string; description?: string; invite?: string;
   subscribers?: number; verification?: string; creation_time?: number;
+  thread_metadata?: {
+    name?: TextoDeCanal; description?: TextoDeCanal; invite?: string;
+    subscribers_count?: string | number; verification?: string;
+    creation_time?: string | number;
+  };
   viewer_metadata?: { role?: string };
 }): NewsletterMetadata {
+  const hilo = m.thread_metadata;
+  const nombre = m.name ?? textoDeCanal(hilo?.name) ?? "";
+  const descripcion = m.description ?? textoDeCanal(hilo?.description);
+  const invitacion = m.invite ?? hilo?.invite;
+  const seguidores = m.subscribers ?? (hilo?.subscribers_count !== undefined
+    ? Number(hilo.subscribers_count) : undefined);
+  const verificacion = m.verification ?? hilo?.verification;
+  const creado = m.creation_time ?? (hilo?.creation_time !== undefined
+    ? Number(hilo.creation_time) : undefined);
   const rol = m.viewer_metadata?.role?.toLowerCase();
+
   return {
     address: parseAddress(m.id),
-    name: m.name ?? "",
-    ...(m.description ? { description: m.description } : {}),
-    ...(m.invite ? { inviteCode: m.invite } : {}),
-    ...(typeof m.subscribers === "number" ? { subscribers: m.subscribers } : {}),
-    ...(m.verification ? { verified: m.verification === "VERIFIED" } : {}),
+    name: nombre,
+    ...(descripcion ? { description: descripcion } : {}),
+    ...(invitacion ? { inviteCode: invitacion } : {}),
+    ...(typeof seguidores === "number" && Number.isFinite(seguidores)
+      ? { subscribers: seguidores } : {}),
+    ...(verificacion ? { verified: verificacion === "VERIFIED" } : {}),
     ...(rol === "owner" || rol === "admin" || rol === "subscriber" || rol === "guest"
       ? { role: rol }
       : {}),
-    ...(m.creation_time ? { createdAt: m.creation_time * 1000 } : {}),
+    ...(creado && Number.isFinite(creado) ? { createdAt: creado * 1000 } : {}),
   };
 }

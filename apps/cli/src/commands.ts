@@ -474,6 +474,24 @@ export const COMMANDS: readonly Command[] = [
     }),
   },
   {
+    name: "etiqueta:editar",
+    summary: "Renombrar una etiqueta o cambiar su color",
+    operation: "PATCH /v1/lines/{lineId}/labels/{labelId}",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "etiqueta", required: true, description: "Identificador de la etiqueta" },
+    ],
+    flags: [
+      { name: "nombre", description: "Nombre nuevo" },
+      { name: "color", description: "gris, rojo, ámbar, verde, azul o violeta" },
+    ],
+    run: (c, a) => c.request("PATCH",
+      `/v1/lines/${req(a, 0, "linea")}/labels/${enc(req(a, 1, "etiqueta"))}`, {
+        ...(flag(a, "nombre") ? { name: flag(a, "nombre") } : {}),
+        ...(flag(a, "color") ? { color: flag(a, "color") } : {}),
+      }),
+  },
+  {
     name: "etiqueta:borrar",
     summary: "Borrar una etiqueta y quitarla de donde estuviera",
     operation: "DELETE /v1/lines/{lineId}/labels/{labelId}",

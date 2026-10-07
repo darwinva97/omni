@@ -267,6 +267,36 @@ run("runtime del motor, de punta a punta", () => {
     expect(todas.find((m) => m.id === fila!.id)!.deletedAt).not.toBeNull();
   });
 
+  it("un canal sin nombre lo aprende al sincronizar, y no toca los que ya tienen", async () => {
+    /*
+     * Un mensaje de canal no trae el nombre del canal, solo su dirección: sin
+     * esto aparecían como `120363…@newsletter`. Se pregunta solo por los que
+     * no lo tienen, para no repetir la consulta en cada conexión.
+     */
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+
+    const canal = await H.driver.createNewsletter(asLineId(LINE), "Avisos del barrio");
+    const otro = await H.driver.createNewsletter(asLineId(LINE), "Nombre en WhatsApp");
+    await h.db.insert(chatTable).values([
+      { id: "c-canal-1", lineId: LINE, address: canal.address.value, kind: "newsletter" },
+      {
+        id: "c-canal-2", lineId: LINE, address: otro.address.value, kind: "newsletter",
+        title: "Ya tenía nombre",
+      },
+    ]);
+
+    const nombrados = await H.runtime.sincronizarCanales(LINE);
+    expect(nombrados).toBe(1);
+
+    const filas = await h.db.select().from(chatTable)
+      .where(and(eq(chatTable.lineId, LINE), eq(chatTable.kind, "newsletter")));
+    expect(filas.find((f) => f.address === canal.address.value)?.title)
+      .toBe("Avisos del barrio");
+    expect(filas.find((f) => f.address === otro.address.value)?.title)
+      .toBe("Ya tenía nombre");
+  });
+
   it("un envío se acepta enseguida, se encola y acaba enviado", async () => {
     await H.runtime.connect(LINE);
     await H.driver.scan(asLineId(LINE), "51999888777");

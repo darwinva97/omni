@@ -737,6 +737,7 @@ export class EngineRuntime {
          */
         if (envelope.event === "session.connected") {
           void this.sincronizarGrupos(envelope.lineId).catch(() => {});
+          void this.sincronizarCanales(envelope.lineId).catch(() => {});
         }
         if (data.self) {
           const propia = tryParseAddress(data.self);
@@ -880,6 +881,48 @@ export class EngineRuntime {
       guardados++;
     }
     return guardados;
+  }
+
+  /**
+   * Pone nombre a los canales que no lo tienen.
+   *
+   * Un mensaje de canal no trae el nombre del canal, solo su dirección, así
+   * que sin esto aparecen como `120363…@newsletter`. Se pregunta solo por los
+   * que no tienen título: el nombre de un canal casi nunca cambia, y pedirlo
+   * en cada conexión para todos es tráfico que WhatsApp no necesita ver.
+   */
+  async sincronizarCanales(lineId: string): Promise<number> {
+    const line = await this.#line(lineId);
+    const driver = this.driverFor(line.channelKind);
+    if (!driver.newsletterMetadata) return 0;
+
+    const sinNombre = await this.#deps.db
+      .select({ address: chatTable.address })
+      .from(chatTable)
+      .where(and(
+        eq(chatTable.lineId, lineId),
+        eq(chatTable.kind, "newsletter"),
+        isNull(chatTable.title),
+      ));
+
+    let nombrados = 0;
+    for (const c of sinNombre) {
+      const direccion = tryParseAddress(c.address);
+      if (!direccion) continue;
+      try {
+        const meta = await driver.newsletterMetadata(lineId as LineId, direccion);
+        if (!meta.name) continue;
+        await this.#ponerTitulo(lineId, c.address, meta.name);
+        nombrados++;
+      } catch (e) {
+        // Un canal borrado o al que ya no se sigue no responde: se queda con
+        // su dirección y se sigue con los demás. Pero se DICE: tragárselo en
+        // silencio dejó un canal sin nombre sin ninguna pista de por qué.
+        console.warn(`no se pudo leer el canal ${c.address}: ${
+          e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return nombrados;
   }
 
   /**

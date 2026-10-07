@@ -1,7 +1,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, lineTable, messageTable, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
@@ -143,6 +143,14 @@ const ChatSchema = z.object({
   mutedUntil: z.string().nullable(),
   archived: z.boolean().default(false),
   pinned: z.boolean().default(false),
+  /**
+   * Las listas de Omni en las que está.
+   *
+   * Son etiquetas NUESTRAS, no de WhatsApp: agrupan conversaciones en el panel
+   * y no se ven en el teléfono. Vienen con el chat para que filtrar por lista
+   * no cueste una petición por pestaña.
+   */
+  labelIds: z.array(z.string()).default([]),
 }).openapi("Chat");
 
 /**
@@ -163,6 +171,7 @@ interface FilaDeChat {
   avatarKey?: string | null; avatarUrl?: string | null;
   ultimo?: string | null; ultimoPropio?: boolean;
   muteUntil?: Date | null; archived?: boolean; pinned?: boolean;
+  labelIds?: string[];
 }
 
 /**
@@ -208,6 +217,23 @@ async function ultimosMensajes(
       propio: f.from_me,
     },
   ]));
+}
+
+/** Las listas de Omni de cada conversación, en UNA consulta. */
+async function listasDe(
+  container: Container, lineId: string, direcciones: readonly string[],
+): Promise<Map<string, string[]>> {
+  if (direcciones.length === 0) return new Map();
+  const filas = await container.dbh.db
+    .select({ target: labelAssignmentTable.target, labelId: labelAssignmentTable.labelId })
+    .from(labelAssignmentTable)
+    .where(and(
+      eq(labelAssignmentTable.lineId, lineId),
+      inArray(labelAssignmentTable.target, [...direcciones]),
+    ));
+  const mapa = new Map<string, string[]>();
+  for (const f of filas) mapa.set(f.target, [...(mapa.get(f.target) ?? []), f.labelId]);
+  return mapa;
 }
 
 /**
@@ -292,12 +318,15 @@ function presentarChat(r: FilaDeChat) {
   const displayName =
     // El título solo manda en lo que no es una persona: en un chat
     // individual lo tiene que decidir la agenda, no un nombre heredado.
-    (r.kind === "group" || r.kind === "broadcast" ? r.title?.trim() : null) ||
+    (r.kind === "group" || r.kind === "broadcast" || r.kind === "newsletter"
+      ? r.title?.trim() : null) ||
     r.savedName?.trim() ||
     r.pushName?.trim() ||
     r.title?.trim() ||
     (telefono ? `+${telefono}` : null) ||
-    (r.kind === "group" ? "Grupo sin nombre" : r.address.split("@")[0]!);
+    (r.kind === "group" ? "Grupo sin nombre"
+      : r.kind === "newsletter" ? "Canal sin nombre"
+      : r.address.split("@")[0]!);
 
   return {
     address: r.address,
@@ -315,6 +344,7 @@ function presentarChat(r: FilaDeChat) {
     mutedUntil: r.muteUntil?.toISOString() ?? null,
     archived: r.archived ?? false,
     pinned: r.pinned ?? false,
+    labelIds: r.labelIds ?? [],
   };
 }
 import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
@@ -672,11 +702,13 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         : rows;
 
       const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
+      const listas = await listasDe(container, lineId, visible.map((r) => r.address));
       const data = await Promise.all(visible.map(async (r) => presentarChat({
         ...r,
         avatarUrl: await urlDeAvatar(container, r.avatarKey),
         ultimo: ultimos.get(r.address)?.texto ?? null,
         ultimoPropio: ultimos.get(r.address)?.propio ?? false,
+        labelIds: listas.get(r.address) ?? [],
       })));
       return c.json({ data }, 200);
     },
@@ -886,12 +918,14 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
       if (!rows[0]) throw new OmniError("not_found", "esa conversación no existe en esta línea");
       const ultimo = (await ultimosMensajes(container, lineId, [chat.value])).get(chat.value);
+      const listas = await listasDe(container, lineId, [chat.value]);
       return c.json({
         data: presentarChat({
           ...rows[0],
           avatarUrl: await urlDeAvatar(container, rows[0].avatarKey),
           ultimo: ultimo?.texto ?? null,
           ultimoPropio: ultimo?.propio ?? false,
+          labelIds: listas.get(chat.value) ?? [],
         }),
       }, 200);
     },

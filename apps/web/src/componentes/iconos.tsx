@@ -186,6 +186,17 @@ export const IconoSticker = (p: Props) => (
   </Base>
 );
 
+/**
+ * Estados: el anillo partido que WhatsApp pone alrededor de quien publicó.
+ * El megáfono queda para los canales, que es lo que son: difusión.
+ */
+export const IconoEstados = (p: Props) => (
+  <Base {...p}>
+    <path d="M12 3a9 9 0 0 1 6.4 2.6M20.6 9.2a9 9 0 0 1-.2 6.2M17.6 19.1A9 9 0 0 1 12 21M6.4 19.1a9 9 0 0 1-3-4.3M3.1 9.6A9 9 0 0 1 7.6 4.2" />
+    <circle cx="12" cy="12" r="3.5" />
+  </Base>
+);
+
 /** Campana: los avisos. La rayada es «no me avises». */
 export const IconoCampana = (p: Props) => (
   <Base {...p}>

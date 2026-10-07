@@ -86,6 +86,19 @@ export interface Chat {
   mutedUntil?: string | null;
   archived?: boolean;
   pinned?: boolean;
+  /** Las listas de Omni en las que está. No existen en WhatsApp. */
+  labelIds?: string[];
+}
+
+/**
+ * Una lista de Omni: agrupa conversaciones en una pestaña.
+ *
+ * En la API se llama etiqueta, que es lo que es por debajo; en el panel se
+ * llama lista porque es lo que la gente hace con ella, y es el nombre que usa
+ * WhatsApp para lo mismo.
+ */
+export interface Lista {
+  id: string; name: string; color: string | null; usos: number;
 }
 
 export interface Medio {

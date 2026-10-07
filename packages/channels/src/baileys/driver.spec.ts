@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
-  extractPollVote, extractReply, extractText, messageKind,
+  extractPollVote, extractReply, extractText, messageKind, toNewsletterMetadata,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
@@ -782,5 +782,48 @@ describe("lo escrito desde otro dispositivo", () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(eventos.some((e) => e.event === "message.received")).toBe(false);
+  });
+});
+
+describe("metadatos de un canal", () => {
+  it("lee la respuesta CRUDA que da Baileys al consultar un canal existente", () => {
+    /*
+     * Es la forma real de `newsletterMetadata`, copiada de lo que devuelve el
+     * servidor. Solo se leía la forma plana —la de CREAR un canal— y todo
+     * canal existente salía con el nombre vacío.
+     */
+    const m = toNewsletterMetadata({
+      id: "120363233417321714@newsletter",
+      thread_metadata: {
+        name: { text: "Noticias del barrio" },
+        description: { text: "Lo que pasa cerca" },
+        invite: "0029VaAbCd",
+        subscribers_count: "1532",
+        verification: "VERIFIED",
+        creation_time: "1700000000",
+      },
+      viewer_metadata: { role: "SUBSCRIBER" },
+    } as never);
+    expect(m.name).toBe("Noticias del barrio");
+    expect(m.description).toBe("Lo que pasa cerca");
+    expect(m.inviteCode).toBe("0029VaAbCd");
+    expect(m.subscribers).toBe(1532);
+    expect(m.verified).toBe(true);
+    expect(m.role).toBe("subscriber");
+    expect(m.createdAt).toBe(1700000000 * 1000);
+  });
+
+  it("y sigue leyendo la plana, la de crear un canal", () => {
+    const m = toNewsletterMetadata({
+      id: "1@newsletter", name: "Nuevo", subscribers: 0, creation_time: 1700000000,
+    });
+    expect(m.name).toBe("Nuevo");
+    expect(m.subscribers).toBe(0);
+  });
+
+  it("acepta el nombre como cadena, que es lo que dicen los tipos de Baileys", () => {
+    expect(toNewsletterMetadata({
+      id: "2@newsletter", thread_metadata: { name: "Como cadena" },
+    } as never).name).toBe("Como cadena");
   });
 });

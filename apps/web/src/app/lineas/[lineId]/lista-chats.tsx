@@ -3,14 +3,16 @@
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { Chat, Linea } from "@/lib/api";
+import type { Chat, Linea, Lista } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { cuando, resumen } from "@/lib/formato";
 import { Avatar } from "@/componentes/piezas";
 import {
   IconoArchivar, IconoBuscar, IconoCampana, IconoCampanaTachada, IconoCanal,
-  IconoCerrar, IconoMas, IconoPapelera, IconoSilenciar,
+  IconoCerrar, IconoEstados, IconoLineas, IconoMas, IconoPapelera, IconoSilenciar,
+  IconoVolver,
 } from "@/componentes/iconos";
+import { COLOR_DE_LISTA, EditarLista, ListasDeChat } from "@/componentes/listas";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { useRouter } from "next/navigation";
 import { AjustesAvisos } from "@/componentes/ajustes-avisos";
@@ -39,6 +41,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   const params = useParams<{ chatId?: string }>();
   const ruta = usePathname();
   const enEstados = ruta.endsWith("/estados");
+  const enCanales = ruta.endsWith("/canales");
   const abierto = params.chatId ? decodeURIComponent(params.chatId) : null;
   // La conversación abierta no tiene pendientes: el contador avisaba de algo
   // que se tiene delante.
@@ -55,6 +58,48 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   const router = useRouter();
 
   /*
+   * Pestañas.
+   *
+   * Las tres de WhatsApp —todas, no leídas, grupos— más una por cada lista
+   * propia. Filtran en el navegador sobre lo ya cargado: cambiar de pestaña
+   * es instantáneo y no corta el socket.
+   */
+  type Pestana = "todos" | "no-leidos" | "grupos" | `lista:${string}`;
+  const [pestana, setPestana] = useState<Pestana>("todos");
+  const [verArchivados, setVerArchivados] = useState(false);
+  const [listas, setListas] = useState<Lista[]>([]);
+  const [listando, setListando] = useState<Chat | null>(null);
+  const [editandoLista, setEditandoLista] = useState<Lista | "nueva" | null>(null);
+  const menuLista = useMenu();
+  const [sobreLista, setSobreLista] = useState<Lista | null>(null);
+
+  const cargarListas = async (): Promise<void> => {
+    const r = await fetch(`/api/omni/v1/lines/${linea.id}/labels`);
+    if (!r.ok) return;
+    const { data } = (await r.json()) as { data: Lista[] };
+    setListas(data);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void cargarListas(); }, [linea.id]);
+
+  /*
+   * Lo que no es una conversación no va en la lista.
+   *
+   * Un canal es difusión: nadie contesta, y mezclado con los chats pone una
+   * fila que nunca tiene a nadie al otro lado. Va en su propia vista, como
+   * los estados.
+   */
+  const conversaciones = useMemo(
+    () => chats.filter((c) => c.kind !== "newsletter"),
+    [chats],
+  );
+  const archivados = useMemo(
+    () => conversaciones.filter((c) => c.archived),
+    [conversaciones],
+  );
+  const archivadosSinLeer = archivados.filter((c) => c.unreadCount > 0).length;
+
+  /*
    * Los avisos.
    *
    * Viven aquí y no en la conversación abierta porque lo que hay que avisar es
@@ -63,8 +108,15 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
    */
   const { prefs } = usePreferencias();
   useEffect(prepararSonido, []);
+  /*
+   * Lo que cuenta para el número de la pestaña: ni lo silenciado, ni lo
+   * archivado, ni los canales. Es lo mismo que decide si suena: si el número
+   * subiera por algo que no avisa, dejaría de significar «tienes que mirar».
+   */
+  const cuentaParaAvisar = (c: Chat): boolean =>
+    !silenciado(c.mutedUntil) && !c.archived && c.kind !== "newsletter";
   const pendientes = useMemo(
-    () => chats.reduce((n, c) => n + (silenciado(c.mutedUntil) ? 0 : c.unreadCount), 0),
+    () => chats.reduce((n, c) => n + (cuentaParaAvisar(c) ? c.unreadCount : 0), 0),
     [chats],
   );
   useTituloConPendientes(pendientes, prefs.contadorEnTitulo);
@@ -129,14 +181,29 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
             onSelect: () => setSilenciando(c),
           },
       {
-        texto: "Archivar",
+        texto: "Añadir a una lista…",
+        Icono: IconoLineas,
+        onSelect: () => setListando(c),
+      },
+      {
+        // Es el archivado DE WHATSAPP: se archiva también en el teléfono.
+        texto: c.archived ? "Desarchivar" : "Archivar",
         Icono: IconoArchivar,
         onSelect: async () => {
-          await pedir(`/chats/${dir}/archive`, {
+          const archivar = !c.archived;
+          // Se mueve ya, sin esperar: la conversación desaparece de donde
+          // estaba en el momento del clic, que es lo que se espera ver.
+          setChats((prev) => prev.map((x) =>
+            x.address === c.address ? { ...x, archived: archivar } : x));
+          const ok = await pedir(`/chats/${dir}/archive`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ archived: true }),
+            body: JSON.stringify({ archived: archivar }),
           });
+          if (!ok) {
+            setChats((prev) => prev.map((x) =>
+              x.address === c.address ? { ...x, archived: c.archived } : x));
+          }
         },
       },
       {
@@ -211,14 +278,38 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
      * Silenciar desde el teléfono tiene que callar este panel al instante; si
      * no, el silencio solo valdría donde se pulsó.
      */
-    if (evento === "chat.updated") {
+    if (evento === "chat.updated" || evento === "chat.archived") {
       const mudo = data["mutedUntil"];
-      if (mudo !== undefined) {
-        setChats((prev) => prev.map((x) => x.address === direccion
-          ? { ...x, mutedUntil: mudo ? new Date(Number(mudo)).toISOString() : null }
-          : x));
-      }
+      const archivado = data["archived"];
+      const pendientesAhi = data["unreadCount"];
+      setChats((prev) => prev.map((x) => x.address !== direccion ? x : {
+        ...x,
+        ...(mudo !== undefined
+          ? { mutedUntil: mudo ? new Date(Number(mudo)).toISOString() : null } : {}),
+        ...(typeof archivado === "boolean" ? { archived: archivado } : {}),
+        // Leído en el teléfono: el contador baja aquí también.
+        ...(typeof pendientesAhi === "number" ? { unreadCount: pendientesAhi } : {}),
+      }));
+      return;
     }
+
+    if (evento === "chat.read") {
+      setChats((prev) => prev.map((x) =>
+        x.address === direccion ? { ...x, unreadCount: 0 } : x));
+      return;
+    }
+
+    /*
+     * Solo un mensaje DE VERDAD mueve la lista.
+     *
+     * Antes cualquier evento con dirección caía aquí: un acuse de lectura, una
+     * reacción, un cambio de chat. Cada uno subía la conversación arriba con la
+     * hora de ese instante y «Mensaje» de adelanto —el resumen de un mensaje
+     * que no existe—, así que bastaba con que alguien leyera algo para que la
+     * lista se reordenara sola.
+     */
+    if (evento !== "message.received" && evento !== "message.sent") return;
+    if (tipo === "reaction" || tipo === "system") return;
 
     setChats((prev) => {
       const i = prev.findIndex((c) => c.address === direccion);
@@ -235,9 +326,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         unreadCount:
           evento === "message.received" && !key.fromMe && direccion !== abierto
             ? actual.unreadCount + 1
-            : evento === "chat.read" || direccion === abierto
-              ? 0
-              : actual.unreadCount,
+            : direccion === abierto ? 0 : actual.unreadCount,
       };
       return copia.sort((a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""));
     });
@@ -267,7 +356,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
      */
     if (
       evento === "message.received" && !key.fromMe && direccion !== abierto
-      && chat && !silenciado(chat.mutedUntil)
+      && chat && cuentaParaAvisar(chat)
     ) {
       avisar(prefs, {
         titulo: chat.displayName,
@@ -281,17 +370,96 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
 
   const visibles = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
-    if (!q) return chats;
-    return chats.filter((c) =>
-      c.displayName.toLowerCase().includes(q)
-      || c.address.toLowerCase().includes(q)
-      || (c.phone ?? "").includes(q));
-  }, [chats, busqueda]);
+    /*
+     * La búsqueda mira en TODO, archivados incluidos.
+     *
+     * Es lo que hace WhatsApp, y con razón: quien busca a alguien no sabe si
+     * lo archivó, y un buscador que no lo encuentra parece que ha perdido la
+     * conversación.
+     */
+    if (q) {
+      return conversaciones.filter((c) =>
+        c.displayName.toLowerCase().includes(q)
+        || c.address.toLowerCase().includes(q)
+        || (c.phone ?? "").includes(q));
+    }
+
+    const base = conversaciones.filter((c) => Boolean(c.archived) === verArchivados);
+    if (pestana === "no-leidos") return base.filter((c) => c.unreadCount > 0);
+    if (pestana === "grupos") return base.filter((c) => c.kind === "group");
+    if (pestana.startsWith("lista:")) {
+      const id = pestana.slice("lista:".length);
+      return base.filter((c) => c.labelIds?.includes(id));
+    }
+    return base;
+  }, [conversaciones, busqueda, verArchivados, pestana]);
+
+  /** Guarda las listas de una conversación y las refleja sin recargar. */
+  const fijarListas = async (c: Chat, ids: string[]): Promise<void> => {
+    setChats((prev) => prev.map((x) =>
+      x.address === c.address ? { ...x, labelIds: ids } : x));
+    await fetch(
+      `/api/omni/v1/lines/${linea.id}/chats/${encodeURIComponent(c.address)}/labels`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ labelIds: ids }),
+      },
+    );
+  };
+
+  /** Crea o edita una lista. Devuelve el error para enseñarlo, o `null`. */
+  const guardarLista = async (
+    lista: Lista | null, datos: { name: string; color: string },
+  ): Promise<string | null> => {
+    const r = await fetch(
+      lista
+        ? `/api/omni/v1/lines/${linea.id}/labels/${encodeURIComponent(lista.id)}`
+        : `/api/omni/v1/lines/${linea.id}/labels`,
+      {
+        method: lista ? "PATCH" : "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(datos),
+      },
+    );
+    if (!r.ok) {
+      const e = (await r.json().catch(() => null)) as { detail?: string } | null;
+      return e?.detail ?? "No se pudo guardar la lista.";
+    }
+    const { data } = (await r.json()) as { data: Lista };
+    await cargarListas();
+    // Una lista recién creada se abre: es lo siguiente que uno quiere ver.
+    if (!lista) setPestana(`lista:${data.id}`);
+    return null;
+  };
+
+  const borrarLista = async (l: Lista): Promise<void> => {
+    if (!confirm(
+      `Se borrará la lista «${l.name}». Las conversaciones no se tocan: solo `
+      + "dejan de estar agrupadas ahí.",
+    )) return;
+    const r = await fetch(
+      `/api/omni/v1/lines/${linea.id}/labels/${encodeURIComponent(l.id)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) return;
+    setListas((prev) => prev.filter((x) => x.id !== l.id));
+    setChats((prev) => prev.map((x) => ({
+      ...x, labelIds: (x.labelIds ?? []).filter((id) => id !== l.id),
+    })));
+    if (pestana === `lista:${l.id}`) setPestana("todos");
+  };
+
+  const PESTANAS_FIJAS = [
+    { id: "todos", texto: "Todos" },
+    { id: "no-leidos", texto: "No leídos" },
+    { id: "grupos", texto: "Grupos" },
+  ] as const;
 
   return (
     <aside
       className={`${
-        abierto || enEstados ? "hidden md:flex" : "flex"
+        abierto || enEstados || enCanales ? "hidden md:flex" : "flex"
       } w-full shrink-0 flex-col border-r border-(--color-borde) bg-(--color-panel) md:w-[22rem]`}
     >
       <header className="border-b border-(--color-borde) px-4 py-3">
@@ -366,34 +534,137 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
             </button>
           )}
         </div>
+
+        {/*
+          Las pestañas. En una fila que se desplaza de lado y no en varias
+          líneas: con cinco listas propias, envolver empujaría las
+          conversaciones hacia abajo justo en un teléfono, donde menos sobra.
+          Al buscar desaparecen: la búsqueda mira en todo.
+        */}
+        {!busqueda && !verArchivados && (
+          <div
+            role="tablist"
+            aria-label="Filtrar conversaciones"
+            className="scroll-discreto -mx-4 mt-2.5 flex gap-1.5 overflow-x-auto px-4 pb-0.5"
+          >
+            {PESTANAS_FIJAS.map((t) => (
+              <Pastilla
+                key={t.id}
+                activa={pestana === t.id}
+                onClick={() => setPestana(t.id)}
+              >
+                {t.texto}
+              </Pastilla>
+            ))}
+            {listas.map((l) => (
+              <Pastilla
+                key={l.id}
+                activa={pestana === `lista:${l.id}`}
+                onClick={() => setPestana(`lista:${l.id}`)}
+                // Clic derecho para editarla o borrarla: es donde uno la tiene
+                // delante cuando decide que sobra o que se llama mal.
+                onContextMenu={(e) => { setSobreLista(l); menuLista.enContexto(e); }}
+                color={COLOR_DE_LISTA[l.color ?? "gris"]}
+              >
+                {l.name}
+              </Pastilla>
+            ))}
+            <button
+              type="button"
+              onClick={() => setEditandoLista("nueva")}
+              aria-label="Nueva lista"
+              title="Nueva lista: agrupa conversaciones en su propia pestaña"
+              className="flex h-7 shrink-0 items-center rounded-full border border-dashed border-(--color-borde) px-2.5 text-xs text-(--color-tenue) transition-colors duration-150 hover:border-(--color-acento) hover:text-(--color-acento-fuerte)"
+            >
+              + Lista
+            </button>
+          </div>
+        )}
       </header>
 
       {/*
-        Los estados tienen su propia entrada, arriba y fija: no son una
-        conversación y mezclarlos con ellas los dejaba con el nombre del último
-        que publicó, que no es de nadie.
+        Estados y canales tienen su propia entrada, fija y fuera de la lista.
+
+        Ninguno es una conversación: los estados no son de nadie en concreto y
+        en un canal nadie contesta. Mezclados con los chats, los estados salían
+        con el nombre del último que publicó y el canal como una fila que nunca
+        tiene a nadie al otro lado. Van juntos y a medio ancho porque son dos
+        destinos del mismo tipo, y una fila entera para cada uno empujaba las
+        conversaciones hacia abajo.
       */}
-      <Link
-        href={`/lineas/${linea.id}/estados`}
-        className={`flex items-center gap-3 border-b border-(--color-borde) px-4 py-2.5 transition-colors duration-150 ${
-          enEstados ? "bg-(--color-acento-tenue)" : "hover:bg-(--color-hundido)"
-        }`}
-      >
-        <span className="flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-(--color-acento) text-(--color-acento)">
-          <IconoCanal className="size-5" />
-        </span>
-        <span className="min-w-0">
-          <span className="block text-sm font-medium">Estados</span>
-          <span className="block text-xs text-(--color-tenue)">
-            Lo que publican, de las últimas 24 horas
+      {!verArchivados && (
+        <nav aria-label="Otras vistas" className="grid grid-cols-2 border-b border-(--color-borde)">
+          <Destino
+            href={`/lineas/${linea.id}/estados`}
+            activo={enEstados}
+            Icono={IconoEstados}
+            texto="Estados"
+          />
+          <Destino
+            href={`/lineas/${linea.id}/canales`}
+            activo={enCanales}
+            Icono={IconoCanal}
+            texto="Canales"
+            borde
+          />
+        </nav>
+      )}
+
+      {/*
+        Archivados: arriba, como en WhatsApp, y solo si hay alguno. Dentro,
+        la cabecera dice dónde se está y cómo salir: en una lista que se
+        parece a la principal, perderse es fácil.
+      */}
+      {verArchivados ? (
+        <button
+          type="button"
+          onClick={() => setVerArchivados(false)}
+          className="flex items-center gap-3 border-b border-(--color-borde) px-4 py-2.5 text-left hover:bg-(--color-hundido)"
+        >
+          <IconoVolver className="size-5 text-(--color-tenue)" />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">Archivados</span>
+            <span className="block text-xs text-(--color-tenue)">
+              Archivados también en tu WhatsApp. Siguen así aunque llegue algo.
+            </span>
           </span>
-        </span>
-      </Link>
+        </button>
+      ) : archivados.length > 0 && !busqueda && (
+        <button
+          type="button"
+          onClick={() => { setVerArchivados(true); setPestana("todos"); }}
+          className="flex items-center gap-3 px-4 py-2 text-left hover:bg-(--color-hundido)"
+        >
+          <span className="flex size-11 shrink-0 items-center justify-center text-(--color-acento-fuerte)">
+            <IconoArchivar className="size-5" />
+          </span>
+          <span className="flex-1 text-sm font-medium">Archivados</span>
+          <span
+            className={`text-xs ${
+              archivadosSinLeer > 0
+                ? "font-semibold text-(--color-acento-fuerte)"
+                : "text-(--color-apagado)"
+            }`}
+          >
+            {archivadosSinLeer > 0 ? archivadosSinLeer : archivados.length}
+          </span>
+        </button>
+      )}
 
       <div className="scroll-discreto flex-1 overflow-y-auto">
         {visibles.length === 0 ? (
           <p className="px-4 py-10 text-center text-sm text-(--color-tenue)">
-            {busqueda ? `Nada que coincida con «${busqueda}»` : "Sin conversaciones todavía."}
+            {busqueda
+              ? `Nada que coincida con «${busqueda}»`
+              : verArchivados
+                ? "No hay conversaciones archivadas."
+                : pestana === "no-leidos"
+                  ? "Todo leído."
+                  : pestana === "grupos"
+                    ? "No hay grupos."
+                    : pestana.startsWith("lista:")
+                      ? "Esta lista está vacía. Añade conversaciones desde su menú: clic derecho o los tres puntos."
+                      : "Sin conversaciones todavía."}
           </p>
         ) : (
           <ul>
@@ -484,6 +755,35 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         opciones={sobre ? acciones(sobre) : []}
         onCerrar={menu.cerrar}
       />
+      <Menu
+        punto={menuLista.punto}
+        opciones={sobreLista ? [
+          { texto: "Editar lista", onSelect: () => setEditandoLista(sobreLista) },
+          {
+            texto: "Borrar lista", peligro: true, Icono: IconoPapelera,
+            onSelect: () => borrarLista(sobreLista),
+          },
+        ] : []}
+        onCerrar={menuLista.cerrar}
+      />
+      {listando && (
+        <ListasDeChat
+          nombre={listando.displayName}
+          listas={listas}
+          actuales={listando.labelIds ?? []}
+          onGuardar={(ids) => fijarListas(listando, ids)}
+          onNueva={() => setEditandoLista("nueva")}
+          onCerrar={() => setListando(null)}
+        />
+      )}
+      {editandoLista && (
+        <EditarLista
+          lista={editandoLista === "nueva" ? null : editandoLista}
+          onGuardar={(datos) =>
+            guardarLista(editandoLista === "nueva" ? null : editandoLista, datos)}
+          onCerrar={() => setEditandoLista(null)}
+        />
+      )}
       {silenciando && (
         <Silenciar
           nombre={silenciando.displayName}
@@ -492,5 +792,62 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         />
       )}
     </aside>
+  );
+}
+
+/** Una pestaña de filtro. Con color, es una lista propia. */
+function Pastilla({
+  activa, onClick, onContextMenu, color, children,
+}: {
+  activa: boolean;
+  onClick: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  color?: string | undefined;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={activa}
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      className={`flex h-7 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors duration-150 ${
+        activa
+          ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+          : "bg-(--color-hundido) text-(--color-tenue) hover:text-(--color-texto)"
+      }`}
+    >
+      {color && <span aria-hidden className="size-2 rounded-full" style={{ background: color }} />}
+      <span className="max-w-32 truncate">{children}</span>
+    </button>
+  );
+}
+
+/** Una entrada a otra vista: estados o canales. */
+function Destino({
+  href, activo, Icono, texto, borde,
+}: {
+  href: string;
+  activo: boolean;
+  Icono: (p: { className?: string }) => React.ReactElement;
+  texto: string;
+  borde?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      aria-current={activo ? "page" : undefined}
+      className={`flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-colors duration-150 ${
+        borde ? "border-l border-(--color-borde)" : ""
+      } ${
+        activo
+          ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+          : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+      }`}
+    >
+      <Icono className="size-4.5" />
+      {texto}
+    </Link>
   );
 }

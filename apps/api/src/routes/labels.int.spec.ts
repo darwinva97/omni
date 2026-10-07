@@ -168,6 +168,75 @@ run("etiquetas", () => {
     expect(res.status).toBe(403);
   });
 
+  it("cada conversación trae sus listas con ella", async () => {
+    /*
+     * Es lo que permite filtrar por pestaña en el panel sin una petición por
+     * pestaña: la lista de chats ya dice en qué listas está cada uno.
+     */
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, last_message_at)
+      VALUES ('c-lbl-1', ${LINE}, ${CHAT}, 'pn', now())
+      ON CONFLICT DO NOTHING`;
+
+    const { data } = await j<{ data: { address: string; labelIds: string[] }[] }>(
+      await llamar(`/v1/lines/${LINE}/chats`));
+    expect(data.find((c) => c.address === CHAT)?.labelIds).toEqual([idUrgente]);
+
+    const { data: uno } = await j<{ data: { labelIds: string[] } }>(
+      await llamar(`/v1/lines/${LINE}/chats/${enc(CHAT)}`));
+    expect(uno.labelIds).toEqual([idUrgente]);
+  });
+
+  it("renombrar una lista no la quita de sus conversaciones", async () => {
+    const res = await llamar(`/v1/lines/${LINE}/labels/${idUrgente}`, {
+      method: "PATCH", body: JSON.stringify({ name: "muy urgente", color: "violeta" }),
+    });
+    expect(res.status).toBe(200);
+    const { data } = await j<{ data: { name: string; color: string; usos: number } }>(res);
+    expect(data.name).toBe("muy urgente");
+    expect(data.color).toBe("violeta");
+    // Cambia el nombre, no la etiqueta: sigue puesta donde estaba.
+    expect(data.usos).toBe(1);
+  });
+
+  it("solo el color: el nombre se queda como estaba", async () => {
+    const { data } = await j<{ data: { name: string; color: string } }>(
+      await llamar(`/v1/lines/${LINE}/labels/${idUrgente}`, {
+        method: "PATCH", body: JSON.stringify({ color: "azul" }),
+      }));
+    expect(data.name).toBe("muy urgente");
+    expect(data.color).toBe("azul");
+  });
+
+  it("no deja renombrar a un nombre que ya tiene otra", async () => {
+    // Dos pestañas con el mismo nombre serían indistinguibles.
+    const res = await llamar(`/v1/lines/${LINE}/labels/${idUrgente}`, {
+      method: "PATCH", body: JSON.stringify({ name: "pendiente" }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("un cambio vacío se rechaza, no se da por bueno", async () => {
+    const res = await llamar(`/v1/lines/${LINE}/labels/${idUrgente}`, {
+      method: "PATCH", body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("no se renombra la lista de otra línea por su identificador", async () => {
+    const res = await llamar(`/v1/lines/${LINE}/labels/${idOtraLinea}`, {
+      method: "PATCH", body: JSON.stringify({ name: "colada" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("una clave acotada no renombra listas", async () => {
+    const res = await llamar(`/v1/lines/${LINE}/labels/${idUrgente}`, {
+      method: "PATCH", body: JSON.stringify({ name: "mía" }),
+    }, acotada);
+    expect(res.status).toBe(403);
+  });
+
   it("borrar una etiqueta la quita de donde estuviera", async () => {
     const res = await llamar(`/v1/lines/${LINE}/labels/${idUrgente}`, { method: "DELETE" });
     expect(res.status).toBe(200);

@@ -42,7 +42,8 @@ export function Avatar({
 
   const letras = iniciales(nombre);
   const tono = tonoDe(direccion);
-  const Icono = kind === "group" ? IconoGrupo : kind === "broadcast" ? IconoCanal : IconoPersona;
+  const Icono = kind === "group" ? IconoGrupo
+    : kind === "broadcast" || kind === "newsletter" ? IconoCanal : IconoPersona;
 
   return (
     <span

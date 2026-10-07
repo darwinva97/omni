@@ -873,7 +873,21 @@ run("reintento de envíos", () => {
       method: "POST",
       body: JSON.stringify({ to: CHAT, text: "falló", clientMessageId: "fallido-1" }),
     });
-    await new Promise((r) => setTimeout(r, 400));
+    /*
+     * Se espera a que el envío TERMINE, no un tiempo fijo.
+     *
+     * Con 400 ms a ojo, en una máquina cargada el acuse del sandbox llegaba
+     * después de marcarlo como fallido y lo pisaba: la prueba fallaba una de
+     * cada pocas veces sin que el código tuviera nada mal.
+     */
+    const limite = Date.now() + 6000;
+    for (;;) {
+      const [f] = await dbh.sql<{ state: string }[]>`
+        SELECT state FROM message WHERE line_id = ${LINE} AND client_message_id = 'fallido-1'`;
+      if (f?.state === "read") break;
+      if (Date.now() > limite) throw new Error(`el envío no terminó (${f?.state ?? "sin fila"})`);
+      await new Promise((r) => setTimeout(r, 60));
+    }
     await dbh.sql`
       UPDATE message SET state = 'failed', failure_reason = 'prueba'
       WHERE line_id = ${LINE} AND client_message_id = 'fallido-1'`;

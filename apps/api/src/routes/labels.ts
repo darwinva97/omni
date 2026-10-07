@@ -86,6 +86,65 @@ export function registerLabelRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
 
   app.openapi(
     createRoute({
+      method: "patch", path: "/v1/lines/{lineId}/labels/{labelId}", tags: ["etiquetas"],
+      summary: "Renombrar una etiqueta o cambiar su color",
+      description:
+        "Lo que no venga se queda como estaba. Las conversaciones que la llevan " +
+        "siguen llevándola: cambia el nombre, no la etiqueta.",
+      request: {
+        params: z.object({ lineId: z.string(), labelId: z.string() }),
+        ...body(z.object({
+          name: z.string().min(1).max(60).optional(),
+          color: z.enum(COLORES).optional(),
+        })),
+      },
+      responses: { 200: json(z.object({ data: LabelSchema }), "cambiada"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, labelId } = c.req.valid("param");
+      const { name, color } = c.req.valid("json");
+      await authorize(c.get("principal"), routeOf("label.manage"), { lineId });
+
+      const cambios = {
+        ...(name !== undefined ? { name } : {}),
+        ...(color !== undefined ? { color } : {}),
+      };
+      if (Object.keys(cambios).length === 0) {
+        throw new OmniError("validation_failed", "no hay nada que cambiar: manda `name` o `color`");
+      }
+
+      let filas;
+      try {
+        filas = await db.update(labelTable).set(cambios)
+          .where(and(eq(labelTable.id, labelId), eq(labelTable.lineId, lineId)))
+          .returning();
+      } catch (e) {
+        // El índice único por nombre: dos etiquetas iguales serían
+        // indistinguibles en las pestañas del panel.
+        // Drizzle envuelve el error del driver: el código de Postgres viene en
+        // `cause`, y mirando solo arriba esto era un 500.
+        const codigo = (e as { code?: string }).code
+          ?? (e as { cause?: { code?: string } }).cause?.code;
+        if (codigo === "23505") {
+          throw new OmniError("conflict", `ya hay una etiqueta llamada "${name}" en esta línea`);
+        }
+        throw e;
+      }
+      const fila = filas[0];
+      if (!fila) throw new OmniError("not_found", "esa etiqueta no existe en esta línea");
+
+      const [uso] = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(labelAssignmentTable)
+        .where(eq(labelAssignmentTable.labelId, labelId));
+      return c.json({
+        data: { id: fila.id, name: fila.name, color: fila.color, usos: uso?.n ?? 0 },
+      }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "delete", path: "/v1/lines/{lineId}/labels/{labelId}", tags: ["etiquetas"],
       summary: "Borrar una etiqueta y quitarla de donde estuviera",
       request: { params: z.object({ lineId: z.string(), labelId: z.string() }) },
