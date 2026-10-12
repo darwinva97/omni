@@ -331,8 +331,16 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
           // `name` es el que TÚ le pusiste en tu agenda; `notify` el que esa
           // persona se puso a sí misma. Son dos datos distintos y los dos
           // valen: el tuyo manda al enseñarlo, el suyo es el recambio.
-          savedName: c.name ?? c.verifiedName ?? null,
-          pushName: c.notify ?? null,
+          savedName: c.name ?? null,
+          /*
+           * El nombre verificado de una empresa va con el que la persona se
+           * puso, no con el de agenda: lo eligió ella, no tú. Mezclado con
+           * el de agenda ganaba a todo, y una empresa que tienes guardada
+           * como «Banco» salía con su nombre comercial.
+           */
+          pushName: c.notify ?? c.verifiedName ?? null,
+          // El @usuario de WhatsApp, cuando lo tiene: tercero en el orden.
+          ...(c.username ? { username: c.username } : {}),
           ...(c.imgUrl !== undefined ? { imgUrl: c.imgUrl } : {}),
         });
       }
@@ -501,6 +509,12 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       ...(() => {
         const cita = extractReply(m);
         return cita ? { replyTo: cita } : {};
+      })(),
+      // A quién menciona. El texto solo trae `@número`; quién es cada número
+      // viene aquí, y sin guardarlo el nombre no se puede poner luego.
+      ...(() => {
+        const menciones = extractMentions(m);
+        return menciones.length > 0 ? { mentions: menciones } : {};
       })(),
       // Solo cuando el envío salió de aquí; de lo ajeno no hay ninguno.
       ...(clientMessageId ? { clientMessageId } : {}),
@@ -1368,6 +1382,26 @@ export function encuestaDe(m: WAMessage): {
      */
     multiple: (nodo.selectableOptionsCount ?? 0) !== 1,
   };
+}
+
+/**
+ * A quién menciona un mensaje.
+ *
+ * Como la cita, vive en el `contextInfo` del nodo del contenido y no arriba.
+ * Se devuelven las direcciones tal cual: el número que aparece en el texto es
+ * la parte de usuario de cada una, y emparejarlos es cosa de quien pinte.
+ */
+export function extractMentions(m: WAMessage): string[] {
+  const msg = contenido(m);
+  if (!msg) return [];
+  const tipo = getContentType(msg as never);
+  if (!tipo) return [];
+  const ctx = (msg[tipo] as { contextInfo?: { mentionedJid?: unknown } } | undefined)
+    ?.contextInfo;
+  const lista = ctx?.mentionedJid;
+  return Array.isArray(lista)
+    ? [...new Set(lista.filter((x): x is string => typeof x === "string" && x.includes("@")))]
+    : [];
 }
 
 /**

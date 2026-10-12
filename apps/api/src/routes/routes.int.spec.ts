@@ -1065,6 +1065,79 @@ run("organización y limpieza", () => {
     }
   }
 
+  it("una mención en un grupo sale con el nombre, en el hilo, en el adelanto y en vivo", async () => {
+    /*
+     * WhatsApp manda `@120238196658384` en el texto y la dirección aparte. El
+     * caso difícil, y el real: la persona mencionada por su LID está en la
+     * agenda bajo su TELÉFONO, y solo el mapa de identidad las une.
+     */
+    const grupo = "120363000000000777@g.us";
+    const quienEscribe = "220000000000001@lid";
+    const mencionada = "220000000000002@lid";
+    const suTelefono = "51911222333@s.whatsapp.net";
+    const desconocida = "220000000000003@lid";
+
+    await dbh.sql`
+      INSERT INTO identity_map (line_id, lid, phone)
+      VALUES (${LINE}, ${mencionada}, ${suTelefono})
+      ON CONFLICT DO NOTHING`;
+    // En la agenda, bajo el teléfono: «Raquel». Y el suyo propio, «Nadkym».
+    await container.runtime.publish("contact.updated", LINE, {
+      address: suTelefono, savedName: "Raquel", pushName: null,
+    });
+    await container.runtime.publish("contact.updated", LINE, {
+      address: mencionada, savedName: null, pushName: "Nadkym",
+    });
+    // Quien escribe solo tiene @usuario.
+    await container.runtime.publish("contact.updated", LINE, {
+      address: quienEscribe, savedName: null, pushName: null, username: "andre.v",
+    });
+
+    const vivos: Record<string, unknown>[] = [];
+    container.runtime.onEvent((e) => {
+      if (e.event === "message.received") vivos.push(e.data as Record<string, unknown>);
+    });
+
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "MENCION-1", remoteJid: grupo, participant: quienEscribe },
+      kind: "text", timestamp: Date.now(),
+      text: "@220000000000002 me yapeas? y @220000000000003 también, y en @2024 no",
+      mentions: [mencionada, desconocida],
+    });
+
+    type M = {
+      providerMessageId: string | null; senderName: string | null;
+      mentions: { token: string; name: string }[];
+    };
+    const m = await esperarValor(async () => {
+      const { data } = await j<{ data: M[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/messages?limit=5`));
+      return data.find((x) => x.providerMessageId === "MENCION-1") ?? null;
+    }, "el mensaje con mención se guardó");
+
+    // El de tu agenda gana al suyo, aunque esté guardado bajo la otra dirección.
+    expect(m.mentions.find((x) => x.token === "220000000000002")?.name).toBe("Raquel");
+    // Mencionada por WhatsApp pero sin nombre ni número: el id, SIN `+`.
+    expect(m.mentions.find((x) => x.token === "220000000000003")?.name)
+      .toBe("220000000000003");
+    // `@2024` no estaba entre las mencionadas y no es nadie: se queda como está.
+    expect(m.mentions.find((x) => x.token === "2024")).toBeUndefined();
+    // Quien escribe: sin agenda ni nombre propio, su @usuario.
+    expect(m.senderName).toBe("@andre.v");
+
+    // El adelanto de la lista, en texto plano, con los nombres puestos.
+    const { data: chat } = await j<{ data: { ultimo: string } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(grupo)}`));
+    expect(chat.ultimo).toContain("@Raquel me yapeas?");
+    expect(chat.ultimo).not.toContain("@220000000000002");
+
+    // Y en vivo: el evento sale con los nombres, el texto intacto.
+    const vivo = vivos.find((d) => (d["key"] as { id?: string })?.id === "MENCION-1");
+    expect(vivo?.["text"]).toContain("@220000000000002");
+    expect((vivo?.["mentionNames"] as Record<string, string>)["220000000000002"]).toBe("Raquel");
+    expect(vivo?.["senderName"]).toBe("@andre.v");
+  });
+
   it("los votos de una encuesta se cuentan, y no aparecen como mensajes", async () => {
     /*
      * El camino completo y con cifrado REAL, que es la única forma de probar

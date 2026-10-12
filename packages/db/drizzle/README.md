@@ -27,3 +27,6 @@ cada fichero se aplica **en una transacción**: o entra entero o no entra.
 | `0001_partitions.sql` | Funciones que garantizan particiones mensuales por delante. |
 | `0002_etiquetas_unicas.sql` | Nombre de etiqueta único por línea. |
 | `0003_plugins.sql` | Plugins instalados, su manifiesto validado y su configuración. |
+| `0004_crm.sql` | Conversaciones, embudos, automatizaciones, agentes y equipos. |
+| `0005_identidad_contacto.sql` | Foto de perfil de cada conversación, como clave del almacén. |
+| `0006_usuario_whatsapp.sql` | El @usuario de WhatsApp de cada contacto, para el orden de nombres. |

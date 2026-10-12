@@ -3,7 +3,7 @@
 import { useEffect, useOptimistic, useRef, useState, startTransition } from "react";
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { diaDeSeparador, hora, mismoDia } from "@/lib/formato";
+import { diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
@@ -268,6 +268,19 @@ export function Conversacion({
         state: key.fromMe ? "sent" : "delivered",
         timestamp: new Date(Number(data["timestamp"] ?? Date.now())).toISOString(),
         ...(cita ? { replyTo: cita } : {}),
+        /*
+         * Los nombres los pone el motor en el evento: quién escribe y a quién
+         * menciona. Sin ellos un mensaje recién llegado enseñaba el número
+         * hasta recargar, y el mismo mensaje cambiaba de aspecto al hacerlo.
+         */
+        ...(typeof data["senderName"] === "string"
+          ? { senderName: data["senderName"] as string } : {}),
+        ...(data["mentionNames"]
+          ? {
+              mentions: Object.entries(data["mentionNames"] as Record<string, string>)
+                .map(([token, name]) => ({ token, name })),
+            }
+          : {}),
       }];
     });
   }), [chat, suscribir]);
@@ -625,14 +638,14 @@ export function Conversacion({
                             venir con texto y perderlo es perder medio mensaje. */}
                         {m.body && (
                           <p className="px-0.5 text-sm wrap-anywhere whitespace-pre-wrap">
-                            {m.body}
+                            <Texto mensaje={m} />
                             <Firma mensaje={m} />
                           </p>
                         )}
                       </div>
                     ) : (
                       <p className="text-sm wrap-anywhere whitespace-pre-wrap">
-                        {m.body ?? (
+                        {m.body ? <Texto mensaje={m} /> : (
                           <em className="text-(--color-tenue)">
                             {ETIQUETA[m.kind] ?? m.kind}
                           </em>
@@ -1007,6 +1020,33 @@ function Cita({
         />
       )}
     </Caja>
+  );
+}
+
+/**
+ * El texto de un mensaje, con las menciones como en WhatsApp.
+ *
+ * WhatsApp manda `@120238196658384` y deja al cliente poner el nombre. Aquí
+ * se pinta `@Nadkym` en el color de acento y en negrita suave, que es como se
+ * distingue en el teléfono que eso es una persona y no texto. El número sigue
+ * en el `title`: es el detalle, no lo que se lee.
+ */
+function Texto({ mensaje }: { mensaje: Mensaje }) {
+  return (
+    <>
+      {trozosConMenciones(mensaje.body ?? "", mensaje.mentions).map((t, i) =>
+        "texto" in t
+          ? <span key={i}>{t.texto}</span>
+          : (
+            <span
+              key={i}
+              title={t.token}
+              className="font-medium text-(--color-acento-fuerte)"
+            >
+              @{t.mencion}
+            </span>
+          ))}
+    </>
   );
 }
 

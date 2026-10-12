@@ -1,6 +1,6 @@
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import {
-  OmniError, parseAddress, tryParseAddress, resolveContent, advanceState,
+  OmniError, parseAddress, tryParseAddress, resolveContent, advanceState, tokensDeMencion,
   type Address, type ChannelKind, type EventEnvelope, type LineId, type MessageKind,
   type SendMessageInput,
 } from "@omni/shared";
@@ -9,7 +9,7 @@ import { assertCapability, descifrarVoto, encuestaDe } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, pollTable, pollVoteTable, reactionTable } from "@omni/db";
+import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -756,18 +756,65 @@ export class EngineRuntime {
        * significaría una suscripción al bus por cada línea abierta: con
        * Postgres eso son otras tantas conexiones `LISTEN` a la base.
        */
-      await this.#deps.bus.publish(`org:${envelope.orgId}`, envelope);
-      await this.#deps.dispatcher.dispatch(envelope);
+      const publicado = await this.#conNombres(envelope);
+      await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado);
+      await this.#deps.dispatcher.dispatch(publicado);
 
       for (const oyente of this.#oyentes) {
         try {
-          await oyente(envelope);
+          await oyente(publicado);
         } catch {
           // Un oyente roto no puede impedir que lleguen los siguientes eventos.
         }
       }
     } catch {
       // Un fallo ingiriendo un evento no puede tumbar la conexión de la línea.
+    }
+  }
+
+  /**
+   * El evento de un mensaje, con los nombres ya puestos.
+   *
+   * Lo que sale por el socket y por los webhooks traía `@120238196658384` y la
+   * dirección de quien escribe, y cada consumidor tenía que resolver nombres
+   * por su cuenta —el panel no podía, porque no tiene la agenda—. Se resuelven
+   * aquí, que es donde está, con la misma regla que usa la API.
+   *
+   * Se AÑADE y no se sustituye: `text` y `key` llegan intactos. Quien quiera
+   * el dato crudo lo sigue teniendo, y quien quiera enseñarlo tiene
+   * `senderName` y `mentionNames` (número de la mención → nombre).
+   */
+  async #conNombres(envelope: EventEnvelope): Promise<EventEnvelope> {
+    if (envelope.event !== "message.received" && envelope.event !== "message.sent") {
+      return envelope;
+    }
+    try {
+      const d = envelope.data as {
+        key?: { remoteJid?: string; participant?: string; fromMe?: boolean };
+        text?: string | null; mentions?: string[];
+      };
+      const chat = d.key?.remoteJid;
+      const autor = d.key?.fromMe ? undefined : d.key?.participant ?? chat;
+      const tokens = tokensDeMencion(d.text);
+
+      const [nombres, menciones] = await Promise.all([
+        autor ? nombresDe(this.#deps.db, envelope.lineId, [autor]) : new Map<string, string>(),
+        nombresDeMenciones(this.#deps.db, envelope.lineId, tokens, d.mentions ?? []),
+      ]);
+
+      return {
+        ...envelope,
+        data: {
+          ...(envelope.data as object),
+          ...(autor && nombres.has(autor) ? { senderName: nombres.get(autor) } : {}),
+          ...(menciones.size > 0
+            ? { mentionNames: Object.fromEntries([...menciones].map(([t, m]) => [t, m.name])) }
+            : {}),
+        },
+      };
+    } catch {
+      // Sin nombres el evento sigue valiendo: se publica tal cual llegó.
+      return envelope;
     }
   }
 
@@ -1103,6 +1150,7 @@ export class EngineRuntime {
       pushName?: string | null;
       group?: string; subject?: string;
       address?: string; savedName?: string | null; imgUrl?: string | null;
+      username?: string | null;
     };
 
     try {
@@ -1119,7 +1167,8 @@ export class EngineRuntime {
         if (!quien) return;
         const guardado = d.savedName?.trim();
         const propio = d.pushName?.trim();
-        if (guardado || propio) {
+        const usuario = d.username?.trim().replace(/^@/, "");
+        if (guardado || propio || usuario) {
           await this.#deps.db
             .insert(contactTable)
             .values({
@@ -1127,6 +1176,7 @@ export class EngineRuntime {
               lineId: envelope.lineId, address: quien.value,
               ...(guardado ? { savedName: guardado } : {}),
               ...(propio ? { pushName: propio } : {}),
+              ...(usuario ? { username: usuario } : {}),
             })
             .onConflictDoUpdate({
               target: [contactTable.lineId, contactTable.address],
@@ -1135,6 +1185,7 @@ export class EngineRuntime {
                 // nombre propio no puede borrar el que tú guardaste.
                 ...(guardado ? { savedName: guardado } : {}),
                 ...(propio ? { pushName: propio } : {}),
+                ...(usuario ? { username: usuario } : {}),
                 updatedAt: new Date(),
               },
             });
@@ -1264,6 +1315,7 @@ export class EngineRuntime {
       kind?: MessageKind; text?: string | null; timestamp?: number;
       clientMessageId?: string;
       replyTo?: { id: string };
+      mentions?: string[];
       raw?: { message?: { protocolMessage?: Protocolo } };
     };
 
@@ -1333,6 +1385,9 @@ export class EngineRuntime {
          * cita se puede enseñar aunque el mensaje citado no esté en la base.
          */
         replyToId: d.replyTo?.id ?? null,
+        // A quién menciona: el texto solo trae `@número`, y sin esto no hay
+        // forma de saber luego de quién era cada número.
+        mentions: d.mentions?.length ? d.mentions : null,
         // Lo escrito desde el teléfono ya salió: nace enviado, no en cola.
         state: propio ? "sent" : "delivered",
         raw: envelope.data as never,

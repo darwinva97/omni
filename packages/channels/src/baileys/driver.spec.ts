@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
-  extractPollVote, extractReply, extractText, messageKind, toNewsletterMetadata,
+  extractMentions, extractPollVote, extractReply, extractText, messageKind,
+  toNewsletterMetadata,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
@@ -825,5 +826,44 @@ describe("metadatos de un canal", () => {
     expect(toNewsletterMetadata({
       id: "2@newsletter", thread_metadata: { name: "Como cadena" },
     } as never).name).toBe("Como cadena");
+  });
+});
+
+describe("a quién menciona un mensaje", () => {
+  const de = (message: unknown) => extractMentions({ message } as never);
+
+  it("lee las direcciones mencionadas del nodo del contenido", () => {
+    /*
+     * El texto solo trae `@120238196658384`; quién es ese número viene aquí.
+     * Nunca se había leído: 110 mensajes con menciones y ninguna guardada.
+     */
+    expect(de({
+      extendedTextMessage: {
+        text: "@120238196658384 porfa",
+        contextInfo: { mentionedJid: ["120238196658384@lid"] },
+      },
+    })).toEqual(["120238196658384@lid"]);
+  });
+
+  it("también en el pie de una foto y dentro de un envoltorio", () => {
+    expect(de({
+      ephemeralMessage: {
+        message: {
+          imageMessage: {
+            caption: "mira @51952631806",
+            contextInfo: { mentionedJid: ["51952631806@s.whatsapp.net"] },
+          },
+        },
+      },
+    })).toEqual(["51952631806@s.whatsapp.net"]);
+  });
+
+  it("sin menciones, lista vacía; y no repite ni acepta basura", () => {
+    expect(de({ conversation: "hola" })).toEqual([]);
+    expect(de({
+      extendedTextMessage: {
+        text: "x", contextInfo: { mentionedJid: ["1@lid", "1@lid", 42, "sin-arroba"] },
+      },
+    })).toEqual(["1@lid"]);
   });
 });

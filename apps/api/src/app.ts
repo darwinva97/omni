@@ -1,7 +1,10 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { OmniError, SendMessageInput, capabilities, parseAddress } from "@omni/shared";
+import {
+  OmniError, SendMessageInput, capabilities, conNombres, nombreVisible, parseAddress,
+  tokensDeMencion,
+} from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
@@ -74,6 +77,17 @@ const MensajeSchema = z.object({
    */
   deleted: z.boolean().default(false),
   /**
+   * A quién menciona, ya resuelto.
+   *
+   * El texto sigue trayendo `@120238196658384`, que es como lo manda WhatsApp.
+   * Cada entrada dice qué número del texto es (`token`), de quién es y qué
+   * nombre enseñar. Solo vienen las que se sabe a quién apuntan: un `@2024`
+   * que no es nadie se queda como está.
+   */
+  mentions: z.array(z.object({
+    token: z.string(), address: z.string(), name: z.string(),
+  })).default([]),
+  /**
    * A qué mensaje responde, ya resuelto.
    *
    * Viene resuelto y no como un identificador suelto a propósito: pintar la
@@ -125,6 +139,8 @@ const ChatSchema = z.object({
   savedName: z.string().nullable(),
   /** El que esa persona se puso a sí misma. Es el recambio. */
   pushName: z.string().nullable(),
+  /** Su @usuario de WhatsApp, sin la arroba. Tercero en el orden. */
+  username: z.string().nullable().default(null),
   /** Foto de perfil, con URL firmada. `null` si no tiene o no se puede ver. */
   avatarUrl: z.string().nullable(),
   /** El teléfono detrás de un LID, cuando lo sabemos. */
@@ -168,6 +184,7 @@ interface FilaDeChat {
   address: string; kind: string; title: string | null;
   lastMessageAt: Date | null; unreadCount: number;
   pushName: string | null; savedName: string | null; phone: string | null;
+  username?: string | null;
   avatarKey?: string | null; avatarUrl?: string | null;
   ultimo?: string | null; ultimoPropio?: boolean;
   muteUntil?: Date | null; archived?: boolean; pinned?: boolean;
@@ -194,10 +211,10 @@ async function ultimosMensajes(
    */
   const filas = await container.dbh.sql<
     { chat_id: string; kind: string; body: string | null; from_me: boolean;
-      retirado: boolean }[]
+      retirado: boolean; mentions: string[] | null }[]
   >`
     SELECT DISTINCT ON (chat_id)
-      chat_id, kind, body, from_me, deleted_at IS NOT NULL AS retirado
+      chat_id, kind, body, from_me, deleted_at IS NOT NULL AS retirado, mentions
     FROM message
     WHERE line_id = ${lineId} AND chat_id = ANY(${direcciones as string[]})
     ORDER BY chat_id, timestamp DESC`;
@@ -208,12 +225,22 @@ async function ultimosMensajes(
     poll: "Encuesta", template: "Plantilla", buttons: "Mensaje con botones",
     list: "Mensaje con lista", unknown: "Mensaje no compatible",
   };
+  // El adelanto es texto plano: las menciones van con el nombre puesto, que es
+  // lo que se ve en la lista de WhatsApp.
+  const menciones = await nombresDeMenciones(
+    container.dbh.db, lineId,
+    [...new Set(filas.flatMap((f) => (f.retirado ? [] : tokensDeMencion(f.body))))],
+    [...new Set(filas.flatMap((f) => f.mentions ?? []))],
+  );
+  const porToken = new Map([...menciones].map(([t, m]) => [t, m.name]));
+
   return new Map(filas.map((f) => [
     f.chat_id,
     {
       texto: f.retirado
         ? "Se eliminó este mensaje"
-        : f.body?.trim() || nombres[f.kind] || "Mensaje",
+        : (f.body?.trim() ? conNombres(f.body.trim(), porToken) : null)
+          || nombres[f.kind] || "Mensaje",
       propio: f.from_me,
     },
   ]));
@@ -273,6 +300,7 @@ async function citaDe(
   }>,
   nombres: Map<string, string>,
   chat: string,
+  menciones: ReadonlyMap<string, string>,
 ): Promise<{
   id: string; fromMe: boolean; senderName: string | null; kind: string;
   body: string | null; thumbUrl: string | null; disponible: boolean;
@@ -281,8 +309,10 @@ async function citaDe(
 
   const quien = (direccion: string | null | undefined): string | null => {
     if (!direccion || direccion === chat) return null;
-    return nombres.get(direccion) ?? `+${direccion.split("@")[0]}`;
+    return nombres.get(direccion) ?? direccion.split("@")[0]!;
   };
+  // La cita es texto plano: las menciones van ya con el nombre puesto.
+  const texto = (t: string | null): string | null => t ? conNombres(t, menciones) : t;
 
   const original = originales.get(replyToId);
   if (original) {
@@ -291,7 +321,7 @@ async function citaDe(
       fromMe: original.fromMe,
       senderName: original.fromMe ? null : quien(original.senderAddress),
       kind: original.kind,
-      body: original.body,
+      body: texto(original.body),
       thumbUrl: original.mediaKey
         ? await container.storage.signedUrl(original.mediaKey, MEDIA_URL_TTL)
         : null,
@@ -307,26 +337,25 @@ async function citaDe(
     fromMe: false,
     senderName: quien(copia.author),
     kind: copia.kind ?? "unknown",
-    body: copia.text ?? null,
+    body: texto(copia.text ?? null),
     thumbUrl: null,
     disponible: false,
   };
 }
 
 function presentarChat(r: FilaDeChat) {
-  const telefono = r.phone ? r.phone.split("@")[0]! : null;
-  const displayName =
-    // El título solo manda en lo que no es una persona: en un chat
-    // individual lo tiene que decidir la agenda, no un nombre heredado.
-    (r.kind === "group" || r.kind === "broadcast" || r.kind === "newsletter"
-      ? r.title?.trim() : null) ||
-    r.savedName?.trim() ||
-    r.pushName?.trim() ||
-    r.title?.trim() ||
-    (telefono ? `+${telefono}` : null) ||
-    (r.kind === "group" ? "Grupo sin nombre"
-      : r.kind === "newsletter" ? "Canal sin nombre"
-      : r.address.split("@")[0]!);
+  const esPersona = r.kind === "pn" || r.kind === "lid";
+  const displayName = esPersona
+    // Una persona, con la regla única: agenda, el suyo, @usuario, número, id.
+    ? nombreVisible({
+        address: r.address, savedName: r.savedName, pushName: r.pushName,
+        username: r.username, phone: r.phone,
+      })
+    // Lo que no es una persona se llama por su título, que no tiene recambio.
+    : r.title?.trim()
+      || (r.kind === "group" ? "Grupo sin nombre"
+        : r.kind === "newsletter" ? "Canal sin nombre"
+        : r.address.split("@")[0]!);
 
   return {
     address: r.address,
@@ -335,6 +364,7 @@ function presentarChat(r: FilaDeChat) {
     title: r.title,
     savedName: r.savedName,
     pushName: r.pushName,
+    username: r.username ?? null,
     avatarUrl: r.avatarUrl ?? null,
     phone: r.phone,
     lastMessageAt: r.lastMessageAt?.toISOString() ?? null,
@@ -678,6 +708,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           muteUntil: chatTable.muteUntil, archived: chatTable.archived,
           pinned: chatTable.pinned,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
+          username: contactTable.username,
           phone: identityMapTable.phone,
         })
         .from(chatTable)
@@ -809,33 +840,16 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .limit(500);
 
       const autores = [...new Set(filas.map((f) => f.senderAddress).filter(Boolean))] as string[];
-      const nombres = new Map<string, { nombre: string; avatarKey: string | null }>();
+      // Con la regla única: antes aquí iba `+` delante de cualquier dirección,
+      // también de un LID, que no es un teléfono.
+      const nombresDeAutores = await nombresDe(container.dbh.db, lineId, autores);
+      const avatares = new Map<string, string | null>();
       if (autores.length > 0) {
-        const datos = await container.dbh.db
-          .select({
-            address: contactTable.address,
-            pushName: contactTable.pushName,
-            savedName: contactTable.savedName,
-          })
-          .from(contactTable)
-          .where(and(eq(contactTable.lineId, lineId), inArray(contactTable.address, autores)));
-        for (const d of datos) {
-          nombres.set(d.address, {
-            nombre: d.savedName?.trim() || d.pushName?.trim() || `+${d.address.split("@")[0]}`,
-            avatarKey: null,
-          });
-        }
-        const avatares = await container.dbh.db
+        const filasAvatar = await container.dbh.db
           .select({ address: chatTable.address, avatarKey: chatTable.avatarKey })
           .from(chatTable)
           .where(and(eq(chatTable.lineId, lineId), inArray(chatTable.address, autores)));
-        for (const a of avatares) {
-          const previo = nombres.get(a.address);
-          nombres.set(a.address, {
-            nombre: previo?.nombre ?? `+${a.address.split("@")[0]}`,
-            avatarKey: a.avatarKey,
-          });
-        }
+        for (const a of filasAvatar) avatares.set(a.address, a.avatarKey);
       }
 
       const porAutor = new Map<string, typeof filas>();
@@ -846,8 +860,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
       const data = await Promise.all([...porAutor.entries()].map(async ([address, items]) => ({
         address,
-        displayName: nombres.get(address)?.nombre ?? `+${address.split("@")[0]}`,
-        avatarUrl: await urlDeAvatar(container, nombres.get(address)?.avatarKey),
+        displayName: nombresDeAutores.get(address) ?? address.split("@")[0]!,
+        avatarUrl: await urlDeAvatar(container, avatares.get(address)),
         ultimo: items[0]!.timestamp.toISOString(),
         items: await Promise.all(items.map(async (r) => ({
           id: r.id, providerMessageId: r.providerMessageId,
@@ -868,6 +882,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           // Un estado no responde a nada ni es una encuesta: no hay hilo.
           replyTo: null,
           poll: null,
+          mentions: [],
         }))),
       })));
 
@@ -902,6 +917,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           muteUntil: chatTable.muteUntil, archived: chatTable.archived,
           pinned: chatTable.pinned,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
+          username: contactTable.username,
           phone: identityMapTable.phone,
         })
         .from(chatTable)
@@ -1015,24 +1031,26 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         ...rows.map((r) => (r.raw as CrudoConCita | null)?.replyTo?.author)
           .filter((x): x is string => typeof x === "string"),
       ])];
-      const nombres = new Map<string, string>();
-      if (remitentes.length > 0) {
-        const contactos = await container.dbh.db
-          .select({
-            address: contactTable.address,
-            pushName: contactTable.pushName,
-            savedName: contactTable.savedName,
-          })
-          .from(contactTable)
-          .where(and(
-            eq(contactTable.lineId, lineId),
-            inArray(contactTable.address, remitentes),
-          ));
-        for (const c of contactos) {
-          const nombre = c.savedName?.trim() || c.pushName?.trim();
-          if (nombre) nombres.set(c.address, nombre);
-        }
-      }
+      const nombres = await nombresDe(container.dbh.db, lineId, remitentes);
+
+      /*
+       * Las menciones de toda la página, en una sola resolución.
+       *
+       * Las de los mensajes y las de sus citas: una cita también puede decir
+       * «@120238196658384», y enseñarla así después de haber arreglado la
+       * burbuja sería arreglar la mitad.
+       */
+      const textos = [
+        ...rows.map((r) => r.body),
+        ...[...originales.values()].map((o) => o.body),
+        ...rows.map((r) => (r.raw as CrudoConCita | null)?.replyTo?.text ?? null),
+      ];
+      const menciones = await nombresDeMenciones(
+        container.dbh.db, lineId,
+        [...new Set(textos.flatMap((t) => tokensDeMencion(t)))],
+        [...new Set(rows.flatMap((r) => r.mentions ?? []))],
+      );
+      const nombresDeTokens = new Map([...menciones].map(([t, m]) => [t, m.name]));
 
       /*
        * Las URLs se firman aquí, no se guardan: caducan, y una URL caducada
@@ -1129,8 +1147,11 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
         senderAddress: r.senderAddress,
         senderName: r.senderAddress
-          ? nombres.get(r.senderAddress) ?? `+${r.senderAddress.split("@")[0]}`
+          ? nombres.get(r.senderAddress) ?? r.senderAddress.split("@")[0]!
           : null,
+        mentions: tokensDeMencion(r.body)
+          .filter((t) => menciones.has(t))
+          .map((t) => ({ token: t, ...menciones.get(t)! })),
         kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
         media: r.mediaKey
           ? {
@@ -1149,7 +1170,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
         deleted: r.deletedAt !== null,
         replyTo: await citaDe(container, r.replyToId, r.raw as CrudoConCita | null,
-          originales, nombres, chat.value),
+          originales, nombres, chat.value, nombresDeTokens),
         poll: r.providerMessageId ? encuestas.get(r.providerMessageId) ?? null : null,
       })));
 

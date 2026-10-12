@@ -9,7 +9,7 @@
 import { createDatabase } from "@omni/db";
 import {
   messageKind, extractText, esVacio, extractReply, extractPollVote, encuestaDe,
-  descifrarVoto,
+  descifrarVoto, extractMentions,
 } from "@omni/channels";
 
 const { sql, close } = createDatabase(process.argv[2]!);
@@ -157,6 +157,27 @@ for (const f of votosGuardados) {
   votos++;
 }
 
+/*
+ * Cuarta pasada: a quién menciona cada mensaje.
+ *
+ * Como la cita, estuvo siempre en el nodo guardado y no lo leía nadie. Solo
+ * ESCRIBE una columna vacía: no borra ni cambia nada que ya estuviera.
+ */
+const sinMenciones = await sql`
+  SELECT id, timestamp, raw FROM message
+  WHERE mentions IS NULL AND raw IS NOT NULL AND body ~ '@[0-9]{5,}'`;
+let menciones = 0;
+for (const f of sinMenciones) {
+  const envelope = (f.raw as { raw?: unknown })?.raw;
+  if (!envelope) continue;
+  const lista = extractMentions(envelope as never);
+  if (lista.length === 0) continue;
+  await sql`
+    UPDATE message SET mentions = ${JSON.stringify(lista)}::jsonb
+    WHERE id = ${f.id} AND timestamp = ${f.timestamp} AND mentions IS NULL`;
+  menciones++;
+}
+
 type Proto = { key?: { id?: string }; type?: number | string };
 
 console.log({
@@ -167,5 +188,6 @@ console.log({
   // Votos cuya encuesta no está aquí: se quedan como estaban, a la vista, en
   // vez de desaparecer. Lo que no se sabe leer no se tira.
   ilegiblesConservados: ilegibles,
+  menciones, revisadosParaMencion: sinMenciones.length,
 });
 await close();

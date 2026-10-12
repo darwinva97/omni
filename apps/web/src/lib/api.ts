@@ -69,6 +69,8 @@ export interface Chat {
   savedName: string | null;
   /** El que esa persona se puso a sí misma. */
   pushName: string | null;
+  /** Su @usuario de WhatsApp, sin la arroba. */
+  username?: string | null;
   /** Foto de perfil, ya firmada. */
   avatarUrl: string | null;
   /** El teléfono detrás de un LID, cuando se sabe. */
@@ -126,6 +128,14 @@ export interface Mensaje {
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
   /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */
   deleted?: boolean;
+  /**
+   * A quién menciona, ya resuelto por el servidor.
+   *
+   * El texto trae `@120238196658384`; cada entrada dice qué número es y qué
+   * nombre enseñar en su lugar. El ORDEN de nombres —agenda, el suyo,
+   * @usuario, número, id— lo decide el servidor, no el panel.
+   */
+  mentions?: { token: string; address?: string; name: string }[];
   /** A qué mensaje responde, ya resuelto por la API. */
   replyTo?: Cita | null;
   /** La encuesta, con sus votos ya contados, cuando el mensaje es una. */

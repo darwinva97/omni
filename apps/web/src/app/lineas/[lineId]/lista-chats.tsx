@@ -5,7 +5,7 @@ import { useParams, usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { Chat, Linea, Lista } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { cuando, resumen } from "@/lib/formato";
+import { conNombres, cuando, resumen } from "@/lib/formato";
 import { Avatar } from "@/componentes/piezas";
 import {
   IconoArchivar, IconoBuscar, IconoCampana, IconoCampanaTachada, IconoCanal,
@@ -269,7 +269,12 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     if (!direccion) return;
 
     const cuandoISO = new Date(Number(data["timestamp"] ?? Date.now())).toISOString();
-    const texto = (data["text"] as string | null) ?? null;
+    // Las menciones con el nombre puesto: lo trae el evento, resuelto por el
+    // motor, y es lo que se ve en el adelanto y en el aviso.
+    const crudo = (data["text"] as string | null) ?? null;
+    const texto = crudo
+      ? conNombres(crudo, data["mentionNames"] as Record<string, string> | undefined)
+      : null;
     const tipo = String(data["kind"] ?? "text");
 
     /*

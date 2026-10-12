@@ -72,6 +72,8 @@ export const contactTable = pgTable(
     address: text("address").notNull(),
     pushName: text("push_name"),
     savedName: text("saved_name"),
+    /** El @usuario de WhatsApp, sin la arroba. Tercero en el orden de nombres. */
+    username: text("username"),
     blocked: boolean("blocked").notNull().default(false),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },

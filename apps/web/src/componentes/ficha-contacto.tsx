@@ -66,7 +66,8 @@ export function FichaContacto({
 
       <dl className="divide-y divide-(--color-borde-sutil) px-4 text-sm">
         {/*
-          Los dos nombres, cada uno dicho por lo que es.
+          Los nombres, cada uno dicho por lo que es, en el mismo orden en
+          que se eligen para enseñar: agenda, el suyo, su @usuario.
           Saber que alguien está guardado como «Juan» y se llama a sí mismo
           «Juan Pérez — Ventas» es información útil, no ruido: explica por qué
           la lista dice una cosa y el teléfono de otro dice otra.
@@ -81,6 +82,12 @@ export function FichaContacto({
           <div className="py-3">
             <dt className="text-xs text-(--color-tenue)">Se llama a sí mismo</dt>
             <dd className="mt-0.5">{info.pushName}</dd>
+          </div>
+        )}
+        {info.username && (
+          <div className="py-3">
+            <dt className="text-xs text-(--color-tenue)">Usuario de WhatsApp</dt>
+            <dd className="mt-0.5">@{info.username}</dd>
           </div>
         )}
         {info.phone && (

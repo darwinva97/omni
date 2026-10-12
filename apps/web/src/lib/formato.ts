@@ -104,3 +104,47 @@ export function tamano(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/**
+ * Una mención escrita en un texto: `@` y la parte de usuario de la dirección.
+ *
+ * Es como la manda WhatsApp. El nombre lo resuelve el servidor —que tiene la
+ * agenda— y el panel solo lo pone en su sitio.
+ */
+export const PATRON_MENCION = /@(\d{5,20})\b/g;
+
+/** Para texto plano: el adelanto de la lista, un aviso del sistema. */
+export function conNombres(
+  texto: string, nombres: Readonly<Record<string, string>> | undefined,
+): string {
+  if (!nombres) return texto;
+  return texto.replace(PATRON_MENCION, (todo, token: string) => {
+    const nombre = nombres[token];
+    return nombre ? `@${nombre.replace(/^@/, "")}` : todo;
+  });
+}
+
+/**
+ * Parte un texto en trozos: texto suelto y menciones resueltas.
+ *
+ * Para pintar la mención con su propio estilo dentro de una burbuja. Una
+ * mención que no se sabe a quién apunta se queda como texto, con su número:
+ * inventarle un nombre sería peor.
+ */
+export function trozosConMenciones(
+  texto: string, menciones: readonly { token: string; name: string }[] | undefined,
+): ({ texto: string } | { mencion: string; token: string })[] {
+  if (!menciones?.length) return [{ texto }];
+  const porToken = new Map(menciones.map((m) => [m.token, m.name]));
+  const trozos: ({ texto: string } | { mencion: string; token: string })[] = [];
+  let desde = 0;
+  for (const m of texto.matchAll(PATRON_MENCION)) {
+    const nombre = porToken.get(m[1]!);
+    if (!nombre) continue;
+    if (m.index! > desde) trozos.push({ texto: texto.slice(desde, m.index) });
+    trozos.push({ mencion: nombre.replace(/^@/, ""), token: m[1]! });
+    desde = m.index! + m[0].length;
+  }
+  if (desde < texto.length) trozos.push({ texto: texto.slice(desde) });
+  return trozos;
+}

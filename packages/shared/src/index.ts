@@ -5,3 +5,4 @@ export * from "./errors.js";
 export * from "./events.js";
 export * from "./messages.js";
 export * from "./automation.js";
+export * from "./nombres.js";
