@@ -627,9 +627,26 @@ export class EngineRuntime {
     };
     const receipt = await driver.send(cmd);
 
+    /*
+     * El estado solo AVANZA desde la cola; nunca pisa uno posterior.
+     *
+     * Los acuses de entregado y leído pueden llegar —y llegan— antes de que
+     * `send` vuelva y se escriba esto. Escribir «enviado» sin mirar hacía
+     * retroceder un mensaje leído a enviado: el doble check azul volvía a ser
+     * un check gris, y se quedaba así. Lo mismo con uno marcado como fallido
+     * mientras tanto. La prueba de reintento lo pillaba de vez en cuando, y la
+     * primera vez se tapó esperando más en vez de buscar esto.
+     *
+     * El identificador del proveedor se guarda siempre: sin él, los acuses
+     * que lleguen después no encuentran el mensaje.
+     */
     await this.#deps.db
       .update(messageTable)
-      .set({ providerMessageId: receipt.providerMessageId, state: receipt.state })
+      .set({
+        providerMessageId: receipt.providerMessageId,
+        state: sql`CASE WHEN ${messageTable.state} = 'queued'
+                        THEN ${receipt.state} ELSE ${messageTable.state} END`,
+      })
       .where(and(eq(messageTable.lineId, job.lineId), eq(messageTable.clientMessageId, job.clientMessageId)));
   }
 
@@ -842,8 +859,8 @@ export class EngineRuntime {
         remoteJid?: string; remoteJidAlt?: string;
         participant?: string; participantAlt?: string;
       };
+      address?: string; lid?: string; phone?: string;
     };
-    if (!d.key) return;
 
     const pares: { lid: string; phone: string }[] = [];
     const anota = (lid?: string, phone?: string): void => {
@@ -854,8 +871,18 @@ export class EngineRuntime {
       // los dos campos con la misma forma, y guardar eso ensuciaría la tabla.
       if (a?.kind === "lid" && b?.kind === "pn") pares.push({ lid: a.value, phone: b.value });
     };
-    anota(d.key.remoteJid, d.key.remoteJidAlt);
-    anota(d.key.participant, d.key.participantAlt);
+    if (d.key) {
+      anota(d.key.remoteJid, d.key.remoteJidAlt);
+      anota(d.key.participant, d.key.participantAlt);
+    }
+    /*
+     * Y de la agenda. Un contacto puede traer sus dos direcciones, y es la
+     * única ocasión en que se aprenden las de quien no te ha escrito: sin
+     * esto, su chat por LID nunca encontraba el nombre que le pusiste.
+     */
+    if (envelope.event === "contact.updated") {
+      anota(d.lid ?? d.address, d.phone ?? d.address);
+    }
     if (pares.length === 0) return;
 
     await this.#deps.db

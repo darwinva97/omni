@@ -68,9 +68,22 @@ export async function fichasDe(
   for (const a of unicas) {
     const propia = porDireccion.get(a);
     const otra = gemela.has(a) ? porDireccion.get(gemela.get(a)!) : undefined;
-    // De cada dato, el primero que lo tenga: la ficha de la dirección
-    // mencionada manda, la de su gemela rellena huecos.
-    const savedName = propia?.savedName ?? otra?.savedName ?? null;
+    /*
+     * El nombre de agenda, del lado del TELÉFONO primero.
+     *
+     * Tu agenda guarda a la gente por su número. Lo que llega como «nombre»
+     * de un LID suele ser otra cosa: Baileys mete en el mismo campo el nombre
+     * con que WhatsApp titula esa conversación, que para un LID es el que la
+     * persona se puso. En los datos reales, 39 de 41 «nombres de agenda» de un
+     * LID eran idénticos al suyo propio, y uno de ellos tapaba a «Victor
+     * Sanchez» con «Victor Manuelle». Si los dos lados tienen uno, gana el del
+     * teléfono; si solo lo tiene el LID, vale ese.
+     */
+    const delTelefono = a.endsWith("@s.whatsapp.net") ? propia : otra;
+    const delLid = a.endsWith("@s.whatsapp.net") ? otra : propia;
+    const savedName = delTelefono?.savedName ?? delLid?.savedName ?? null;
+    // El resto, el primero que lo tenga: la ficha de la dirección pedida
+    // manda, la de su gemela rellena huecos.
     const pushName = propia?.pushName ?? otra?.pushName ?? null;
     const username = propia?.username ?? otra?.username ?? null;
     const phone = a.endsWith("@s.whatsapp.net") ? a : gemela.get(a) ?? null;

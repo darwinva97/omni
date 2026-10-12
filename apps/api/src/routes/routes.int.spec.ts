@@ -874,11 +874,12 @@ run("reintento de envíos", () => {
       body: JSON.stringify({ to: CHAT, text: "falló", clientMessageId: "fallido-1" }),
     });
     /*
-     * Se espera a que el envío TERMINE, no un tiempo fijo.
+     * Se espera a que el mensaje llegue a leído y se marca como fallido.
      *
-     * Con 400 ms a ojo, en una máquina cargada el acuse del sandbox llegaba
-     * después de marcarlo como fallido y lo pisaba: la prueba fallaba una de
-     * cada pocas veces sin que el código tuviera nada mal.
+     * Esta prueba fallaba de vez en cuando y la primera vez se achacó a la
+     * prueba. Era el motor: al terminar el envío escribía «enviado» encima de
+     * lo que hubiera, y pisaba tanto el leído como el fallido. Ver «un acuse
+     * que llega antes de que termine el envío no se pierde» en el motor.
      */
     const limite = Date.now() + 6000;
     for (;;) {
@@ -1136,6 +1137,89 @@ run("organización y limpieza", () => {
     expect(vivo?.["text"]).toContain("@220000000000002");
     expect((vivo?.["mentionNames"] as Record<string, string>)["220000000000002"]).toBe("Raquel");
     expect(vivo?.["senderName"]).toBe("@andre.v");
+  });
+
+  it("un chat por LID se llama como lo guardaste por su TELÉFONO", async () => {
+    /*
+     * El caso real: el chat estaba abierto con el LID, la ficha del LID solo
+     * tenía «Grecia» —el nombre que ella se puso— y tu agenda la guarda por
+     * su teléfono como «Amorcitoooo Bella 💞». La lista enseñaba «Grecia», y
+     * lo mismo pasaba en otras 25 conversaciones.
+     */
+    const lid = "156100000000001@lid";
+    const telefono = "51900999888@s.whatsapp.net";
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, last_message_at)
+      VALUES ('c-amor', ${LINE}, ${lid}, 'lid', now()) ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO contact (id, line_id, address, push_name)
+      VALUES ('ct-amor-lid', ${LINE}, ${lid}, 'Grecia') ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO contact (id, line_id, address, saved_name)
+      VALUES ('ct-amor-tel', ${LINE}, ${telefono}, 'Amorcitoooo Bella 💞')
+      ON CONFLICT DO NOTHING`;
+
+    // Hasta que se sepa que son la misma persona, no hay forma de unirlas:
+    // adivinarlo por los dígitos sería confundir a dos personas.
+    const antes = await j<{ data: { displayName: string } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(lid)}`));
+    expect(antes.data.displayName).toBe("Grecia");
+
+    // WhatsApp manda las dos direcciones al sincronizar la agenda.
+    await container.runtime.publish("contact.updated", LINE, {
+      address: telefono, lid, phone: telefono, savedName: "Amorcitoooo Bella 💞",
+    });
+
+    type C = { address: string; displayName: string; savedName: string | null;
+      pushName: string | null; phone: string | null };
+    const uno = await esperarValor(async () => {
+      const { data } = await j<{ data: C }>(await call(`/v1/lines/${LINE}/chats/${enc(lid)}`));
+      return data.displayName === "Grecia" ? null : data;
+    }, "el chat aprendió el nombre de agenda");
+    expect(uno.displayName).toBe("Amorcitoooo Bella 💞");
+    // Los dos nombres siguen disponibles para la ficha, y el teléfono también.
+    expect(uno.pushName).toBe("Grecia");
+    expect(uno.savedName).toBe("Amorcitoooo Bella 💞");
+    expect(uno.phone).toBe(telefono);
+
+    // Y en la LISTA, que es donde se vio.
+    const { data: lista } = await j<{ data: C[] }>(await call(`/v1/lines/${LINE}/chats`));
+    expect(lista.find((c) => c.address === lid)?.displayName).toBe("Amorcitoooo Bella 💞");
+  });
+
+  it("si los dos lados tienen nombre «de agenda», gana el del teléfono", async () => {
+    /*
+     * El caso de Victor. El LID traía «Victor Manuelle» como nombre de agenda
+     * —idéntico al que él se puso: Baileys mete ahí el título de la
+     * conversación— y el teléfono «Victor Sanchez», que es el tuyo. Ganaba el
+     * del LID porque era la dirección del chat.
+     */
+    const lid = "172000000000001@lid";
+    const telefono = "51900777666@s.whatsapp.net";
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, last_message_at)
+      VALUES ('c-victor', ${LINE}, ${lid}, 'lid', now()) ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO identity_map (line_id, lid, phone)
+      VALUES (${LINE}, ${lid}, ${telefono}) ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO contact (id, line_id, address, saved_name, push_name) VALUES
+        ('ct-victor-lid', ${LINE}, ${lid}, 'Victor Manuelle', 'Victor Manuelle'),
+        ('ct-victor-tel', ${LINE}, ${telefono}, 'Victor Sanchez', null)
+      ON CONFLICT DO NOTHING`;
+
+    const { data } = await j<{ data: { displayName: string; pushName: string | null } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(lid)}`));
+    expect(data.displayName).toBe("Victor Sanchez");
+    expect(data.pushName).toBe("Victor Manuelle");
+
+    // Y por el otro lado: un chat por TELÉFONO también se llama así.
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, last_message_at)
+      VALUES ('c-victor-tel', ${LINE}, ${telefono}, 'pn', now()) ON CONFLICT DO NOTHING`;
+    const { data: porTel } = await j<{ data: { displayName: string } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(telefono)}`));
+    expect(porTel.displayName).toBe("Victor Sanchez");
   });
 
   it("en un grupo cada mensaje trae la foto de quien lo escribió", async () => {

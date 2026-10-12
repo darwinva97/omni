@@ -341,6 +341,15 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
           pushName: c.notify ?? c.verifiedName ?? null,
           // El @usuario de WhatsApp, cuando lo tiene: tercero en el orden.
           ...(c.username ? { username: c.username } : {}),
+          /*
+           * Sus DOS direcciones, cuando vienen.
+           *
+           * La agenda guarda a la gente por su teléfono y los chats se abren
+           * con su LID: sin saber que son la misma persona, el nombre que le
+           * pusiste no llega a la conversación. Esto se tiraba.
+           */
+          ...(c.lid ? { lid: c.lid } : {}),
+          ...(c.phoneNumber ? { phone: c.phoneNumber } : {}),
           ...(c.imgUrl !== undefined ? { imgUrl: c.imgUrl } : {}),
         });
       }
@@ -356,8 +365,27 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * escuchar esto, una cuenta puede tener ciento sesenta contactos conocidos
      * y ni un solo nombre de los que su dueño les puso.
      */
-    ev.on("messaging-history.set", ({ contacts }) => {
+    /*
+     * Las parejas LID ↔ teléfono que WhatsApp va revelando.
+     *
+     * Es lo que une un chat abierto por LID con el nombre que le pusiste por
+     * su número. Baileys las anuncia en dos sitios y no las escuchaba nadie.
+     * Salen como `contact.updated` sin nombres: el motor aprende la pareja y
+     * no toca ninguna ficha.
+     */
+    const anotarParejas = (parejas: readonly { lid?: string; pn?: string }[]): void => {
+      for (const p of parejas) {
+        if (!p.lid || !p.pn) continue;
+        void this.emit("contact.updated", line.orgId, lineId, {
+          address: p.pn, lid: p.lid, phone: p.pn,
+        });
+      }
+    };
+    ev.on("lid-mapping.update", (pareja) => anotarParejas([pareja]));
+
+    ev.on("messaging-history.set", ({ contacts, lidPnMappings }) => {
       if (contacts?.length) anotarContactos(contacts);
+      if (lidPnMappings?.length) anotarParejas(lidPnMappings);
     });
 
     ev.on("chats.update", (chats) => {

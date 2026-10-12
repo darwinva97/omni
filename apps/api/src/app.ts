@@ -4,7 +4,7 @@ import {
   tokensDeMencion,
 } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
@@ -251,6 +251,32 @@ async function ultimosMensajes(
       propio: f.from_me,
     },
   ]));
+}
+
+/**
+ * Los nombres de una persona, buscados por SUS DOS direcciones.
+ *
+ * La consulta de chats une la ficha de contacto por la dirección del chat, y
+ * eso no basta: con el direccionamiento por LID, el chat está abierto con el
+ * LID y tu agenda guarda a la persona por su TELÉFONO. Así «Amorcitoooo Bella»
+ * salía como «Grecia» —el nombre que ella se puso—, y lo mismo en otras 25
+ * conversaciones. `fichasDe` mira las dos y es la misma regla que ya usaban
+ * los grupos y las menciones.
+ */
+async function conFichas<T extends FilaDeChat>(
+  container: Container, lineId: string, filas: readonly T[],
+): Promise<T[]> {
+  const personas = filas.filter((r) => r.kind === "pn" || r.kind === "lid").map((r) => r.address);
+  const fichas = await fichasDe(container.dbh.db, lineId, personas);
+  return filas.map((r) => {
+    const f = fichas.get(r.address);
+    if (!f) return r;
+    return {
+      ...r,
+      savedName: f.savedName, pushName: f.pushName, username: f.username,
+      phone: r.phone ?? f.phone,
+    };
+  });
 }
 
 /** Las listas de Omni de cada conversación, en UNA consulta. */
@@ -741,7 +767,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
       const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
       const listas = await listasDe(container, lineId, visible.map((r) => r.address));
-      const data = await Promise.all(visible.map(async (r) => presentarChat({
+      const conNombre = await conFichas(container, lineId, visible);
+      const data = await Promise.all(conNombre.map(async (r) => presentarChat({
         ...r,
         avatarUrl: await urlDeAvatar(container, r.avatarKey),
         ultimo: ultimos.get(r.address)?.texto ?? null,
@@ -941,12 +968,13 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .limit(1);
 
       if (!rows[0]) throw new OmniError("not_found", "esa conversación no existe en esta línea");
+      const [fila] = await conFichas(container, lineId, [rows[0]]);
       const ultimo = (await ultimosMensajes(container, lineId, [chat.value])).get(chat.value);
       const listas = await listasDe(container, lineId, [chat.value]);
       return c.json({
         data: presentarChat({
-          ...rows[0],
-          avatarUrl: await urlDeAvatar(container, rows[0].avatarKey),
+          ...fila!,
+          avatarUrl: await urlDeAvatar(container, fila!.avatarKey),
           ultimo: ultimo?.texto ?? null,
           ultimoPropio: ultimo?.propio ?? false,
           labelIds: listas.get(chat.value) ?? [],

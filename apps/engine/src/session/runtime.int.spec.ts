@@ -388,6 +388,42 @@ run("runtime del motor, de punta a punta", () => {
     expect(await estadoDe(accepted.clientMessageId)).toBe("read");
   });
 
+  it("un acuse que llega antes de que termine el envío no se pierde", async () => {
+    /*
+     * En WhatsApp el «entregado» y el «leído» pueden llegar antes de que
+     * `send` vuelva. El motor escribía entonces «enviado» encima, y un mensaje
+     * leído retrocedía a un check gris para siempre. Aquí se fuerza ese orden:
+     * el acuse se ingiere DENTRO de `send`, antes de devolver el recibo.
+     */
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+
+    const original = H.driver.send.bind(H.driver);
+    H.driver.send = async (cmd) => {
+      const recibo = await original(cmd);
+      await H.runtime.publish("message.receipt", LINE, {
+        key: { id: recibo.providerMessageId }, state: "read",
+      });
+      // El recibo dice «enviado», que es lo que devuelve WhatsApp al aceptar.
+      return { ...recibo, state: "sent" };
+    };
+    try {
+      const enviado = await H.runtime.send(LINE, {
+        to: "51988777666", text: "rápido", clientMessageId: "acuse-temprano",
+      });
+      await until(async () => {
+        const [f] = await h.db.select({ p: messageTable.providerMessageId }).from(messageTable)
+          .where(and(eq(messageTable.lineId, LINE),
+            eq(messageTable.clientMessageId, enviado.clientMessageId)));
+        return f?.p ? true : null;
+      }, "el envío terminó");
+      await settle(200);
+      expect(await estadoDe("acuse-temprano")).toBe("read");
+    } finally {
+      H.driver.send = original;
+    }
+  });
+
   it("enviar por una línea sin conectar no se acepta en silencio", async () => {
     await expect(H.runtime.send(LINE, { to: "51988777666", text: "x" })).resolves.toBeDefined();
     await settle(400);

@@ -67,10 +67,20 @@ export const mismoDia = (a: string, b: string): boolean =>
 export function iniciales(nombre: string): string {
   const limpio = nombre.replace(/^\+/, "").trim();
   if (/^[\d\s()-]+$/.test(limpio)) return "";
-  const palabras = limpio.split(/\s+/).filter(Boolean);
+  /*
+   * Solo letras y cifras cuentan como inicial.
+   *
+   * Antes se cogía la primera unidad de la cadena, y un emoji son dos: de
+   * «🟣 SETIEMBRE 5» salía media mitad del emoji —«�»— y un 5. Se quitan los
+   * símbolos y se trabaja por caracteres enteros, no por unidades.
+   */
+  const palabras = limpio
+    .split(/\s+/)
+    .map((p) => [...p].filter((c) => /[\p{L}\p{N}]/u.test(c)).join(""))
+    .filter(Boolean);
   if (palabras.length === 0) return "";
-  if (palabras.length === 1) return palabras[0]!.slice(0, 2).toUpperCase();
-  return (palabras[0]![0]! + palabras[1]![0]!).toUpperCase();
+  if (palabras.length === 1) return [...palabras[0]!].slice(0, 2).join("").toUpperCase();
+  return ([...palabras[0]!][0]! + [...palabras[1]!][0]!).toUpperCase();
 }
 
 /**
