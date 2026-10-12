@@ -74,6 +74,12 @@ export const contactTable = pgTable(
     savedName: text("saved_name"),
     /** El @usuario de WhatsApp, sin la arroba. Tercero en el orden de nombres. */
     username: text("username"),
+    /**
+     * Su foto, como clave del almacén. Para los que escriben en un grupo y no
+     * tienen conversación propia, que son los que no tienen fila en `chat`.
+     */
+    avatarKey: text("avatar_key"),
+    avatarSyncedAt: timestamp("avatar_synced_at", { withTimezone: true }),
     blocked: boolean("blocked").notNull().default(false),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },

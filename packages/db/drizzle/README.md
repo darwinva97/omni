@@ -30,3 +30,4 @@ cada fichero se aplica **en una transacción**: o entra entero o no entra.
 | `0004_crm.sql` | Conversaciones, embudos, automatizaciones, agentes y equipos. |
 | `0005_identidad_contacto.sql` | Foto de perfil de cada conversación, como clave del almacén. |
 | `0006_usuario_whatsapp.sql` | El @usuario de WhatsApp de cada contacto, para el orden de nombres. |
+| `0007_foto_de_contacto.sql` | Foto de perfil también en el contacto, para quien escribe en un grupo. |

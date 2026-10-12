@@ -4,7 +4,7 @@ import {
   tokensDeMencion,
 } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
@@ -51,6 +51,13 @@ const MensajeSchema = z.object({
    */
   senderAddress: z.string().nullable(),
   senderName: z.string().nullable(),
+  /**
+   * La foto de quien lo escribió, en un grupo.
+   *
+   * Es la que va junto a la primera burbuja de cada tanda, como en WhatsApp.
+   * `null` si no tiene o no se pudo ver: entonces se pinta la inicial.
+   */
+  senderAvatarUrl: z.string().nullable().default(null),
   fromMe: z.boolean(),
   kind: z.string(),
   body: z.string().nullable(),
@@ -879,6 +886,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           mediaError: null,
           reacciones: [],
           deleted: false,
+          senderAvatarUrl: null,
           // Un estado no responde a nada ni es una encuesta: no hay hilo.
           replyTo: null,
           poll: null,
@@ -1032,6 +1040,16 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           .filter((x): x is string => typeof x === "string"),
       ])];
       const nombres = await nombresDe(container.dbh.db, lineId, remitentes);
+      // Las fotos solo hacen falta en un grupo: en un chat de dos, la del otro
+      // ya está en la cabecera.
+      const fotos = chat.kind === "group"
+        ? await fotosDe(container.dbh.db, lineId, remitentes)
+        : new Map<string, string>();
+      // Firmadas una vez por persona, no una por burbuja.
+      const fotoFirmada = new Map<string, string>();
+      for (const [direccion, clave] of fotos) {
+        fotoFirmada.set(direccion, await container.storage.signedUrl(clave, MEDIA_URL_TTL));
+      }
 
       /*
        * Las menciones de toda la página, en una sola resolución.
@@ -1148,6 +1166,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         senderAddress: r.senderAddress,
         senderName: r.senderAddress
           ? nombres.get(r.senderAddress) ?? r.senderAddress.split("@")[0]!
+          : null,
+        senderAvatarUrl: r.senderAddress && !r.fromMe
+          ? fotoFirmada.get(r.senderAddress) ?? null
           : null,
         mentions: tokensDeMencion(r.body)
           .filter((t) => menciones.has(t))

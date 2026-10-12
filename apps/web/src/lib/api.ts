@@ -120,6 +120,8 @@ export interface Mensaje {
   /** Quién lo escribió. Solo se enseña en grupos: en un chat de dos sobra. */
   senderAddress?: string | null;
   senderName?: string | null;
+  /** La foto de quien lo escribió, en un grupo. */
+  senderAvatarUrl?: string | null;
   kind: string; body: string | null; state: string; timestamp: string;
   media?: Medio | null;
   /** Por qué no hay fichero, cuando debería haberlo. */

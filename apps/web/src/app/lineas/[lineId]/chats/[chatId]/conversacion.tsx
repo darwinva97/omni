@@ -8,6 +8,7 @@ import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
 import { Encuesta } from "@/componentes/encuesta";
+import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
@@ -275,6 +276,13 @@ export function Conversacion({
          */
         ...(typeof data["senderName"] === "string"
           ? { senderName: data["senderName"] as string } : {}),
+        ...(typeof data["senderAvatarUrl"] === "string"
+          ? { senderAvatarUrl: data["senderAvatarUrl"] as string } : {}),
+        // Quién escribe, para saber dónde empieza cada tanda en un grupo.
+        ...(key.fromMe ? {} : {
+          senderAddress: (data["key"] as { participant?: string })?.participant
+            ?? key.remoteJid ?? null,
+        }),
         ...(data["mentionNames"]
           ? {
               mentions: Object.entries(data["mentionNames"] as Record<string, string>)
@@ -522,13 +530,20 @@ export function Conversacion({
         <ol className="scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
           {conPendientes.map((m, i) => {
             const anterior = conPendientes[i - 1];
-            const siguiente = conPendientes[i + 1];
             const nuevoDia = !anterior || !mismoDia(anterior.timestamp, m.timestamp);
-            // Agrupar por remitente quita el ruido de una ráfaga: solo la
-            // última burbuja de cada tanda lleva pico y hora.
-            const primeroDeTanda = nuevoDia || anterior?.fromMe !== m.fromMe;
-            const ultimoDeTanda = !siguiente || siguiente.fromMe !== m.fromMe
-              || !mismoDia(siguiente.timestamp, m.timestamp);
+            /*
+             * Una tanda es una ráfaga de la MISMA persona.
+             *
+             * Antes solo se miraba si era propio o ajeno, y en un grupo eso
+             * juntaba a todos los demás en una sola tanda: lo que escribían
+             * aimet y Esteban salía debajo del nombre de Rodrigo, sin el suyo.
+             * Cada cambio de persona abre tanda nueva, con nombre, foto y cola.
+             */
+            const primeroDeTanda = nuevoDia || abreTanda(anterior, m, esGrupo);
+            // En un grupo, lo ajeno lleva una columna a la izquierda para la
+            // foto: la tiene la primera burbuja de la tanda y las demás dejan
+            // el hueco, para que todas queden alineadas como en WhatsApp.
+            const conFoto = esGrupo && !m.fromMe;
             const suelto = SIN_BURBUJA.has(m.kind) && m.media != null && !m.deleted
               && !m.replyTo;
             /*
@@ -537,8 +552,7 @@ export function Conversacion({
              * No es de nadie y no dice nada, así que no merece una burbuja con
              * remitente y acuse: un aviso centrado, como el separador de día.
              */
-            const esAviso = (m.kind === "system" || m.kind === "unknown")
-              && !m.body && !m.deleted;
+            const esAviso = esAvisoDe(m);
             // Hay texto donde meter la hora: el cuerpo, o el aviso de retirado.
             const conTexto = m.deleted || Boolean(m.body);
 
@@ -569,10 +583,23 @@ export function Conversacion({
                 ) : (
                 <div
                   onContextMenu={(e) => { setSobre(m); menu.enContexto(e); }}
-                  className={`mensaje-nuevo flex ${m.fromMe ? "justify-end" : "justify-start"} ${
-                    primeroDeTanda ? "mt-2" : ""
-                  }`}
+                  className={`mensaje-nuevo flex items-start gap-1.5 ${
+                    m.fromMe ? "justify-end" : "justify-start"
+                  } ${primeroDeTanda ? "mt-2" : ""}`}
                 >
+                  {conFoto && (
+                    <span className="w-8 shrink-0">
+                      {primeroDeTanda && (
+                        <Avatar
+                          nombre={m.senderName ?? "?"}
+                          direccion={m.senderAddress ?? m.id}
+                          kind="pn"
+                          tamano="sm"
+                          url={m.senderAvatarUrl ?? null}
+                        />
+                      )}
+                    </span>
+                  )}
                   <div
                     className={`relative max-w-[min(32rem,75%)] ${
                       suelto
@@ -582,7 +609,7 @@ export function Conversacion({
                               ? "border-(--color-propio-borde) bg-(--color-propio)"
                               : "border-(--color-ajeno-borde) bg-(--color-ajeno)"
                           } ${
-                            ultimoDeTanda
+                            primeroDeTanda
                               ? m.fromMe ? "pico-propio" : "pico-ajeno"
                               : ""
                           }`
@@ -592,9 +619,19 @@ export function Conversacion({
                       En un grupo, quién escribe. Sin esto, veinte burbujas
                       iguales y ninguna forma de seguir quién dice qué.
                     */}
-                    {esGrupo && !m.fromMe && primeroDeTanda && m.senderName && (
+                    {/*
+                      Un sticker no tiene burbuja, así que su nombre va en una
+                      pastilla propia y SIEMPRE, no solo al abrir la tanda:
+                      suelto debajo de un texto, sin él no se sabría de quién
+                      es. Es lo que hace WhatsApp.
+                    */}
+                    {esGrupo && !m.fromMe && m.senderName && (primeroDeTanda || suelto) && (
                       <p
-                        className="mb-0.5 text-xs font-semibold"
+                        className={`text-xs font-semibold ${
+                          suelto
+                            ? "mb-1 inline-block rounded-(--radius-burbuja) border border-(--color-ajeno-borde) bg-(--color-ajeno) px-2.5 py-1"
+                            : "mb-0.5"
+                        }`}
                         style={{
                           color: `oklch(var(--l-remitente) 0.12 ${tonoDe(m.senderAddress ?? "")})`,
                         }}

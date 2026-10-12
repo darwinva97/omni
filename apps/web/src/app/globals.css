@@ -178,30 +178,40 @@ body {
  * El pico de la burbuja.
  *
  * Es lo que hace que un hilo se lea como conversación y no como una lista de
- * tarjetas. Solo lo lleva el ÚLTIMO mensaje de cada tanda: repetirlo en cada
- * burbuja de una ráfaga ensucia el borde y rompe la agrupación.
+ * tarjetas. Lo lleva solo el PRIMER mensaje de cada tanda, arriba y hacia
+ * fuera, que es donde lo pone WhatsApp: señala a quién empieza a hablar, junto
+ * a su nombre y su foto. Repetirlo en cada burbuja de una ráfaga ensucia el
+ * borde y rompe la agrupación.
  */
 .pico-propio::after,
 .pico-ajeno::after {
   content: "";
   position: absolute;
-  bottom: 0;
+  top: 0;
   width: 0.5rem;
   height: 0.75rem;
+}
+
+.pico-propio {
+  border-top-right-radius: 0.125rem;
 }
 
 .pico-propio::after {
   right: -0.45rem;
   background: var(--color-propio);
-  clip-path: polygon(0 0, 0 100%, 100% 100%);
-  border-bottom-right-radius: 0.25rem;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  border-top-right-radius: 0.25rem;
+}
+
+.pico-ajeno {
+  border-top-left-radius: 0.125rem;
 }
 
 .pico-ajeno::after {
   left: -0.45rem;
   background: var(--color-ajeno);
-  clip-path: polygon(100% 0, 0 100%, 100% 100%);
-  border-bottom-left-radius: 0.25rem;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  border-top-left-radius: 0.25rem;
 }
 
 /* Entrada de un mensaje nuevo: una sola, corta, desde donde ya se ve. */

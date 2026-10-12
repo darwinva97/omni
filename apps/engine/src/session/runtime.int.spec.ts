@@ -4,7 +4,7 @@ import { asLineId, type EventEnvelope } from "@omni/shared";
 import { SandboxDriver } from "@omni/channels";
 import { MemoryBus, MemoryJobQueue, MemoryKv } from "@omni/platform";
 import { WebhookDispatcher, type DeliveryRecord, type WebhookEndpoint } from "@omni/core";
-import { createDatabase, migrate, lineTable, messageTable, chatTable, orgTable, authStateTable, type DbHandle } from "@omni/db";
+import { createDatabase, migrate, lineTable, messageTable, chatTable, contactTable, orgTable, authStateTable, type DbHandle } from "@omni/db";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -295,6 +295,31 @@ run("runtime del motor, de punta a punta", () => {
       .toBe("Avisos del barrio");
     expect(filas.find((f) => f.address === otro.address.value)?.title)
       .toBe("Ya tenía nombre");
+  });
+
+  it("en un grupo se pide la foto de quien escribe aunque no haya chat con él", async () => {
+    /*
+     * La foto solo se guardaba en la fila de una conversación, y quien escribe
+     * en un grupo casi nunca la tiene: se abandonaba sin pedirla. Ahora va a
+     * su contacto. El sandbox no da fotos, así que lo que se comprueba es que
+     * se INTENTÓ y quedó anotado, que es justo lo que antes no pasaba.
+     */
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    const grupo = "120363000000000999@g.us";
+    const participante = "330000000000001@lid";
+
+    await H.runtime.publish("message.received", LINE, {
+      key: { id: "G-FOTO-1", remoteJid: grupo, participant: participante },
+      pushName: "Esteban", kind: "text", text: "Tin tin ton", timestamp: Date.now(),
+    });
+
+    const intento = await until(async () => {
+      const [c] = await h.db.select().from(contactTable)
+        .where(and(eq(contactTable.lineId, LINE), eq(contactTable.address, participante)));
+      return c?.avatarSyncedAt ?? null;
+    }, "se pidió la foto del participante");
+    expect(intento).toBeInstanceOf(Date);
   });
 
   it("un envío se acepta enseguida, se encola y acaba enviado", async () => {

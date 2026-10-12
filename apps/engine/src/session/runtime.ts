@@ -9,7 +9,7 @@ import { assertCapability, descifrarVoto, encuestaDe } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
+import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -782,7 +782,8 @@ export class EngineRuntime {
    *
    * Se AÑADE y no se sustituye: `text` y `key` llegan intactos. Quien quiera
    * el dato crudo lo sigue teniendo, y quien quiera enseñarlo tiene
-   * `senderName` y `mentionNames` (número de la mención → nombre).
+   * `senderName`, `senderAvatarUrl` (en grupos) y `mentionNames` (número de
+   * la mención → nombre).
    */
   async #conNombres(envelope: EventEnvelope): Promise<EventEnvelope> {
     if (envelope.event !== "message.received" && envelope.event !== "message.sent") {
@@ -797,16 +798,24 @@ export class EngineRuntime {
       const autor = d.key?.fromMe ? undefined : d.key?.participant ?? chat;
       const tokens = tokensDeMencion(d.text);
 
-      const [nombres, menciones] = await Promise.all([
+      // La foto de quien escribe solo en un grupo: en un chat de dos ya está
+      // en la cabecera.
+      const enGrupo = Boolean(chat?.endsWith("@g.us"));
+      const [nombres, menciones, fotos] = await Promise.all([
         autor ? nombresDe(this.#deps.db, envelope.lineId, [autor]) : new Map<string, string>(),
         nombresDeMenciones(this.#deps.db, envelope.lineId, tokens, d.mentions ?? []),
+        autor && enGrupo
+          ? fotosDe(this.#deps.db, envelope.lineId, [autor])
+          : new Map<string, string>(),
       ]);
+      const foto = autor ? fotos.get(autor) : undefined;
 
       return {
         ...envelope,
         data: {
           ...(envelope.data as object),
           ...(autor && nombres.has(autor) ? { senderName: nombres.get(autor) } : {}),
+          ...(foto ? { senderAvatarUrl: await this.#deps.storage.signedUrl(foto, 3600) } : {}),
           ...(menciones.size > 0
             ? { mentionNames: Object.fromEntries([...menciones].map(([t, m]) => [t, m.name])) }
             : {}),
@@ -1011,7 +1020,18 @@ export class EngineRuntime {
         .from(chatTable)
         .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, address)))
         .limit(1);
-      const fila = filas[0];
+      /*
+       * Sin conversación propia, la foto va al contacto.
+       *
+       * Es el caso de casi todos los que escriben en un grupo. Antes se
+       * abandonaba aquí y nunca tenían foto. Sin fila de contacto tampoco se
+       * pide: alguien de quien no sabemos nada no merece una consulta.
+       */
+      const fila = filas[0] ?? (await this.#deps.db
+        .select({ key: contactTable.avatarKey, syncedAt: contactTable.avatarSyncedAt })
+        .from(contactTable)
+        .where(and(eq(contactTable.lineId, lineId), eq(contactTable.address, address)))
+        .limit(1))[0];
       if (!fila) return;
       const fresca = fila.syncedAt
         && Date.now() - fila.syncedAt.getTime() < 7 * 24 * 3600 * 1000;
@@ -1040,11 +1060,17 @@ export class EngineRuntime {
 
     // Se marca el intento ANTES de hacerlo: así una cuenta sin foto no se
     // vuelve a pedir en cada mensaje durante una semana.
+    // En los dos sitios: la conversación, si la hay, y el contacto, si lo hay.
+    // Una persona con chat propio que además escribe en un grupo tiene que
+    // salir con la misma foto en los dos.
     const marcar = async (key: string | null): Promise<void> => {
+      const cambio = { avatarSyncedAt: new Date(), ...(key ? { avatarKey: key } : {}) };
       await this.#deps.db
-        .update(chatTable)
-        .set({ avatarSyncedAt: new Date(), ...(key ? { avatarKey: key } : {}) })
+        .update(chatTable).set(cambio)
         .where(and(eq(chatTable.lineId, job.lineId), eq(chatTable.address, job.address)));
+      await this.#deps.db
+        .update(contactTable).set(cambio)
+        .where(and(eq(contactTable.lineId, job.lineId), eq(contactTable.address, job.address)));
     };
 
     if (!driver.profilePictureUrl) { await marcar(null); return; }
@@ -1213,6 +1239,11 @@ export class EngineRuntime {
         // El nombre va al participante, no al grupo.
         const participante = d.key?.participant ? tryParseAddress(d.key.participant) : null;
         if (participante && nombre) await this.#ponerNombreContacto(envelope.lineId, participante, nombre);
+        // Y su foto, para enseñarla junto a su primera burbuja. Se pide una vez
+        // por semana como mucho: `encolarAvatar` mira cuándo se pidió.
+        if (participante) {
+          await this.encolarAvatar(envelope.lineId, envelope.orgId, participante.value, false);
+        }
         await this.#tituloDeGrupoSiFalta(envelope.lineId, chat);
         return;
       }

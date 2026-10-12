@@ -1,7 +1,7 @@
 import { and, eq, inArray, or } from "drizzle-orm";
 import { nombreVisible } from "@omni/shared";
 import type { DbHandle } from "./client.js";
-import { contactTable, identityMapTable } from "./schema/index.js";
+import { chatTable, contactTable, identityMapTable } from "./schema/index.js";
 
 type Db = DbHandle["db"];
 
@@ -126,4 +126,51 @@ export async function nombresDeMenciones(
     resultado.set(t, { address, name: nombreVisible({ address, ...f }) });
   }
   return resultado;
+}
+
+/**
+ * La foto de cada dirección, como clave del almacén.
+ *
+ * De la conversación propia si la hay, y si no, del contacto: quien solo
+ * escribe en grupos tiene la foto ahí. También por la dirección gemela —la
+ * misma persona puede tener la foto bajo su teléfono y escribir con su LID—.
+ * La que no tiene foto no aparece: el panel pone la inicial.
+ */
+export async function fotosDe(
+  db: Db, lineId: string, direcciones: readonly string[],
+): Promise<Map<string, string>> {
+  const unicas = [...new Set(direcciones)].filter(Boolean);
+  if (unicas.length === 0) return new Map();
+
+  const mapa = await db
+    .select({ lid: identityMapTable.lid, phone: identityMapTable.phone })
+    .from(identityMapTable)
+    .where(and(
+      eq(identityMapTable.lineId, lineId),
+      or(inArray(identityMapTable.lid, unicas), inArray(identityMapTable.phone, unicas)),
+    ));
+  const gemela = new Map<string, string>();
+  for (const m of mapa) { gemela.set(m.lid, m.phone); gemela.set(m.phone, m.lid); }
+  const todas = [...new Set([...unicas, ...unicas.map((a) => gemela.get(a))
+    .filter((x): x is string => x !== undefined)])];
+
+  const [deChats, deContactos] = await Promise.all([
+    db.select({ address: chatTable.address, key: chatTable.avatarKey })
+      .from(chatTable)
+      .where(and(eq(chatTable.lineId, lineId), inArray(chatTable.address, todas))),
+    db.select({ address: contactTable.address, key: contactTable.avatarKey })
+      .from(contactTable)
+      .where(and(eq(contactTable.lineId, lineId), inArray(contactTable.address, todas))),
+  ]);
+  const clave = new Map<string, string>();
+  // El contacto primero y el chat encima: si están las dos, gana la del chat,
+  // que es la que se refresca al abrir la conversación.
+  for (const f of [...deContactos, ...deChats]) if (f.key) clave.set(f.address, f.key);
+
+  const fotos = new Map<string, string>();
+  for (const a of unicas) {
+    const k = clave.get(a) ?? (gemela.has(a) ? clave.get(gemela.get(a)!) : undefined);
+    if (k) fotos.set(a, k);
+  }
+  return fotos;
 }

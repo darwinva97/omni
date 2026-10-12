@@ -1138,6 +1138,53 @@ run("organización y limpieza", () => {
     expect(vivo?.["senderName"]).toBe("@andre.v");
   });
 
+  it("en un grupo cada mensaje trae la foto de quien lo escribió", async () => {
+    /*
+     * La que va junto a la primera burbuja de cada tanda. Tres casos: la foto
+     * en su contacto, la foto en el chat de su OTRA dirección —la misma
+     * persona con teléfono y con LID—, y sin foto, que debe ser `null` para
+     * que el panel pinte la inicial.
+     */
+    const grupo = "120363000000000888@g.us";
+    const conFoto = "330000000000011@lid";
+    const conFotoEnGemela = "330000000000012@lid";
+    const suTelefono = "51944555666@s.whatsapp.net";
+    const sinFoto = "330000000000013@lid";
+
+    await dbh.sql`
+      INSERT INTO contact (id, line_id, address, push_name, avatar_key)
+      VALUES ('ct-foto-1', ${LINE}, ${conFoto}, 'Esteban', 'avatars/esteban.jpg')
+      ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO identity_map (line_id, lid, phone)
+      VALUES (${LINE}, ${conFotoEnGemela}, ${suTelefono}) ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, avatar_key)
+      VALUES ('c-foto-2', ${LINE}, ${suTelefono}, 'pn', 'avatars/aimet.jpg')
+      ON CONFLICT DO NOTHING`;
+
+    let n = 0;
+    for (const quien of [conFoto, conFotoEnGemela, sinFoto]) {
+      await container.runtime.publish("message.received", LINE, {
+        key: { id: `FOTO-${++n}`, remoteJid: grupo, participant: quien },
+        kind: "text", text: `hola ${n}`, timestamp: Date.now() + n,
+      });
+    }
+
+    type M = { providerMessageId: string | null; senderAvatarUrl: string | null };
+    const mensajes = await esperarValor(async () => {
+      const { data } = await j<{ data: M[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/messages?limit=10`));
+      return data.filter((m) => m.providerMessageId?.startsWith("FOTO-")).length === 3
+        ? data : null;
+    }, "los tres mensajes se guardaron");
+    const de = (id: string) => mensajes.find((m) => m.providerMessageId === id);
+
+    expect(de("FOTO-1")?.senderAvatarUrl).toContain("esteban.jpg");
+    expect(de("FOTO-2")?.senderAvatarUrl).toContain("aimet.jpg");
+    expect(de("FOTO-3")?.senderAvatarUrl).toBeNull();
+  });
+
   it("los votos de una encuesta se cuentan, y no aparecen como mensajes", async () => {
     /*
      * El camino completo y con cifrado REAL, que es la única forma de probar
