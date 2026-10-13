@@ -65,10 +65,10 @@ export interface Portapapeles {
 }
 
 /**
- * Qué fichero hay que adjuntar de lo que se acaba de pegar, si hay alguno.
+ * Qué ficheros hay que adjuntar de lo que se acaba de pegar.
  *
- * Devuelve `null` cuando lo pegado es texto: entonces el campo se comporta
- * como siempre y no se toca nada.
+ * Lista vacía cuando lo pegado es texto: entonces el campo se comporta como
+ * siempre y no se toca nada.
  *
  * Un caso engañoso: al copiar celdas de Excel o un párrafo de Word, el sistema
  * pone en el portapapeles el texto Y una imagen de cómo se ve. Quien copia de
@@ -76,18 +76,72 @@ export interface Portapapeles {
  * HTML; al copiar una imagen de verdad —de una web, de una captura— o no hay
  * texto o el HTML la incluye.
  */
-export function ficheroPegado(
-  datos: Portapapeles, ahora: Date = new Date(),
-): { file: File; omitidos: number } | null {
+export function ficherosPegados(datos: Portapapeles, ahora: Date = new Date()): File[] {
   const ficheros = Array.from(datos.files);
-  if (ficheros.length === 0) return null;
+  if (ficheros.length === 0) return [];
 
   const texto = datos.getData("text/plain").trim();
   const html = datos.getData("text/html");
   const soloUnaImagen = ficheros.length === 1 && ficheros[0]!.type.startsWith("image/");
-  if (texto && soloUnaImagen && html && !/<img[\s>]/i.test(html)) return null; // impeccable-disable-line broken-image -- es una expresión regular, no una etiqueta
+  if (texto && soloUnaImagen && html && !/<img[\s>]/i.test(html)) return []; // impeccable-disable-line broken-image -- es una expresión regular, no una etiqueta
 
-  return { file: conNombre(ficheros[0]!, ahora), omitidos: ficheros.length - 1 };
+  // Varias capturas pegadas a la vez tendrían el mismo nombre: se numeran.
+  const sinNombre = ficheros.filter((f) => !tieneNombre(f)).length;
+  let n = 0;
+  return ficheros.map((f) => tieneNombre(f) ? f : conNombre(f, ahora, sinNombre > 1 ? ++n : 0));
+}
+
+/** El nombre genérico con que llega una captura no cuenta como nombre. */
+function tieneNombre(f: File): boolean {
+  return Boolean(f.name) && !/^image\.\w+$/i.test(f.name);
+}
+
+/** Un fichero listo para enviar, con su pie. */
+export interface Adjunto {
+  readonly id: string;
+  readonly file: File;
+  readonly campo: CampoDeMedio;
+  readonly gif: boolean;
+  readonly pie: string;
+}
+
+/**
+ * Cuántos de golpe. WhatsApp deja treinta por envío, y más que eso en una
+ * tira de miniaturas ya no se revisa: se manda sin mirar.
+ */
+export const MAX_ADJUNTOS = 30;
+
+/**
+ * Añade ficheros a los que ya hay, y dice por qué rechazó los que rechazó.
+ *
+ * Lo rechazado se DICE, uno por uno: un fichero que no entra en silencio
+ * deja a quien lo eligió creyendo que se mandó.
+ */
+export function agregarAdjuntos(
+  lista: readonly Adjunto[], ficheros: readonly File[], nuevoId: () => string,
+): { lista: Adjunto[]; avisos: string[] } {
+  const resultado = [...lista];
+  const avisos: string[] = [];
+  const huella = (f: File) => `${f.name}|${f.size}|${f.lastModified}`;
+  const yaEstan = new Set(resultado.map((a) => huella(a.file)));
+
+  for (const file of ficheros) {
+    if (file.size > MAX_BYTES) {
+      avisos.push(`«${file.name}» pesa ${tamanoLegible(file.size)}; el máximo es ${tamanoLegible(MAX_BYTES)}.`);
+      continue;
+    }
+    // El mismo fichero dos veces es casi siempre un doble pegado sin querer.
+    if (yaEstan.has(huella(file))) continue;
+    if (resultado.length >= MAX_ADJUNTOS) {
+      avisos.push(`Caben ${MAX_ADJUNTOS} por envío: «${file.name}» y los siguientes se quedaron fuera.`);
+      break;
+    }
+    yaEstan.add(huella(file));
+    resultado.push({
+      id: nuevoId(), file, campo: campoPara(file), gif: file.type === "image/gif", pie: "",
+    });
+  }
+  return { lista: resultado, avisos };
 }
 
 /**
@@ -97,13 +151,12 @@ export function ficheroPegado(
  * documento, eso es lo que ve quien la recibe; y si se pegan dos, se llaman
  * igual. Los ficheros copiados del explorador conservan su nombre.
  */
-function conNombre(file: File, ahora: Date): File {
-  if (file.name && !/^image\.\w+$/i.test(file.name)) return file;
+function conNombre(file: File, ahora: Date, numero: number): File {
   const ext = file.type.split("/")[1]?.replace("jpeg", "jpg").replace(/\+.*$/, "") || "bin";
   const p = (n: number) => String(n).padStart(2, "0");
   const marca = `${ahora.getFullYear()}-${p(ahora.getMonth() + 1)}-${p(ahora.getDate())}`
     + `-${p(ahora.getHours())}${p(ahora.getMinutes())}${p(ahora.getSeconds())}`;
-  return new File([file], `captura-${marca}.${ext}`, {
+  return new File([file], `captura-${marca}${numero ? `-${numero}` : ""}.${ext}`, {
     type: file.type, lastModified: file.lastModified,
   });
 }

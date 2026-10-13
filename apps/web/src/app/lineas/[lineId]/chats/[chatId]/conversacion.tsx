@@ -12,13 +12,15 @@ import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
-  IconoAdjuntar, IconoBloquear, IconoCerrar, IconoCopiar, IconoDescargar,
+  IconoAdjuntar, IconoBloquear, IconoCerrar, IconoCopiar, IconoDescargar, IconoDocumento,
   IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
 import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { Reacciones, Stickers } from "@/componentes/stickers";
-import { campoPara, ETIQUETAS, ficheroPegado, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
+import {
+  agregarAdjuntos, ETIQUETAS, ficherosPegados, MAX_ADJUNTOS, type Adjunto, type CampoDeMedio,
+} from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 
 /** De un mensaje del hilo a la cita que lo representa. */
@@ -78,9 +80,16 @@ export function Conversacion({
   const fondo = useRef<HTMLDivElement>(null);
   const formulario = useRef<HTMLFormElement>(null);
   const selector = useRef<HTMLInputElement>(null);
-  const [adjunto, setAdjunto] = useState<
-    { file: File; campo: CampoDeMedio; gif?: boolean } | null
-  >(null);
+  /*
+   * Lo que está listo para enviar: una tira, como en WhatsApp.
+   *
+   * Cada uno lleva su pie, y el campo de texto edita el del que esté elegido.
+   * Enter los manda todos, en orden, uno por mensaje.
+   */
+  const [adjuntos, setAdjuntos] = useState<Adjunto[]>([]);
+  const [elegido, setElegido] = useState<string | null>(null);
+  const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null);
+  const actual = adjuntos.find((a) => a.id === elegido) ?? adjuntos[0] ?? null;
   const [subiendo, setSubiendo] = useState(false);
   const [problema, setProblema] = useState<string | null>(null);
 
@@ -306,25 +315,53 @@ export function Conversacion({
   useEffect(() => { yaColocado.current = false; }, [chat]);
 
   /**
-   * Deja un fichero listo para enviar: el mismo camino para el clip y para
-   * pegar. Lo que se escriba después es su pie, y Enter lo manda.
+   * Añade ficheros a la tira: el mismo camino para el clip y para pegar.
+   *
+   * El pie que se estuviera escribiendo se guarda en el adjunto elegido antes
+   * de cambiar de elegido; si no, se perdería al saltar al nuevo.
    */
-  const prepararAdjunto = (file: File): boolean => {
+  const prepararAdjuntos = (ficheros: readonly File[]): void => {
+    if (ficheros.length === 0) return;
+    const conPie = guardarPie(adjuntos);
+    const { lista, avisos } = agregarAdjuntos(conPie, ficheros, () => crypto.randomUUID());
+    setProblema(avisos.length > 0 ? avisos.join(" ") : null);
+    if (lista.length === conPie.length) return;
+    setAdjuntos(lista);
+    // Se elige el primero de los recién añadidos, que es lo que se acaba de
+    // mirar, y su pie (vacío) pasa al campo.
+    elegir(lista[conPie.length]!.id, lista);
+  };
+
+  /** Copia lo escrito en el campo al pie del adjunto elegido. */
+  const guardarPie = (lista: readonly Adjunto[]): Adjunto[] => {
+    const pie = campo.current?.value ?? "";
+    const id = actual?.id;
+    return lista.map((a) => (a.id === id ? { ...a, pie } : a));
+  };
+
+  /** Cambia de adjunto elegido, guardando el pie del anterior. */
+  const elegir = (id: string, lista: readonly Adjunto[] = guardarPie(adjuntos)): void => {
+    setAdjuntos([...lista]);
+    setElegido(id);
+    if (campo.current) campo.current.value = lista.find((a) => a.id === id)?.pie ?? "";
+    campo.current?.focus();
+  };
+
+  const quitarAdjunto = (id: string): void => {
+    const lista = guardarPie(adjuntos).filter((a) => a.id !== id);
+    setAdjuntos(lista);
     setProblema(null);
-    if (file.size > MAX_BYTES) {
-      // Se avisa ANTES de subir: mandar sesenta megas para que el otro lado
-      // los rechace es el viaje entero perdido.
-      setProblema(`${tamano(file.size)} es demasiado; el máximo es ${tamano(MAX_BYTES)}`);
-      return false;
+    if (id === actual?.id) {
+      const siguiente = lista[0];
+      setElegido(siguiente?.id ?? null);
+      if (campo.current) campo.current.value = siguiente?.pie ?? "";
     }
-    setAdjunto({ file, campo: campoPara(file), gif: file.type === "image/gif" });
-    return true;
   };
 
   const mandarFichero = async (
     file: File, campo: CampoDeMedio, pie: string, extra: Record<string, unknown> = {},
     replyTo?: string, cita?: CitaDe | null,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     setProblema(null);
     setSubiendo(true);
     try {
@@ -345,12 +382,13 @@ export function Conversacion({
         setMensajes((prev) =>
           prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
       }
-      setAdjunto(null);
-      if (selector.current) selector.current.value = "";
+      return true;
     } catch (e) {
       // El error se ENSEÑA: un adjunto que desaparece sin decir nada deja a
       // quien envía creyendo que se mandó.
-      setProblema(e instanceof Error ? e.message : "no se pudo enviar el fichero");
+      setProblema(`«${file.name}»: ${
+        e instanceof Error ? e.message : "no se pudo enviar el fichero"}`);
+      return false;
     } finally {
       setSubiendo(false);
     }
@@ -777,43 +815,85 @@ export function Conversacion({
           </p>
         )}
 
-        {adjunto && (
-          <div className="flex items-center gap-3 border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
-            <Miniatura file={adjunto.file} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm">{adjunto.file.name}</p>
-              <p className="text-xs text-(--color-tenue)">
-                {tamano(adjunto.file.size)} · {adjunto.file.type || "tipo desconocido"}
-              </p>
+        {actual && (
+          <div className="border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
+            {/*
+              Las miniaturas, en fila. La elegida lleva el anillo y es la que
+              edita el campo de texto: su pie y su tipo. En una fila que se
+              desplaza de lado, para que treinta no empujen el hilo hacia
+              arriba.
+            */}
+            <ul className="scroll-discreto flex gap-2 overflow-x-auto pb-1">
+              {adjuntos.map((a) => (
+                <li key={a.id} className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => elegir(a.id)}
+                    aria-label={`${a.file.name}${a.pie ? `, con pie` : ""}`}
+                    aria-pressed={a.id === actual.id}
+                    className={`block overflow-hidden rounded-md ${
+                      a.id === actual.id
+                        ? "ring-2 ring-(--color-acento)"
+                        : "opacity-80 hover:opacity-100"
+                    }`}
+                  >
+                    <Miniatura file={a.file} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => quitarAdjunto(a.id)}
+                    disabled={subiendo}
+                    aria-label={`Quitar ${a.file.name}`}
+                    className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border border-(--color-borde) bg-(--color-panel) text-(--color-tenue) shadow-sm hover:text-(--color-texto) disabled:opacity-40"
+                  >
+                    <IconoCerrar className="size-3" />
+                  </button>
+                </li>
+              ))}
+              {adjuntos.length < MAX_ADJUNTOS && (
+                <li className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => selector.current?.click()}
+                    disabled={subiendo}
+                    aria-label="Añadir más ficheros"
+                    title="Añadir más"
+                    className="flex size-12 items-center justify-center rounded-md border border-dashed border-(--color-borde) text-lg text-(--color-tenue) hover:border-(--color-acento) hover:text-(--color-acento-fuerte) disabled:opacity-40"
+                  >
+                    +
+                  </button>
+                </li>
+              )}
+            </ul>
+
+            <div className="mt-1.5 flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm">{actual.file.name}</p>
+                <p className="text-xs text-(--color-tenue)">
+                  {progreso
+                    ? `Enviando ${progreso.hecho + 1} de ${progreso.total}…`
+                    : `${tamano(actual.file.size)} · ${actual.file.type || "tipo desconocido"}${
+                      adjuntos.length > 1 ? ` · ${adjuntos.length} listos` : ""}`}
+                </p>
+              </div>
+
+              {/* El tipo se puede cambiar: un WebP se adjunta como sticker por
+                  defecto, pero a veces se quiere mandar como foto. */}
+              <label className="text-xs text-(--color-tenue)">
+                <span className="sr-only">Enviar como</span>
+                <select
+                  value={actual.campo}
+                  disabled={subiendo}
+                  onChange={(e) => setAdjuntos((prev) => prev.map((a) => a.id === actual.id
+                    ? { ...a, campo: e.target.value as CampoDeMedio } : a))}
+                  className="rounded-lg border border-(--color-borde) bg-(--color-panel) px-2 py-1.5 text-xs"
+                >
+                  {(Object.keys(ETIQUETAS) as CampoDeMedio[]).map((k) => (
+                    <option key={k} value={k}>{ETIQUETAS[k]}</option>
+                  ))}
+                </select>
+              </label>
             </div>
-
-            {/* El tipo se puede cambiar: un WebP se adjunta como sticker por
-                defecto, pero a veces se quiere mandar como foto. */}
-            <label className="text-xs text-(--color-tenue)">
-              <span className="sr-only">Enviar como</span>
-              <select
-                value={adjunto.campo}
-                onChange={(e) => setAdjunto({ ...adjunto, campo: e.target.value as CampoDeMedio })}
-                className="rounded-lg border border-(--color-borde) bg-(--color-panel) px-2 py-1.5 text-xs"
-              >
-                {(Object.keys(ETIQUETAS) as CampoDeMedio[]).map((k) => (
-                  <option key={k} value={k}>{ETIQUETAS[k]}</option>
-                ))}
-              </select>
-            </label>
-
-            <button
-              type="button"
-              onClick={() => {
-                setAdjunto(null);
-                setProblema(null);
-                if (selector.current) selector.current.value = "";
-              }}
-              aria-label="Quitar el adjunto"
-              className="flex size-8 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
-            >
-              <IconoCerrar className="size-4" />
-            </button>
           </div>
         )}
 
@@ -858,16 +938,35 @@ export function Conversacion({
             setRespondiendo(null);
             const citaLocal = citado ? citaDeMensaje(citado) : null;
 
-            if (adjunto) {
+            if (adjuntos.length > 0) {
+              /*
+               * Todos, en orden, uno por mensaje. La cita solo en el primero:
+               * en WhatsApp responder con varias fotos cita una vez.
+               *
+               * Si uno falla se PARA ahí. Lo que no salió se queda en la tira
+               * para reintentar, y no se repite el mismo error treinta veces.
+               */
+              let pendientes = guardarPie(adjuntos).map((a) => ({ ...a, pie: a.pie.trim() }));
               formulario.current?.reset();
-              await mandarFichero(
-                adjunto.file, adjunto.campo, texto,
-                // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
-                // llama «GIF»; sin la marca llega como un vídeo normal.
-                adjunto.gif && adjunto.campo === "video" ? { gifPlayback: true } : {},
-                citado?.providerMessageId ?? undefined,
-                citaLocal,
-              );
+              const total = pendientes.length;
+              for (const [i, a] of [...pendientes].entries()) {
+                setProgreso({ hecho: i, total });
+                const ok = await mandarFichero(
+                  a.file, a.campo, a.pie,
+                  // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
+                  // llama «GIF»; sin la marca llega como un vídeo normal.
+                  a.gif && a.campo === "video" ? { gifPlayback: true } : {},
+                  i === 0 ? citado?.providerMessageId ?? undefined : undefined,
+                  i === 0 ? citaLocal : null,
+                );
+                if (!ok) break;
+                pendientes = pendientes.filter((x) => x.id !== a.id);
+                setAdjuntos(pendientes);
+              }
+              setProgreso(null);
+              setElegido(pendientes[0]?.id ?? null);
+              if (campo.current) campo.current.value = pendientes[0]?.pie ?? "";
+              if (selector.current) selector.current.value = "";
               return;
             }
 
@@ -897,18 +996,10 @@ export function Conversacion({
           */
           onPaste={(e) => {
             if (subiendo) return;
-            const pegado = ficheroPegado(e.clipboardData);
-            if (!pegado) return;
+            const ficheros = ficherosPegados(e.clipboardData);
+            if (ficheros.length === 0) return;
             e.preventDefault();
-            if (!prepararAdjunto(pegado.file)) return;
-            if (pegado.omitidos > 0) {
-              setProblema(
-                `Se adjuntó «${pegado.file.name}». Se manda un fichero por mensaje: `
-                + `${pegado.omitidos === 1 ? "el otro" : `los otros ${pegado.omitidos}`} `
-                + "pégalos después de enviar este.",
-              );
-            }
-            campo.current?.focus();
+            prepararAdjuntos(ficheros);
           }}
           className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
@@ -928,11 +1019,13 @@ export function Conversacion({
           <input
             ref={selector}
             type="file"
+            multiple
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              if (!prepararAdjunto(file)) e.target.value = "";
+              prepararAdjuntos(Array.from(e.target.files ?? []));
+              // Se vacía para que elegir el mismo fichero otra vez vuelva a
+              // disparar el cambio.
+              e.target.value = "";
             }}
           />
           <button
@@ -962,9 +1055,9 @@ export function Conversacion({
 
           <Grabadora
             tipo="audio"
-            deshabilitado={subiendo || adjunto !== null}
+            deshabilitado={subiendo || adjuntos.length > 0}
             onError={setProblema}
-            onGrabado={(file) => mandarFichero(file, "audio", "", { ptt: true })}
+            onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
           />
           {/*
             El de vídeo, solo en escritorio.
@@ -975,9 +1068,9 @@ export function Conversacion({
           <span className="hidden md:contents">
             <Grabadora
               tipo="video"
-              deshabilitado={subiendo || adjunto !== null}
+              deshabilitado={subiendo || adjuntos.length > 0}
               onError={setProblema}
-              onGrabado={(file) => mandarFichero(file, "video", "")}
+              onGrabado={async (file) => { await mandarFichero(file, "video", ""); }}
             />
           </span>
 
@@ -985,7 +1078,9 @@ export function Conversacion({
             ref={campo}
             name="texto"
             autoComplete="off"
-            placeholder={adjunto ? "Añade un pie (opcional)…" : "Escribe un mensaje"}
+            placeholder={actual
+              ? adjuntos.length > 1 ? "Pie de este (opcional)…" : "Añade un pie (opcional)…"
+              : "Escribe un mensaje"}
             className="min-w-0 flex-1 rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
           />
 
@@ -1133,10 +1228,19 @@ function Miniatura({ file }: { file: File }) {
     img.src = url;
     return () => URL.revokeObjectURL(url);
   }, [file]);
-  if (!file.type.startsWith("image/")) return null;
+  if (!file.type.startsWith("image/")) {
+    // Lo que no es imagen se reconoce por su extensión, como en WhatsApp.
+    const ext = file.name.includes(".") ? file.name.split(".").pop()!.slice(0, 4) : "";
+    return (
+      <span className="flex size-12 flex-col items-center justify-center gap-0.5 rounded-md bg-(--color-hundido) text-(--color-tenue)">
+        <IconoDocumento className="size-5" />
+        {ext && <span className="text-[9px] font-semibold uppercase">{ext}</span>}
+      </span>
+    );
+  }
   // El `src` lo pone `enlazar` al montar, antes de pintar: no hay caja rota.
   // eslint-disable-next-line @next/next/no-img-element
-  return <img ref={enlazar} alt="" className="size-12 shrink-0 rounded-md object-cover" />; // impeccable-disable-line broken-image -- src asignado por la ref al montar
+  return <img ref={enlazar} alt="" className="size-12 rounded-md object-cover" />; // impeccable-disable-line broken-image -- src asignado por la ref al montar
 }
 
 function Firma({ mensaje }: { mensaje: Mensaje }) {
