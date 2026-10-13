@@ -286,8 +286,17 @@ run("runtime del motor, de punta a punta", () => {
       },
     ]);
 
-    const nombrados = await H.runtime.sincronizarCanales(LINE);
-    expect(nombrados).toBe(1);
+    /*
+     * Se comprueba el RESULTADO, no cuántos nombró esta llamada.
+     *
+     * Conectar ya lanza una sincronización en segundo plano, que puede ganar
+     * la carrera: entonces esta llamada no encuentra nada que nombrar y
+     * devuelve 0. Contar lo que devuelve fallaba de vez en cuando sin que el
+     * código tuviera nada mal. Lo que importa es cómo quedan, y que una
+     * segunda pasada ya no pregunta por nada.
+     */
+    await H.runtime.sincronizarCanales(LINE);
+    expect(await H.runtime.sincronizarCanales(LINE)).toBe(0);
 
     const filas = await h.db.select().from(chatTable)
       .where(and(eq(chatTable.lineId, LINE), eq(chatTable.kind, "newsletter")));

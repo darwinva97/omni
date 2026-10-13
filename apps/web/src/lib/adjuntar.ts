@@ -57,3 +57,53 @@ export function tamanoLegible(bytes: number): string {
  * rechace ahorra el viaje entero.
  */
 export const MAX_BYTES = 64 * 1024 * 1024;
+
+/** Lo mínimo de un `DataTransfer` que hace falta: así se puede probar sin navegador. */
+export interface Portapapeles {
+  readonly files: ArrayLike<File>;
+  getData(tipo: string): string;
+}
+
+/**
+ * Qué fichero hay que adjuntar de lo que se acaba de pegar, si hay alguno.
+ *
+ * Devuelve `null` cuando lo pegado es texto: entonces el campo se comporta
+ * como siempre y no se toca nada.
+ *
+ * Un caso engañoso: al copiar celdas de Excel o un párrafo de Word, el sistema
+ * pone en el portapapeles el texto Y una imagen de cómo se ve. Quien copia de
+ * ahí quiere el texto. Se distingue porque esa imagen viene sin `<img>` en el
+ * HTML; al copiar una imagen de verdad —de una web, de una captura— o no hay
+ * texto o el HTML la incluye.
+ */
+export function ficheroPegado(
+  datos: Portapapeles, ahora: Date = new Date(),
+): { file: File; omitidos: number } | null {
+  const ficheros = Array.from(datos.files);
+  if (ficheros.length === 0) return null;
+
+  const texto = datos.getData("text/plain").trim();
+  const html = datos.getData("text/html");
+  const soloUnaImagen = ficheros.length === 1 && ficheros[0]!.type.startsWith("image/");
+  if (texto && soloUnaImagen && html && !/<img[\s>]/i.test(html)) return null; // impeccable-disable-line broken-image -- es una expresión regular, no una etiqueta
+
+  return { file: conNombre(ficheros[0]!, ahora), omitidos: ficheros.length - 1 };
+}
+
+/**
+ * Un nombre que diga algo.
+ *
+ * Una captura pegada llega como «image.png», sin más. Si se manda como
+ * documento, eso es lo que ve quien la recibe; y si se pegan dos, se llaman
+ * igual. Los ficheros copiados del explorador conservan su nombre.
+ */
+function conNombre(file: File, ahora: Date): File {
+  if (file.name && !/^image\.\w+$/i.test(file.name)) return file;
+  const ext = file.type.split("/")[1]?.replace("jpeg", "jpg").replace(/\+.*$/, "") || "bin";
+  const p = (n: number) => String(n).padStart(2, "0");
+  const marca = `${ahora.getFullYear()}-${p(ahora.getMonth() + 1)}-${p(ahora.getDate())}`
+    + `-${p(ahora.getHours())}${p(ahora.getMinutes())}${p(ahora.getSeconds())}`;
+  return new File([file], `captura-${marca}.${ext}`, {
+    type: file.type, lastModified: file.lastModified,
+  });
+}

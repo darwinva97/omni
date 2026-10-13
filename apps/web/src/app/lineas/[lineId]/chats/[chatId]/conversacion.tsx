@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useOptimistic, useRef, useState, startTransition } from "react";
+import { useCallback, useEffect, useOptimistic, useRef, useState, startTransition } from "react";
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
@@ -18,7 +18,7 @@ import {
 import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { Reacciones, Stickers } from "@/componentes/stickers";
-import { campoPara, ETIQUETAS, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
+import { campoPara, ETIQUETAS, ficheroPegado, MAX_BYTES, type CampoDeMedio } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 
 /** De un mensaje del hilo a la cita que lo representa. */
@@ -304,6 +304,22 @@ export function Conversacion({
     yaColocado.current = true;
   }, [conPendientes.length]);
   useEffect(() => { yaColocado.current = false; }, [chat]);
+
+  /**
+   * Deja un fichero listo para enviar: el mismo camino para el clip y para
+   * pegar. Lo que se escriba después es su pie, y Enter lo manda.
+   */
+  const prepararAdjunto = (file: File): boolean => {
+    setProblema(null);
+    if (file.size > MAX_BYTES) {
+      // Se avisa ANTES de subir: mandar sesenta megas para que el otro lado
+      // los rechace es el viaje entero perdido.
+      setProblema(`${tamano(file.size)} es demasiado; el máximo es ${tamano(MAX_BYTES)}`);
+      return false;
+    }
+    setAdjunto({ file, campo: campoPara(file), gif: file.type === "image/gif" });
+    return true;
+  };
 
   const mandarFichero = async (
     file: File, campo: CampoDeMedio, pie: string, extra: Record<string, unknown> = {},
@@ -763,6 +779,7 @@ export function Conversacion({
 
         {adjunto && (
           <div className="flex items-center gap-3 border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
+            <Miniatura file={adjunto.file} />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm">{adjunto.file.name}</p>
               <p className="text-xs text-(--color-tenue)">
@@ -872,6 +889,27 @@ export function Conversacion({
                 prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
             }
           }}
+          /*
+            Pegar un fichero lo adjunta, como en WhatsApp: una captura con
+            Ctrl+V, o un fichero copiado del explorador. Pegar texto no se
+            toca. Va en el formulario y no solo en el campo para que valga
+            también con el foco en un botón del compositor.
+          */
+          onPaste={(e) => {
+            if (subiendo) return;
+            const pegado = ficheroPegado(e.clipboardData);
+            if (!pegado) return;
+            e.preventDefault();
+            if (!prepararAdjunto(pegado.file)) return;
+            if (pegado.omitidos > 0) {
+              setProblema(
+                `Se adjuntó «${pegado.file.name}». Se manda un fichero por mensaje: `
+                + `${pegado.omitidos === 1 ? "el otro" : `los otros ${pegado.omitidos}`} `
+                + "pégalos después de enviar este.",
+              );
+            }
+            campo.current?.focus();
+          }}
           className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
           {stickers && (
@@ -894,15 +932,7 @@ export function Conversacion({
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (!file) return;
-              setProblema(null);
-              if (file.size > MAX_BYTES) {
-                // Se avisa ANTES de subir: mandar sesenta megas para que el
-                // otro lado los rechace es el viaje entero perdido.
-                setProblema(`${tamano(file.size)} es demasiado; el máximo es ${tamano(MAX_BYTES)}`);
-                e.target.value = "";
-                return;
-              }
-              setAdjunto({ file, campo: campoPara(file), gif: file.type === "image/gif" });
+              if (!prepararAdjunto(file)) e.target.value = "";
             }}
           />
           <button
@@ -1085,6 +1115,28 @@ function Texto({ mensaje }: { mensaje: Mensaje }) {
           ))}
     </>
   );
+}
+
+/**
+ * Lo que se va a mandar, visto antes de mandarlo.
+ *
+ * Una captura pegada se llama «captura-…png»: sin la miniatura no hay forma de
+ * saber si es la que se quería. Solo imágenes; para lo demás el nombre basta.
+ */
+function Miniatura({ file }: { file: File }) {
+  // La URL vive lo que vive la imagen: se crea al montarla y se libera al
+  // quitarla o cambiar de fichero. Si no, cada captura pegada se queda en
+  // memoria hasta cerrar la pestaña.
+  const enlazar = useCallback((img: HTMLImageElement | null) => {
+    if (!img) return;
+    const url = URL.createObjectURL(file);
+    img.src = url;
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  if (!file.type.startsWith("image/")) return null;
+  // El `src` lo pone `enlazar` al montar, antes de pintar: no hay caja rota.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img ref={enlazar} alt="" className="size-12 shrink-0 rounded-md object-cover" />; // impeccable-disable-line broken-image -- src asignado por la ref al montar
 }
 
 function Firma({ mensaje }: { mensaje: Mensaje }) {
