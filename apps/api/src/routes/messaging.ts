@@ -2,7 +2,7 @@ import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver } from "@omni/channels";
 import { authorize, route as routeOf } from "@omni/core";
-import { contactTable, lineTable, messageTable } from "@omni/db";
+import { agendaDe, contactTable, lineTable, messageTable } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
 import type { ApiEnv } from "./shared.js";
@@ -273,28 +273,54 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
     createRoute({
       method: "get", path: "/v1/lines/{lineId}/contacts",
       tags: ["contactos"], summary: "Contactos conocidos por esta línea",
+      description:
+        "Una entrada por PERSONA, no por dirección: quien tiene teléfono y LID sale una " +
+        "vez, con el nombre a enseñar ya resuelto (agenda, el suyo, @usuario, número). " +
+        "`chat` dice si ya hay conversación y por cuál de sus direcciones. Con `agenda` " +
+        "solo salen los que tienen nombre guardado; con `q`, los que coinciden por " +
+        "nombre o por número, sin tildes ni mayúsculas.",
       request: {
         params: z.object({ lineId: z.string() }),
-        query: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
+        query: z.object({
+          limit: z.coerce.number().int().min(1).max(2000).default(100),
+          q: z.string().trim().max(100).optional(),
+          agenda: z.enum(["true", "false"]).optional().transform((v) => v === "true"),
+        }),
       },
       responses: {
         200: json(z.object({ data: z.array(z.object({
           address: z.string(), pushName: z.string().nullable(),
           savedName: z.string().nullable(), blocked: z.boolean(),
+          name: z.string(),
+          username: z.string().nullable(),
+          lid: z.string().nullable(),
+          phone: z.string().nullable(),
+          chat: z.string().nullable(),
         })) }), "ok"),
         ...errors,
       },
     }),
     async (c) => {
       const { lineId } = c.req.valid("param");
-      const { limit } = c.req.valid("query");
+      const { limit, q, agenda } = c.req.valid("query");
       await authorize(c.get("principal"), routeOf("contact.list"), { lineId });
-      const rows = await container.dbh.db.select().from(contactTable)
-        .where(eq(contactTable.lineId, lineId))
-        .orderBy(desc(contactTable.updatedAt)).limit(limit);
-      return c.json({ data: rows.map((r) => ({
-        address: r.address, pushName: r.pushName, savedName: r.savedName, blocked: r.blocked,
-      })) }, 200);
+
+      const [linea] = await container.dbh.db.select({ address: lineTable.address })
+        .from(lineTable).where(eq(lineTable.id, lineId)).limit(1);
+      const plano = (t: string) => t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+      const buscado = q ? plano(q) : null;
+      const digitos = q?.replace(/\D/g, "") ?? "";
+
+      const personas = (await agendaDe(container.dbh.db, lineId))
+        // Uno mismo no es un contacto que ofrecer.
+        .filter((p) => !linea?.address || p.phone !== linea.address)
+        .filter((p) => !agenda || p.savedName !== null)
+        .filter((p) => !buscado || [p.name, p.savedName, p.pushName, p.username]
+          .some((n) => n && plano(n).includes(buscado))
+          || (digitos.length >= 3 && (p.phone ?? "").includes(digitos)))
+        .sort((a, b) => a.name.localeCompare(b.name, "es"))
+        .slice(0, limit);
+      return c.json({ data: personas }, 200);
     },
   );
 

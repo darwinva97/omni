@@ -186,7 +186,16 @@ export const COMMANDS: readonly Command[] = [
     summary: "Contactos conocidos por una línea",
     operation: "GET /v1/lines/{lineId}/contacts",
     args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
-    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/contacts`),
+    flags: [
+      { name: "buscar", description: "Por nombre o número, sin tildes ni mayúsculas" },
+      { name: "agenda", description: "Solo los que tienen nombre guardado (sí)" },
+    ],
+    run: (c, a) => {
+      const q = new URLSearchParams({ limit: "500" });
+      if (flag(a, "buscar")) q.set("q", flag(a, "buscar")!);
+      if (flag(a, "agenda")) q.set("agenda", "true");
+      return c.request("GET", `/v1/lines/${req(a, 0, "linea")}/contacts?${q}`);
+    },
   },
   {
     name: "grupos",

@@ -7,6 +7,7 @@ import type { Chat, Linea, Lista } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { conNombres, cuando, resumen } from "@/lib/formato";
 import { describir, usePresencias } from "@/lib/presencia";
+import { buscarEnAgenda, useAgenda } from "@/lib/agenda";
 import { Avatar } from "@/componentes/piezas";
 import {
   IconoArchivar, IconoBuscar, IconoCampana, IconoCampanaTachada, IconoCanal,
@@ -407,6 +408,12 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     }
   }), [linea.id, chats, suscribir, abierto, prefs, router]);
 
+  const agenda = useAgenda(linea.id);
+  const contactosBuscados = useMemo(
+    () => (busqueda.trim() ? buscarEnAgenda(agenda, busqueda).filter((p) => !p.chat).slice(0, 30) : []),
+    [agenda, busqueda],
+  );
+
   const visibles = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
     /*
@@ -691,7 +698,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
       )}
 
       <div className="scroll-discreto flex-1 overflow-y-auto">
-        {visibles.length === 0 ? (
+        {visibles.length === 0 && contactosBuscados.length > 0 ? null : visibles.length === 0 ? (
           <p className="px-4 py-10 text-center text-sm text-(--color-tenue)">
             {busqueda
               ? `Nada que coincida con «${busqueda}»`
@@ -802,6 +809,39 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
               );
             })}
           </ul>
+        )}
+
+        {/*
+          Los de la agenda que coinciden y con los que aún no hay chat, como en
+          WhatsApp. Los que ya tienen conversación salen arriba, entre los
+          chats: repetirlos aquí sería enseñar a la misma persona dos veces.
+          Pulsar uno abre una conversación nueva; existe de verdad en cuanto
+          se le escribe.
+        */}
+        {contactosBuscados.length > 0 && (
+          <section aria-label="Contactos">
+            <h2 className="px-4 pt-4 pb-1.5 text-xs font-semibold tracking-wide text-(--color-acento-fuerte) uppercase">
+              Contactos
+            </h2>
+            <ul>
+              {contactosBuscados.map((p) => (
+                <li key={p.address}>
+                  <Link
+                    href={`/lineas/${linea.id}/chats/${encodeURIComponent(p.address)}`}
+                    className="flex items-center gap-3 px-4 py-2.5 transition-colors duration-150 hover:bg-(--color-hundido)"
+                  >
+                    <Avatar nombre={p.name} direccion={p.address} kind="pn" url={null} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">{p.name}</span>
+                      <span className="block truncate text-xs text-(--color-tenue)">
+                        {p.phone ? `+${p.phone.split("@")[0]}` : p.pushName ?? ""}
+                      </span>
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
       </div>
       <Menu

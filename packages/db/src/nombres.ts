@@ -187,3 +187,69 @@ export async function fotosDe(
   }
   return fotos;
 }
+
+/** Una persona de la agenda, con sus dos direcciones juntas. */
+export interface Persona {
+  /** Su dirección de teléfono si se sabe; si no, la que haya. */
+  readonly address: string;
+  readonly lid: string | null;
+  readonly phone: string | null;
+  readonly name: string;
+  readonly savedName: string | null;
+  readonly pushName: string | null;
+  readonly username: string | null;
+  readonly blocked: boolean;
+  /** La conversación que ya existe con ella, por cualquiera de sus direcciones. */
+  readonly chat: string | null;
+}
+
+/**
+ * La agenda de una línea: UNA entrada por persona.
+ *
+ * La tabla de contactos guarda una fila por dirección, y la misma persona
+ * suele tener dos: la de su teléfono —donde vive el nombre que le pusiste— y
+ * la de su LID —donde suele estar el que se puso ella—. Listarlas tal cual
+ * enseñaba a cada uno dos veces, una con cada nombre. Se juntan por el mapa de
+ * identidad, con la regla de nombres de siempre: si los dos lados tienen
+ * nombre de agenda, gana el del teléfono.
+ *
+ * `chat` dice si ya hay conversación y con qué dirección: abrir a alguien por
+ * su teléfono cuando su chat está abierto por LID crearía una segunda
+ * conversación con la misma persona.
+ */
+export async function agendaDe(db: Db, lineId: string): Promise<Persona[]> {
+  const [contactos, mapa, chats] = await Promise.all([
+    db.select().from(contactTable).where(eq(contactTable.lineId, lineId)),
+    db.select({ lid: identityMapTable.lid, phone: identityMapTable.phone })
+      .from(identityMapTable).where(eq(identityMapTable.lineId, lineId)),
+    db.select({ address: chatTable.address }).from(chatTable).where(eq(chatTable.lineId, lineId)),
+  ]);
+  const telefonoDe = new Map(mapa.map((m) => [m.lid, m.phone]));
+  const lidDe = new Map(mapa.map((m) => [m.phone, m.lid]));
+  const conChat = new Set(chats.map((c) => c.address));
+
+  const grupos = new Map<string, { pn?: typeof contactos[number]; lid?: typeof contactos[number] }>();
+  for (const c of contactos) {
+    const esLid = c.address.endsWith("@lid");
+    if (!esLid && !c.address.endsWith("@s.whatsapp.net")) continue;
+    const clave = esLid ? telefonoDe.get(c.address) ?? c.address : c.address;
+    const g = grupos.get(clave) ?? {};
+    if (esLid) g.lid = c; else g.pn = c;
+    grupos.set(clave, g);
+  }
+
+  return [...grupos].map(([clave, g]) => {
+    const phone = clave.endsWith("@s.whatsapp.net") ? clave : null;
+    const lid = g.lid?.address ?? (phone ? lidDe.get(phone) ?? null : null);
+    const savedName = g.pn?.savedName ?? g.lid?.savedName ?? null;
+    const pushName = g.lid?.pushName ?? g.pn?.pushName ?? null;
+    const username = g.lid?.username ?? g.pn?.username ?? null;
+    return {
+      address: clave, lid, phone,
+      name: nombreVisible({ address: clave, savedName, pushName, username, phone }),
+      savedName, pushName, username,
+      blocked: Boolean(g.pn?.blocked || g.lid?.blocked),
+      chat: lid && conChat.has(lid) ? lid : phone && conChat.has(phone) ? phone : null,
+    };
+  });
+}

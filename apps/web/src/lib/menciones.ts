@@ -12,6 +12,32 @@ export interface Participante {
   readonly address: string;
   readonly name: string;
   readonly me?: boolean;
+  /**
+   * De la agenda pero NO del grupo —o cualquiera, en un chat de dos—.
+   *
+   * Se ofrece igual, pero se inserta su nombre como texto y no como mención:
+   * WhatsApp solo avisa a quien está en el grupo, y convertirlo en
+   * «@número» haría que los demás vieran un número en vez de un nombre.
+   */
+  readonly fuera?: boolean;
+}
+
+/**
+ * Los participantes, y después la agenda que no está ya entre ellos.
+ *
+ * Una persona del grupo aparece en la agenda con su teléfono y en el grupo
+ * con su LID: se reconoce por cualquiera de las dos para no ofrecerla dos
+ * veces.
+ */
+export function candidatosDeMencion(
+  participantes: readonly Participante[],
+  agenda: readonly { address: string; lid: string | null; phone: string | null; name: string }[],
+): Participante[] {
+  const ya = new Set(participantes.map((p) => p.address));
+  const fuera = agenda
+    .filter((c) => !ya.has(c.address) && !(c.lid && ya.has(c.lid)) && !(c.phone && ya.has(c.phone)))
+    .map((c) => ({ address: c.address, name: c.name, fuera: true }));
+  return [...participantes, ...fuera];
 }
 
 /** Sin tildes ni mayúsculas, para comparar lo que se escribe con los nombres. */
@@ -42,10 +68,21 @@ export function filtrarParticipantes(
 ): Participante[] {
   const f = plano(filtro);
   const candidatos = lista.filter((p) => !p.me);
-  if (!f) return [...candidatos].sort((a, b) => a.name.localeCompare(b.name, "es")).slice(0, max);
+  if (!f) {
+    return [...candidatos]
+      .sort((a, b) => Number(a.fuera ?? false) - Number(b.fuera ?? false)
+        || a.name.localeCompare(b.name, "es"))
+      .slice(0, max);
+  }
   const empieza = candidatos.filter((p) => plano(p.name).split(/\s+/).some((w) => w.startsWith(f)));
   const contiene = candidatos.filter((p) => !empieza.includes(p) && plano(p.name).includes(f));
-  return [...empieza, ...contiene].slice(0, max);
+  // Los del grupo antes que la agenda: son a quienes de verdad se avisa.
+  const orden = (p: Participante) => (p.fuera ? 1 : 0);
+  return [...empieza, ...contiene]
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => orden(a.p) - orden(b.p) || a.i - b.i)
+    .map(({ p }) => p)
+    .slice(0, max);
 }
 
 /** Cambia el «@algo» que se estaba escribiendo por «@Nombre ». */

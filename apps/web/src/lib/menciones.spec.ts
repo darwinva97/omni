@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  consultaDeMencion, filtrarParticipantes, insertarMencion, prepararMenciones,
+  candidatosDeMencion, consultaDeMencion, filtrarParticipantes, insertarMencion,
+  prepararMenciones,
 } from "./menciones";
 
 describe("abrir la lista al escribir «@»", () => {
@@ -78,5 +79,35 @@ describe("insertar y mandar", () => {
 
   it("si se borró la mención antes de enviar, no se manda", () => {
     expect(prepararMenciones("hola", new Map([["Ana", "1@lid"]])).mentions).toEqual([]);
+  });
+});
+
+describe("también la agenda", () => {
+  const grupo = [
+    { address: "248975076663346@lid", name: "Rodrigo Chumpitaz" },
+    { address: "1@lid", name: "Yo", me: true },
+  ];
+  const agenda = [
+    // Rodrigo otra vez, por su teléfono: no se repite.
+    { address: "51934451702@s.whatsapp.net", lid: "248975076663346@lid",
+      phone: "51934451702@s.whatsapp.net", name: "Rodrigo Chumpitaz" },
+    { address: "51900111222@s.whatsapp.net", lid: null,
+      phone: "51900111222@s.whatsapp.net", name: "Rosa Mamani" },
+  ];
+
+  it("ofrece la agenda sin repetir a quien ya está en el grupo", () => {
+    const todos = candidatosDeMencion(grupo, agenda);
+    expect(todos.filter((p) => p.name === "Rodrigo Chumpitaz")).toHaveLength(1);
+    expect(todos.find((p) => p.name === "Rosa Mamani")?.fuera).toBe(true);
+  });
+
+  it("los del grupo van primero, aunque la agenda coincida igual de bien", () => {
+    const todos = candidatosDeMencion(grupo, agenda);
+    expect(filtrarParticipantes(todos, "ro").map((p) => p.name))
+      .toEqual(["Rodrigo Chumpitaz", "Rosa Mamani"]);
+  });
+
+  it("en un chat de dos, toda la agenda", () => {
+    expect(candidatosDeMencion([], agenda).every((p) => p.fuera)).toBe(true);
   });
 });

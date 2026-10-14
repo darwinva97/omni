@@ -438,6 +438,24 @@ export class EngineRuntime {
       return { clientMessageId, messageId, state: "queued", ...descripcionDelMedio };
     }
 
+    /*
+     * La conversación existe desde el primer envío.
+     *
+     * Antes solo se creaba al RECIBIR: escribir desde aquí a alguien nuevo
+     * guardaba el mensaje pero la conversación no aparecía en la lista hasta
+     * que la otra persona contestaba. Lo propio no deja pendientes.
+     */
+    await this.#deps.db
+      .insert(chatTable)
+      .values({
+        id: `c-${lineId}-${to.value}`, lineId, address: to.value, kind: to.kind,
+        lastMessageAt: new Date(this.#now()), unreadCount: 0,
+      })
+      .onConflictDoUpdate({
+        target: [chatTable.lineId, chatTable.address],
+        set: { lastMessageAt: new Date(this.#now()), unreadCount: 0 },
+      });
+
     await this.#deps.queue.enqueue<OutboundJob>(
       OUTBOUND_QUEUE,
       {

@@ -12,9 +12,10 @@ import { Encuesta } from "@/componentes/encuesta";
 import { BuscarEnChat, type Resultado } from "@/componentes/buscar-en-chat";
 import { describir, usePresencias } from "@/lib/presencia";
 import {
-  consultaDeMencion, filtrarParticipantes, insertarMencion, prepararMenciones,
-  type Participante,
+  candidatosDeMencion, consultaDeMencion, filtrarParticipantes, insertarMencion,
+  prepararMenciones, type Participante,
 } from "@/lib/menciones";
+import { useAgenda } from "@/lib/agenda";
 import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
@@ -584,11 +585,17 @@ export function Conversacion({
     return () => { vivo = false; };
   }, [lineId, chat]);
 
-  const opcionesDeMencion = consulta ? filtrarParticipantes(participantes, consulta.filtro) : [];
+  /*
+   * A quién se puede nombrar: los del grupo, y después toda la agenda. En un
+   * chat de dos, solo la agenda, como texto (ver `fuera` en lib/menciones).
+   */
+  const agenda = useAgenda(lineId);
+  const candidatos = candidatosDeMencion(participantes, agenda);
+  const opcionesDeMencion = consulta ? filtrarParticipantes(candidatos, consulta.filtro) : [];
 
   const revisarMencion = (): void => {
     const el = campo.current;
-    if (!el || participantes.length === 0) { setConsulta(null); return; }
+    if (!el || candidatos.length === 0) { setConsulta(null); return; }
     const nueva = consultaDeMencion(el.value, el.selectionStart ?? el.value.length);
     setConsulta(nueva ? { chat, ...nueva } : null);
     if (nueva?.filtro !== consulta?.filtro) setResaltada(0);
@@ -601,7 +608,8 @@ export function Conversacion({
     el.value = r.texto;
     el.setSelectionRange(r.cursor, r.cursor);
     el.focus();
-    elegidas.current.set(p.name, p.address);
+    // Solo lo del grupo es mención de verdad; lo demás se queda en texto.
+    if (!p.fuera) elegidas.current.set(p.name, p.address);
     setConsulta(null);
   };
 
@@ -1272,7 +1280,11 @@ export function Conversacion({
                   }`}
                 >
                   <Avatar nombre={p.name} direccion={p.address} kind="pn" tamano="sm" />
-                  <span className="truncate">{p.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                  {/* Que se sepa antes de elegir: a esta persona no le llega aviso. */}
+                  {p.fuera && esGrupo && (
+                    <span className="shrink-0 text-[11px] text-(--color-apagado)">no está en el grupo</span>
+                  )}
                 </li>
               ))}
             </ul>

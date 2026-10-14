@@ -1236,6 +1236,71 @@ run("organización y limpieza", () => {
     expect(container.sandbox!.presenceOf(LINE as never, grupo).propia).toBe("composing");
   });
 
+  it("la agenda sale una vez por persona, con tu nombre y su chat si lo hay", async () => {
+    /*
+     * La misma persona tiene una fila por su teléfono —con tu nombre— y otra
+     * por su LID —con el suyo—. Antes salía dos veces. Y si su chat está
+     * abierto por el LID, abrirla por el teléfono duplicaría la conversación:
+     * `chat` dice cuál usar.
+     */
+    const lid = "330000000000777@lid";
+    const tel = "51955444333@s.whatsapp.net";
+    await dbh.sql`
+      INSERT INTO identity_map (line_id, lid, phone) VALUES (${LINE}, ${lid}, ${tel})
+      ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO contact (id, line_id, address, saved_name, push_name) VALUES
+        ('ct-ag-tel', ${LINE}, ${tel}, 'Mamita Lindaaa', null),
+        ('ct-ag-lid', ${LINE}, ${lid}, null, 'Lorenza')
+      ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, last_message_at)
+      VALUES ('c-ag', ${LINE}, ${lid}, 'lid', now()) ON CONFLICT DO NOTHING`;
+    // Alguien sin nombre guardado: no es de la agenda.
+    await dbh.sql`
+      INSERT INTO contact (id, line_id, address, push_name)
+      VALUES ('ct-ag-otro', ${LINE}, '51955000999@s.whatsapp.net', 'Lorena Desconocida')
+      ON CONFLICT DO NOTHING`;
+
+    type P = { address: string; name: string; pushName: string | null;
+      lid: string | null; phone: string | null; chat: string | null };
+    const buscar = async (consulta: string) => (await j<{ data: P[] }>(
+      await call(`/v1/lines/${LINE}/contacts?limit=2000&${consulta}`))).data;
+
+    const todas = await buscar("q=lore");
+    const ella = todas.filter((p) => p.phone === tel || p.lid === lid);
+    expect(ella).toHaveLength(1);
+    expect(ella[0]).toMatchObject({
+      address: tel, name: "Mamita Lindaaa", pushName: "Lorenza", lid, phone: tel, chat: lid,
+    });
+    // Sin `agenda`, también la que no tiene nombre guardado.
+    expect(todas.some((p) => p.name === "Lorena Desconocida")).toBe(true);
+    expect((await buscar("q=lore&agenda=true")).map((p) => p.name)).toEqual(["Mamita Lindaaa"]);
+
+    // Por número, y sin tildes.
+    expect((await buscar("q=955444")).map((p) => p.name)).toEqual(["Mamita Lindaaa"]);
+    expect((await buscar("q=mamita linda")).map((p) => p.name)).toEqual(["Mamita Lindaaa"]);
+
+    // Uno mismo nunca sale.
+    expect((await buscar("q=51999888777")).length).toBe(0);
+  });
+
+  it("escribir a alguien nuevo crea la conversación sin esperar a que conteste", async () => {
+    const nuevo = "51955000123@s.whatsapp.net";
+    expect((await call(`/v1/lines/${LINE}/chats/${enc(nuevo)}`)).status).toBe(404);
+    const res = await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST", body: JSON.stringify({ to: nuevo, text: "hola, soy nuevo" }),
+    });
+    expect(res.status).toBe(202);
+    const { data } = await j<{ data: { address: string; ultimo: string; unreadCount: number } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(nuevo)}`));
+    expect(data.address).toBe(nuevo);
+    expect(data.unreadCount).toBe(0);
+    const { data: lista } = await j<{ data: { address: string }[] }>(
+      await call(`/v1/lines/${LINE}/chats?limit=200`));
+    expect(lista.some((c) => c.address === nuevo)).toBe(true);
+  });
+
   it("un chat por LID se llama como lo guardaste por su TELÉFONO", async () => {
     /*
      * El caso real: el chat estaba abierto con el LID, la ficha del LID solo
