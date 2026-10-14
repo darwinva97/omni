@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
-  extractMentions, extractPollVote, extractReply, extractText, messageKind,
-  toNewsletterMetadata,
+  citadoDe, detallesDeMedio, extractMentions, extractPollVote, extractReply, extractText,
+  messageKind, toNewsletterMetadata,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
 import { generateMessageIDV2 } from "baileys";
@@ -865,5 +865,38 @@ describe("a quién menciona un mensaje", () => {
         text: "x", contextInfo: { mentionedJid: ["1@lid", "1@lid", 42, "sin-arroba"] },
       },
     })).toEqual(["1@lid"]);
+  });
+});
+
+describe("lo que hace falta para citar un fichero", () => {
+  it("un audio: duración, sin imagen", () => {
+    expect(detallesDeMedio({ audioMessage: { seconds: 15, ptt: false, mimetype: "audio/ogg" } }))
+      .toEqual({ thumb: null, seconds: 15, ptt: false, fileName: null });
+  });
+
+  it("una nota de voz se distingue de un fichero de audio", () => {
+    expect(detallesDeMedio({ audioMessage: { seconds: 4, ptt: true } }).ptt).toBe(true);
+  });
+
+  it("una foto trae su miniatura, en bytes o ya en base64 al releerla", () => {
+    expect(detallesDeMedio({ imageMessage: { jpegThumbnail: new Uint8Array([1, 2, 3]) } }).thumb)
+      .toBe("AQID");
+    expect(detallesDeMedio({ imageMessage: { jpegThumbnail: "AQID" } }).thumb).toBe("AQID");
+  });
+
+  it("un documento, su nombre; y dentro de un envoltorio también", () => {
+    expect(detallesDeMedio({
+      documentWithCaptionMessage: { message: { documentMessage: { fileName: "Constancia.pdf" } } },
+    }).fileName).toBe("Constancia.pdf");
+  });
+
+  it("la copia del citado que viaja dentro de la respuesta", () => {
+    const citado = citadoDe({
+      extendedTextMessage: {
+        text: "XDDDD",
+        contextInfo: { stanzaId: "A", quotedMessage: { audioMessage: { seconds: 15 } } },
+      },
+    });
+    expect(detallesDeMedio(citado).seconds).toBe(15);
   });
 });

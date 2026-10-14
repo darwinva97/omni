@@ -7,6 +7,7 @@ import { authorize, filterLines, route as routeOf, type Principal } from "@omni/
 import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
+import { citadoDe, detallesDeMedio } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
 
@@ -107,8 +108,18 @@ const MensajeSchema = z.object({
     senderName: z.string().nullable(),
     kind: z.string(),
     body: z.string().nullable(),
-    /** Miniatura del citado, cuando lo tenemos y lleva fichero. */
+    /**
+     * Miniatura del citado: solo de una foto, un vídeo o un sticker. Un audio
+     * o un documento no tienen imagen —su URL en una `<img>` era una imagen
+     * rota— y se citan con su icono, su duración o su nombre.
+     */
     thumbUrl: z.string().nullable(),
+    /** Duración de un audio o un vídeo citado, en segundos. */
+    seconds: z.number().nullable().default(null),
+    /** Si el audio citado es una nota de voz y no un fichero de audio. */
+    ptt: z.boolean().default(false),
+    /** Nombre del documento citado. */
+    fileName: z.string().nullable().default(null),
     /**
      * `false` cuando el original no está en esta base.
      *
@@ -345,20 +356,27 @@ async function listasDe(
  * cambia es que entonces no se puede saltar al original, y eso se dice con
  * `disponible` en vez de ofrecer un salto que no lleva a ningún sitio.
  */
+type Medio = ReturnType<typeof detallesDeMedio>;
+interface Original {
+  fromMe: boolean; senderAddress: string; kind: string; body: string | null;
+  mediaKey: string | null; medio: Medio;
+}
+
+/** Los tipos que se citan con imagen. El resto, con icono. */
+const CON_MINIATURA = new Set(["image", "video", "sticker"]);
+
 async function citaDe(
   container: Container,
   replyToId: string | null,
   crudo: CrudoConCita | null,
-  originales: Map<string, {
-    fromMe: boolean; senderAddress: string; kind: string; body: string | null;
-    mediaKey: string | null;
-  }>,
+  originales: Map<string, Original>,
   nombres: Map<string, string>,
   chat: string,
   menciones: ReadonlyMap<string, string>,
 ): Promise<{
   id: string; fromMe: boolean; senderName: string | null; kind: string;
   body: string | null; thumbUrl: string | null; disponible: boolean;
+  seconds: number | null; ptt: boolean; fileName: string | null;
 } | null> {
   if (!replyToId) return null;
 
@@ -368,6 +386,19 @@ async function citaDe(
   };
   // La cita es texto plano: las menciones van ya con el nombre puesto.
   const texto = (t: string | null): string | null => t ? conNombres(t, menciones) : t;
+  /*
+   * La imagen de la cita: la miniatura que trae el propio mensaje, que pesa
+   * unos pocos KB y no hay que descargar, y si no la trae —un sticker—, el
+   * fichero. Nunca para lo que no es imagen.
+   */
+  const miniatura = async (kind: string, medio: Medio, mediaKey: string | null) => {
+    if (!CON_MINIATURA.has(kind)) return null;
+    if (medio.thumb) return `data:image/jpeg;base64,${medio.thumb}`;
+    if (mediaKey && kind !== "video") {
+      return container.storage.signedUrl(mediaKey, MEDIA_URL_TTL);
+    }
+    return null;
+  };
 
   const original = originales.get(replyToId);
   if (original) {
@@ -377,23 +408,27 @@ async function citaDe(
       senderName: original.fromMe ? null : quien(original.senderAddress),
       kind: original.kind,
       body: texto(original.body),
-      thumbUrl: original.mediaKey
-        ? await container.storage.signedUrl(original.mediaKey, MEDIA_URL_TTL)
-        : null,
+      thumbUrl: await miniatura(original.kind, original.medio, original.mediaKey),
+      seconds: original.medio.seconds, ptt: original.medio.ptt,
+      fileName: original.medio.fileName,
       disponible: true,
     };
   }
 
   const copia = crudo?.replyTo;
   if (!copia) return null;
+  // La copia que viaja en la respuesta también trae su miniatura y duración.
+  const medio = detallesDeMedio(citadoDe((crudo as { raw?: { message?: object } }).raw?.message));
+  const kind = copia.kind ?? "unknown";
   return {
     id: replyToId,
     // Sin el original no se sabe de quién era: sin autor, el panel lo dice.
     fromMe: false,
     senderName: quien(copia.author),
-    kind: copia.kind ?? "unknown",
+    kind,
     body: texto(copia.text ?? null),
-    thumbUrl: null,
+    thumbUrl: await miniatura(kind, medio, null),
+    seconds: medio.seconds, ptt: medio.ptt, fileName: medio.fileName,
     disponible: false,
   };
 }
@@ -1071,10 +1106,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       const citados = [...new Set(
         rows.map((r) => r.replyToId).filter((x): x is string => x !== null),
       )];
-      const originales = new Map<string, {
-        fromMe: boolean; senderAddress: string; kind: string; body: string | null;
-        mediaKey: string | null;
-      }>();
+      const originales = new Map<string, Original>();
       if (citados.length > 0) {
         const filas = await container.dbh.db
           .select({
@@ -1082,6 +1114,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
             fromMe: messageTable.fromMe, senderAddress: messageTable.senderAddress,
             kind: messageTable.kind, body: messageTable.body,
             mediaKey: messageTable.mediaKey, deletedAt: messageTable.deletedAt,
+            raw: messageTable.raw,
           })
           .from(messageTable)
           .where(and(
@@ -1096,6 +1129,10 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
             // de atrás de una cita.
             body: f.deletedAt ? null : f.body,
             mediaKey: f.deletedAt ? null : f.mediaKey,
+            // Lo que hace falta para citarlo: miniatura, duración, nombre.
+            medio: f.deletedAt
+              ? detallesDeMedio(null)
+              : detallesDeMedio((f.raw as { raw?: { message?: object } } | null)?.raw?.message),
           });
         }
       }

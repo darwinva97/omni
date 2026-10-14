@@ -20,7 +20,8 @@ import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
-  IconoAdjuntar, IconoBloquear, IconoCerrar, IconoCopiar, IconoDescargar, IconoDocumento,
+  IconoAdjuntar, IconoBloquear, IconoCamara, IconoCerrar, IconoCopiar, IconoDescargar, IconoDocumento,
+  IconoImagen, IconoMicrofono, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
 import Link from "next/link";
@@ -44,6 +45,38 @@ function quienesEscribieron(mensajes: readonly Mensaje[]): Participante[] {
 /** La hora de ahora, para los manejadores: fuera del componente, que no es render. */
 const marcaDeTiempo = (): number => Date.now();
 
+/**
+ * Lo que dice una cita, como WhatsApp: el texto si lo hay; si no, qué es.
+ * Un audio con su duración, un documento con su nombre.
+ */
+function textoDeCita(cita: CitaDe): string {
+  const texto = cita.body?.trim();
+  const duracion = cita.seconds
+    ? ` ${Math.floor(cita.seconds / 60)}:${String(Math.floor(cita.seconds % 60)).padStart(2, "0")}`
+    : "";
+  switch (cita.kind) {
+    case "audio": return `${cita.ptt ? "Mensaje de voz" : "Audio"}${duracion}`;
+    case "video": return texto || `Vídeo${duracion}`;
+    case "image": return texto || "Foto";
+    case "sticker": return "Sticker";
+    case "document": return cita.fileName || texto || "Documento";
+    default: return texto || ETIQUETA[cita.kind] || "Mensaje";
+  }
+}
+
+/** El icono delante de lo que se cita, cuando no es texto. Dibujado, no emoji. */
+function IconoDeCita({ kind, ptt }: { kind: string; ptt: boolean }) {
+  const clase = "size-3.5 shrink-0";
+  switch (kind) {
+    case "audio": return ptt ? <IconoMicrofono className={clase} /> : <IconoSonido className={clase} />;
+    case "video": return <IconoCamara className={clase} />;
+    case "image": return <IconoImagen className={clase} />;
+    case "sticker": return <IconoSticker className={clase} />;
+    case "document": return <IconoDocumento className={clase} />;
+    default: return null;
+  }
+}
+
 /** De un mensaje del hilo a la cita que lo representa. */
 function citaDeMensaje(m: Mensaje): CitaDe {
   return {
@@ -52,7 +85,10 @@ function citaDeMensaje(m: Mensaje): CitaDe {
     senderName: m.senderName ?? null,
     kind: m.kind,
     body: m.body,
-    thumbUrl: m.media?.url ?? null,
+    // Solo lo que es imagen se cita con imagen: la URL de un audio en una
+    // `<img>` es una imagen rota.
+    thumbUrl: m.kind === "image" || m.kind === "sticker" ? m.media?.url ?? null : null,
+    fileName: m.media?.fileName ?? null,
     disponible: true,
   };
 }
@@ -1492,8 +1528,9 @@ function Cita({
         <span className="block truncate text-xs font-semibold" style={{ color }}>
           {quien}
         </span>
-        <span className="block truncate text-xs text-(--color-tenue)">
-          {cita.body?.trim() || ETIQUETA[cita.kind] || "Mensaje"}
+        <span className="flex items-center gap-1 truncate text-xs text-(--color-tenue)">
+          <IconoDeCita kind={cita.kind} ptt={cita.ptt ?? false} />
+          <span className="truncate">{textoDeCita(cita)}</span>
         </span>
       </span>
       {cita.thumbUrl && (
@@ -1501,6 +1538,8 @@ function Cita({
         <img
           src={cita.thumbUrl}
           alt=""
+          // Si aun así no carga, se quita en vez de dejar el icono roto.
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
           className="size-12 shrink-0 object-cover"
         />
       )}

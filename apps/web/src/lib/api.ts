@@ -159,6 +159,12 @@ export interface Cita {
   body: string | null;
   /** Miniatura del citado, cuando lo tenemos y lleva fichero. */
   thumbUrl: string | null;
+  /** Duración de un audio o vídeo citado, en segundos. */
+  seconds?: number | null;
+  /** Nota de voz, y no un fichero de audio. */
+  ptt?: boolean;
+  /** Nombre del documento citado. */
+  fileName?: string | null;
   /**
    * `false` cuando el original no está en esta base: la cita se enseña igual
    * —WhatsApp manda una copia dentro— pero no se puede saltar a ella.

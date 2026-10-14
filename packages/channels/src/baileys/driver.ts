@@ -1488,6 +1488,44 @@ export function extractMentions(m: WAMessage): string[] {
 }
 
 /**
+ * Lo que hace falta para CITAR un fichero como lo cita WhatsApp.
+ *
+ * Una foto o un vídeo de WhatsApp lleva dentro una miniatura JPEG diminuta
+ * (`jpegThumbnail`): es lo que el teléfono enseña en la cita, sin descargar
+ * nada. Un audio no tiene imagen, tiene duración; un documento, nombre. Sirve
+ * igual para el mensaje original guardado y para la copia que viaja dentro de
+ * la respuesta. Lo que no reconoce lo devuelve vacío.
+ */
+export function detallesDeMedio(message: object | null | undefined): {
+  thumb: string | null; seconds: number | null; ptt: boolean; fileName: string | null;
+} {
+  const vacio = { thumb: null, seconds: null, ptt: false, fileName: null };
+  if (!message) return vacio;
+  const m = (normalizeMessageContent(message as never) ?? message) as Record<string, unknown>;
+  const tipo = getContentType(m as never);
+  const nodo = tipo ? (m[tipo] as Record<string, unknown> | undefined) : undefined;
+  if (!nodo || typeof nodo !== "object") return vacio;
+  const seconds = Number(nodo["seconds"]);
+  return {
+    thumb: enBase64(nodo["jpegThumbnail"] as Uint8Array | string | undefined),
+    seconds: Number.isFinite(seconds) && seconds > 0 ? seconds : null,
+    ptt: nodo["ptt"] === true,
+    fileName: typeof nodo["fileName"] === "string" ? nodo["fileName"] : null,
+  };
+}
+
+/** La copia del citado que viaja dentro de una respuesta, si la trae. */
+export function citadoDe(message: object | null | undefined): object | null {
+  if (!message) return null;
+  const m = (normalizeMessageContent(message as never) ?? message) as Record<string, unknown>;
+  const tipo = getContentType(m as never);
+  const ctx = tipo
+    ? (m[tipo] as { contextInfo?: { quotedMessage?: object } } | undefined)?.contextInfo
+    : undefined;
+  return ctx?.quotedMessage ?? null;
+}
+
+/**
  * A qué mensaje responde, si responde a alguno.
  *
  * WhatsApp manda la cita COMPLETA dentro del mensaje que responde: el

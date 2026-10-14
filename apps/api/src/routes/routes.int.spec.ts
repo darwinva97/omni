@@ -1631,6 +1631,47 @@ run("organización y limpieza", () => {
     expect(suelto?.replyTo).toBeNull();
   });
 
+  it("citar un audio no pone su fichero como imagen; citar una foto sí trae miniatura", async () => {
+    /*
+     * Rodrigo respondió a una nota de Joseph y la cita salía con «Mensaje» y
+     * una imagen rota: la URL del .ogg iba en una <img>.
+     */
+    const chat = "51901000050@s.whatsapp.net";
+    const llega = async (id: string, kind: string, message: object, extra: object = {}) =>
+      container.runtime.publish("message.received", LINE, {
+        key: { id, remoteJid: chat }, kind, text: null, timestamp: Date.now(),
+        raw: { message }, ...extra,
+      });
+    await llega("AUDIO-1", "audio", { audioMessage: { seconds: 15, ptt: false } });
+    await llega("FOTO-Q", "image", { imageMessage: { jpegThumbnail: "AQID" } });
+    await esperarChat(chat);
+    // El fichero del audio, como si ya se hubiera descargado.
+    await dbh.sql`UPDATE message SET media_key = 'media/x/audio.ogg'
+      WHERE line_id = ${LINE} AND provider_message_id = 'AUDIO-1'`;
+
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "RESP-AUDIO", remoteJid: chat }, kind: "text", text: "XDDDD",
+      timestamp: Date.now() + 1, replyTo: { id: "AUDIO-1", author: chat, kind: "audio", text: null },
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "RESP-FOTO", remoteJid: chat }, kind: "text", text: "qué lindo",
+      timestamp: Date.now() + 2, replyTo: { id: "FOTO-Q", author: chat, kind: "image", text: null },
+    });
+
+    type Q = { kind: string; thumbUrl: string | null; seconds: number | null; ptt: boolean };
+    const citas = await esperarValor(async () => {
+      const { data } = await j<{ data: { providerMessageId: string | null; replyTo: Q | null }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(chat)}/messages?limit=10`));
+      const a = data.find((m) => m.providerMessageId === "RESP-AUDIO")?.replyTo;
+      const f = data.find((m) => m.providerMessageId === "RESP-FOTO")?.replyTo;
+      return a && f ? { a, f } : null;
+    }, "las dos respuestas llegaron");
+
+    expect(citas.a).toMatchObject({ kind: "audio", thumbUrl: null, seconds: 15, ptt: false });
+    expect(citas.f.kind).toBe("image");
+    expect(citas.f.thumbUrl).toBe("data:image/jpeg;base64,AQID");
+  });
+
   it("la cita de un mensaje que no tenemos se enseña igual, pero sin salto", async () => {
     /*
      * Pasa con todo lo anterior al enlace de la línea. WhatsApp mete una copia
