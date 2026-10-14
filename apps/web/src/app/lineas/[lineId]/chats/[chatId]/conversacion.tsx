@@ -425,6 +425,7 @@ export function Conversacion({
     setAdjuntos([...lista]);
     setElegido(id);
     if (campo.current) campo.current.value = lista.find((a) => a.id === id)?.pie ?? "";
+    ajustarAltura();
     campo.current?.focus();
   };
 
@@ -436,6 +437,7 @@ export function Conversacion({
       const siguiente = lista[0];
       setElegido(siguiente?.id ?? null);
       if (campo.current) campo.current.value = siguiente?.pie ?? "";
+      ajustarAltura();
     }
   };
 
@@ -481,7 +483,19 @@ export function Conversacion({
   const [reaccionando, setReaccionando] = useState<string | null>(null);
   const [respondiendo, setRespondiendo] = useState<Mensaje | null>(null);
   const [senalado, setSenalado] = useState<string | null>(null);
-  const campo = useRef<HTMLInputElement>(null);
+  const campo = useRef<HTMLTextAreaElement>(null);
+  /*
+   * El campo crece con lo escrito, hasta unas ocho líneas, y luego se
+   * desplaza por dentro. Se recalcula también cuando el texto cambia sin
+   * teclear —al enviar, al elegir otro adjunto, al insertar una mención—,
+   * porque entonces no hay evento `input` que lo avise.
+   */
+  const ajustarAltura = (): void => {
+    const el = campo.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 192)}px`;
+  };
 
   /**
    * Sube al mensaje citado y lo señala.
@@ -645,6 +659,7 @@ export function Conversacion({
     const r = insertarMencion(el.value, consulta.inicio, el.selectionStart ?? el.value.length, p.name);
     el.value = r.texto;
     el.setSelectionRange(r.cursor, r.cursor);
+    ajustarAltura();
     el.focus();
     // Solo lo del grupo es mención de verdad; lo demás se queda en texto.
     if (!p.fuera) elegidas.current.set(p.name, p.address);
@@ -1224,6 +1239,7 @@ export function Conversacion({
                */
               let pendientes = guardarPie(adjuntos).map((a) => ({ ...a, pie: a.pie.trim() }));
               formulario.current?.reset();
+              ajustarAltura();
               const total = pendientes.length;
               for (const [i, a] of [...pendientes].entries()) {
                 setProgreso({ hecho: i, total });
@@ -1247,12 +1263,14 @@ export function Conversacion({
               if (pendientes.length === 0) elegidas.current = new Map();
               setElegido(pendientes[0]?.id ?? null);
               if (campo.current) campo.current.value = pendientes[0]?.pie ?? "";
+              ajustarAltura();
               if (selector.current) selector.current.value = "";
               return;
             }
 
             if (!texto) return;
             formulario.current?.reset();
+            ajustarAltura();
             setConsulta(null);
             startTransition(() => anadirPendiente(texto));
 
@@ -1400,20 +1418,37 @@ export function Conversacion({
             />
           </span>
 
-          <input
+          <textarea
             ref={campo}
             name="texto"
+            rows={1}
             autoComplete="off"
             role="combobox"
             aria-expanded={opcionesDeMencion.length > 0}
             aria-controls="menciones"
             aria-autocomplete="list"
             aria-activedescendant={opcionesDeMencion.length > 0 ? `mencion-${resaltada}` : undefined}
-            onInput={(e) => { alEscribir(e.currentTarget.value); revisarMencion(); }}
+            onInput={(e) => { alEscribir(e.currentTarget.value); revisarMencion(); ajustarAltura(); }}
             onSelect={revisarMencion}
             onBlur={() => setTimeout(() => setConsulta(null), 150)}
             onKeyDown={(e) => {
-              if (opcionesDeMencion.length === 0) return;
+              if (opcionesDeMencion.length === 0) {
+                /*
+                 * Enter envía y Shift+Enter hace salto de línea, como en
+                 * WhatsApp de escritorio. En un teléfono, Enter es salto de
+                 * línea y se envía con el botón: el teclado táctil no tiene
+                 * Shift a mano.
+                 *
+                 * `isComposing`: con un teclado que compone (chino, japonés,
+                 * acentos en algunos sistemas), Enter confirma la palabra, no
+                 * envía el mensaje.
+                 */
+                if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+                if (window.matchMedia("(pointer: coarse)").matches) return;
+                e.preventDefault();
+                formulario.current?.requestSubmit();
+                return;
+              }
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const n = opcionesDeMencion.length;
@@ -1431,7 +1466,7 @@ export function Conversacion({
             placeholder={actual
               ? adjuntos.length > 1 ? "Pie de este (opcional)…" : "Añade un pie (opcional)…"
               : "Escribe un mensaje"}
-            className="min-w-0 flex-1 rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
+            className="scroll-discreto max-h-48 min-w-0 flex-1 resize-none rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm leading-5 md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
           />
 
           <button
