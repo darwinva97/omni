@@ -1301,6 +1301,58 @@ run("organización y limpieza", () => {
     expect(lista.some((c) => c.address === nuevo)).toBe(true);
   });
 
+  it("escribir al teléfono de alguien con chat por LID NO abre un segundo chat", async () => {
+    /*
+     * El caso de Victor: su chat de siempre estaba por el LID, una integración
+     * le escribió por la API a su teléfono, y aparecieron dos «Victor
+     * Sanchez». Se envía a la dirección pedida; se guarda en SU chat.
+     */
+    const lid = "172000000000099@lid";
+    const tel = "51916000099@s.whatsapp.net";
+    await dbh.sql`
+      INSERT INTO identity_map (line_id, lid, phone) VALUES (${LINE}, ${lid}, ${tel})
+      ON CONFLICT DO NOTHING`;
+    await dbh.sql`
+      INSERT INTO chat (id, line_id, address, kind, last_message_at)
+      VALUES ('c-victor-api', ${LINE}, ${lid}, 'lid', now() - interval '1 hour')
+      ON CONFLICT DO NOTHING`;
+
+    const vivos: Record<string, unknown>[] = [];
+    container.runtime.onEvent((e) => {
+      if (e.event.startsWith("message.")) vivos.push(e.data as Record<string, unknown>);
+    });
+
+    const res = await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ to: tel, text: "Listo el cambio del logo", clientMessageId: "victor-api-1" }),
+    });
+    expect(res.status).toBe(202);
+
+    expect((await call(`/v1/lines/${LINE}/chats/${enc(tel)}`)).status).toBe(404);
+    const msgs = await esperarValor(async () => {
+      const { data } = await j<{ data: { clientMessageId: string | null }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(lid)}/messages?limit=10`));
+      return data.some((m) => m.clientMessageId === "victor-api-1") ? data : null;
+    }, "el mensaje quedó en el chat por LID");
+    expect(msgs.length).toBeGreaterThan(0);
+
+    // Y lo que CONTESTA por su teléfono también cae en ese chat, no en otro.
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "VICTOR-RESP", remoteJid: tel }, kind: "text",
+      text: "Gracias sr. Darwin", timestamp: Date.now(),
+    });
+    await esperarValor(async () => {
+      const { data } = await j<{ data: { providerMessageId: string | null }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(lid)}/messages?limit=10`));
+      return data.some((m) => m.providerMessageId === "VICTOR-RESP") ? true : null;
+    }, "la respuesta quedó en el chat por LID");
+    expect((await call(`/v1/lines/${LINE}/chats/${enc(tel)}`)).status).toBe(404);
+
+    // El evento en vivo dice en qué chat pintarlo.
+    const vivo = vivos.find((d) => (d["key"] as { id?: string })?.id === "VICTOR-RESP");
+    expect(vivo?.["chatId"]).toBe(lid);
+  });
+
   it("un chat por LID se llama como lo guardaste por su TELÉFONO", async () => {
     /*
      * El caso real: el chat estaba abierto con el LID, la ficha del LID solo

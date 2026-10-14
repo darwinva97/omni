@@ -300,7 +300,8 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     if (!evento.startsWith("message.") && !evento.startsWith("chat.")) return;
 
     const key = (data["key"] ?? {}) as { remoteJid?: string; fromMe?: boolean };
-    const direccion = key.remoteJid ?? (data["chat"] as string | undefined);
+    const direccion = (data["chatId"] as string | undefined)
+      ?? key.remoteJid ?? (data["chat"] as string | undefined);
     if (!direccion) return;
 
     const cuandoISO = new Date(Number(data["timestamp"] ?? Date.now())).toISOString();

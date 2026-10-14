@@ -151,7 +151,7 @@ export function usePresencias(
       const key = (data["key"] ?? {}) as { remoteJid?: string; participant?: string };
       if (!key.remoteJid) return;
       setPresencias((prev) => aplicarPresencia(prev, {
-        chat: key.remoteJid!,
+        chat: (data["chatId"] as string | undefined) ?? key.remoteJid!,
         estados: [{ address: key.participant ?? key.remoteJid!, name: "", state: "paused" }],
       }, Date.now()));
     }

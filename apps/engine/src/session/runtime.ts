@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   OmniError, parseAddress, tryParseAddress, resolveContent, advanceState, tokensDeMencion,
   type Address, type ChannelKind, type EventEnvelope, type LineId, type MessageKind,
@@ -405,10 +405,18 @@ export class EngineRuntime {
 
     if (convertido) exigirFormatoDelMedio(content.field, convertido.mimeType);
 
+    /*
+     * Se ENVÍA a la dirección que se pidió, pero se GUARDA en la conversación
+     * que ya hubiera con esa persona. Una integración que escribe al teléfono
+     * de alguien cuyo chat está abierto por su LID creaba un segundo chat con
+     * la misma persona, con ese único mensaje dentro.
+     */
+    const enChat = await this.#conversacionDe(lineId, to);
+
     const inserted = await this.#deps.db
       .insert(messageTable)
       .values({
-        id: messageId, timestamp: new Date(this.#now()), lineId, chatId: to.value,
+        id: messageId, timestamp: new Date(this.#now()), lineId, chatId: enChat.value,
         clientMessageId, senderAddress: line.address ?? "", fromMe: true, kind,
         body: input.text ?? input.caption ?? null, state: "queued",
         replyToId: input.replyTo ?? null, mentions: input.mentions ? [...input.mentions] : null,
@@ -448,7 +456,7 @@ export class EngineRuntime {
     await this.#deps.db
       .insert(chatTable)
       .values({
-        id: `c-${lineId}-${to.value}`, lineId, address: to.value, kind: to.kind,
+        id: `c-${lineId}-${enChat.value}`, lineId, address: enChat.value, kind: enChat.kind,
         lastMessageAt: new Date(this.#now()), unreadCount: 0,
       })
       .onConflictDoUpdate({
@@ -808,6 +816,38 @@ export class EngineRuntime {
   }
 
   /**
+   * La conversación de una persona: UNA, aunque tenga dos direcciones.
+   *
+   * WhatsApp identifica a la misma persona por su teléfono o por su LID, y
+   * usa una u otra según quién escriba y desde dónde. Si ya hay chat por
+   * cualquiera de las dos, es ese; si no hay ninguno, el de la dirección
+   * dada. Los grupos y lo demás, tal cual.
+   */
+  async #conversacionDe(lineId: string, direccion: Address): Promise<Address> {
+    if (direccion.kind !== "pn" && direccion.kind !== "lid") return direccion;
+    const [par] = await this.#deps.db
+      .select({ lid: identityMapTable.lid, phone: identityMapTable.phone })
+      .from(identityMapTable)
+      .where(and(
+        eq(identityMapTable.lineId, lineId),
+        direccion.kind === "lid"
+          ? eq(identityMapTable.lid, direccion.value)
+          : eq(identityMapTable.phone, direccion.value),
+      ))
+      .limit(1);
+    const gemela = par ? (direccion.kind === "lid" ? par.phone : par.lid) : null;
+    if (!gemela) return direccion;
+
+    const existentes = await this.#deps.db
+      .select({ address: chatTable.address })
+      .from(chatTable)
+      .where(and(eq(chatTable.lineId, lineId), inArray(chatTable.address, [direccion.value, gemela])));
+    const hay = new Set(existentes.map((c) => c.address));
+    if (hay.has(direccion.value) || !hay.has(gemela)) return direccion;
+    return tryParseAddress(gemela) ?? direccion;
+  }
+
+  /**
    * El evento de un mensaje, con los nombres ya puestos.
    *
    * Lo que sale por el socket y por los webhooks traía `@120238196658384` y la
@@ -832,6 +872,10 @@ export class EngineRuntime {
       };
       const chat = d.key?.remoteJid;
       const autor = d.key?.fromMe ? undefined : d.key?.participant ?? chat;
+      // En qué conversación se guardó, que puede no ser `remoteJid`: el panel
+      // pinta el mensaje en ESE chat.
+      const enChat = chat ? tryParseAddress(chat) : null;
+      const chatId = enChat ? (await this.#conversacionDe(envelope.lineId, enChat)).value : null;
       const tokens = tokensDeMencion(d.text);
 
       // La foto de quien escribe solo en un grupo: en un chat de dos ya está
@@ -850,6 +894,7 @@ export class EngineRuntime {
         ...envelope,
         data: {
           ...(envelope.data as object),
+          ...(chatId ? { chatId } : {}),
           ...(autor && nombres.has(autor) ? { senderName: nombres.get(autor) } : {}),
           ...(foto ? { senderAvatarUrl: await this.#deps.storage.signedUrl(foto, 3600) } : {}),
           ...(menciones.size > 0
@@ -1467,7 +1512,10 @@ export class EngineRuntime {
       return;
     }
 
-    const chat = parseAddress(d.key.remoteJid);
+    // La conversación de esa persona, por la dirección que ya tenga chat: ver
+    // `#conversacionDe`. Quién lo escribió sigue siendo la dirección real.
+    const chat = await this.#conversacionDe(envelope.lineId, parseAddress(d.key.remoteJid));
+    const remitente = d.key.participant ?? d.key.remoteJid;
     const when = new Date(d.timestamp ?? envelope.timestamp);
 
     /*
@@ -1508,7 +1556,7 @@ export class EngineRuntime {
       .values({
         id: `m-${envelope.lineId}-${d.key.id}`, timestamp: when,
         lineId: envelope.lineId, chatId: chat.value, providerMessageId: d.key.id,
-        senderAddress: d.key.participant ?? chat.value, fromMe: propio,
+        senderAddress: remitente, fromMe: propio,
         kind: d.kind ?? "text", body: d.text ?? null,
         /*
          * A qué responde. La copia del original viaja en `raw`, así que la
@@ -1541,7 +1589,7 @@ export class EngineRuntime {
             lineId: envelope.lineId, providerMessageId: d.key.id, chatId: chat.value,
             question: encuesta.question, options: encuesta.options,
             allowMultiple: encuesta.multiple,
-            createdBy: d.key.participant ?? chat.value,
+            createdBy: remitente,
             at: when,
           })
           .onConflictDoNothing();

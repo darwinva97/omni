@@ -247,7 +247,9 @@ export function Conversacion({
     }
 
     if (evento === "message.upsert") return;
-    if (key.remoteJid !== chat) return;
+    // `chatId` es la conversación donde el motor lo guardó: la misma persona
+    // puede escribir por su teléfono o por su LID y su chat es uno solo.
+    if (((data["chatId"] as string | undefined) ?? key.remoteJid) !== chat) return;
 
     /*
      * Lo que no es contenido no entra en el hilo.
