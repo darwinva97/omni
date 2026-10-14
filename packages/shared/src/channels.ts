@@ -45,6 +45,12 @@ export const capabilities = [
   // chats
   "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
   "chat.clear", "chat.delete",
+  /*
+   * Ver cuándo escribe o está en línea la otra persona. No es lo mismo que
+   * ANUNCIAR la propia presencia (`chat.presence`): exige ponerse en línea, y
+   * mientras una cuenta está en línea el teléfono deja de recibir avisos.
+   */
+  "presence.watch",
   // grupos
   "group.read", "group.create", "group.manage", "group.invite", "group.participants",
   /*

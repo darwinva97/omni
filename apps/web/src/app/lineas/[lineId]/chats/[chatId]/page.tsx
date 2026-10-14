@@ -24,7 +24,9 @@ export default async function ChatAbierto({
    * terminar la acción: el estado optimista de React se descarta al acabar y
    * lo que queda debajo no lo incluye. Parecía no haberse enviado cuando sí.
    */
-  async function enviar(texto: string, replyTo?: string): Promise<Mensaje | null> {
+  async function enviar(
+    texto: string, replyTo?: string, mentions?: string[],
+  ): Promise<Mensaje | null> {
     "use server";
     const limpio = texto.trim();
     if (!limpio) return null;
@@ -39,6 +41,7 @@ export default async function ChatAbierto({
         body: JSON.stringify({
           to: chat, text: limpio, clientMessageId,
           ...(replyTo ? { replyTo } : {}),
+          ...(mentions?.length ? { mentions } : {}),
         }),
       },
     );

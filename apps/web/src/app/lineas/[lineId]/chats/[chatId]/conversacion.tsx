@@ -8,12 +8,18 @@ import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
 import { Encuesta } from "@/componentes/encuesta";
+import { BuscarEnChat, type Resultado } from "@/componentes/buscar-en-chat";
+import { describir, usePresencias } from "@/lib/presencia";
+import {
+  consultaDeMencion, filtrarParticipantes, insertarMencion, prepararMenciones,
+  type Participante,
+} from "@/lib/menciones";
 import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
   IconoAdjuntar, IconoBloquear, IconoCerrar, IconoCopiar, IconoDescargar, IconoDocumento,
-  IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
+  IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
 import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
@@ -22,6 +28,19 @@ import {
   agregarAdjuntos, ETIQUETAS, ficherosPegados, MAX_ADJUNTOS, type Adjunto, type CampoDeMedio,
 } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
+
+/** Quienes han escrito en el hilo cargado, una vez cada uno. */
+function quienesEscribieron(mensajes: readonly Mensaje[]): Participante[] {
+  const vistos = new Map<string, Participante>();
+  for (const m of mensajes) {
+    if (m.fromMe || !m.senderAddress || !m.senderName) continue;
+    vistos.set(m.senderAddress, { address: m.senderAddress, name: m.senderName });
+  }
+  return [...vistos.values()];
+}
+
+/** La hora de ahora, para los manejadores: fuera del componente, que no es render. */
+const marcaDeTiempo = (): number => Date.now();
 
 /** De un mensaje del hilo a la cita que lo representa. */
 function citaDeMensaje(m: Mensaje): CitaDe {
@@ -67,7 +86,7 @@ export function Conversacion({
   chat: string;
   info: Chat | null;
   iniciales: Mensaje[];
-  enviar: (texto: string, replyTo?: string) => Promise<Mensaje | null>;
+  enviar: (texto: string, replyTo?: string, mentions?: string[]) => Promise<Mensaje | null>;
   enviarMedio: (
     campo: string, storageKey: string, pie: string, fileName: string,
     extra?: Record<string, unknown>,
@@ -77,6 +96,20 @@ export function Conversacion({
   const [mensajes, setMensajes] = useState<Mensaje[]>(iniciales);
   const [ficha, setFicha] = useState(false);
   const { conectado, suscribir } = useEventos(lineId);
+  const { presencias, ahora } = usePresencias(suscribir);
+  const [buscando, setBuscando] = useState(false);
+  /*
+   * `ventana`: el hilo enseña mensajes de alrededor de un resultado de
+   * búsqueda, no los últimos. Mientras dura, lo que llega en vivo no se pega
+   * al final —quedaría un salto de meses en medio— y se avisa en el botón de
+   * volver a lo reciente.
+   */
+  const [ventana, setVentana] = useState(false);
+  const [hayNuevos, setHayNuevos] = useState(false);
+  // El manejador del socket se crea una vez: lee la ventana por aquí.
+  const ventanaRef = useRef(false);
+  useEffect(() => { ventanaRef.current = ventana; }, [ventana]);
+  const saltoPendiente = useRef<string | null>(null);
   const fondo = useRef<HTMLDivElement>(null);
   const formulario = useRef<HTMLFormElement>(null);
   const selector = useRef<HTMLInputElement>(null);
@@ -95,7 +128,10 @@ export function Conversacion({
 
   // Al cambiar de conversación entra otra lista: sin esto se vería el hilo
   // anterior hasta que llegara el primer evento del nuevo.
-  useEffect(() => { setMensajes(iniciales); setFicha(false); }, [iniciales]);
+  useEffect(() => {
+    setMensajes(iniciales); setFicha(false); setBuscando(false);
+    setVentana(false); setHayNuevos(false);
+  }, [iniciales]);
 
   /*
    * Abrir una conversación la marca como leída.
@@ -220,6 +256,7 @@ export function Conversacion({
      */
     const kind = String(data["kind"] ?? "text");
     if (kind === "reaction" || kind === "system") return;
+    if (ventanaRef.current) { setHayNuevos(true); return; }
 
     setMensajes((prev) => {
       if (key.id && prev.some((x) => x.providerMessageId === key.id)) return prev;
@@ -304,6 +341,10 @@ export function Conversacion({
 
   const yaColocado = useRef(false);
   useEffect(() => {
+    // Si se acaba de cargar una ventana para ir a un resultado, el sitio es
+    // ese resultado y no el final: bajar a la vez que se sube los pisaba, y
+    // la vista se quedaba a medio camino.
+    if (saltoPendiente.current) return;
     // Al abrir, de golpe: ver el hilo deslizarse desde arriba durante medio
     // segundo cada vez que se entra en una conversación es ruido, no feedback.
     fondo.current?.scrollIntoView({
@@ -409,17 +450,158 @@ export function Conversacion({
    * puede apuntar a algo de hace meses. Cuando no está, la cita no es pulsable
    * en vez de desplazar a ninguna parte y dejar a quien lo pulsó perdido.
    */
+  /** Sube a un mensaje que está en pantalla y lo señala con un destello. */
+  const senalar = (id: string, como: ScrollBehavior = "smooth"): void => {
+    document.getElementById(`mensaje-${id}`)
+      ?.scrollIntoView({ behavior: como, block: "center" });
+    setSenalado(id);
+    // Se quita solo: una marca permanente dejaría el hilo lleno de
+    // mensajes resaltados sin que nadie los haya vuelto a pedir.
+    setTimeout(() => setSenalado((x) => (x === id ? null : x)), 1200);
+  };
+
   const saltarA = (id: string): (() => void) | null => {
     const destino = mensajes.find((x) => x.providerMessageId === id);
     if (!destino) return null;
-    return () => {
-      document.getElementById(`mensaje-${destino.id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-      setSenalado(destino.id);
-      // Se quita solo: una marca permanente dejaría el hilo lleno de
-      // mensajes resaltados sin que nadie los haya vuelto a pedir.
-      setTimeout(() => setSenalado((x) => (x === destino.id ? null : x)), 1200);
-    };
+    return () => senalar(destino.id);
+  };
+
+  const historial = async (consulta: string): Promise<Mensaje[] | null> => {
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages?${consulta}`);
+    if (!r.ok) return null;
+    const { data } = (await r.json()) as { data: Mensaje[] };
+    // La API da de más nuevo a más viejo; el hilo se pinta al revés.
+    return [...data].reverse();
+  };
+
+  /**
+   * Va a un resultado de búsqueda.
+   *
+   * Si ya está en pantalla, se sube a él. Si no —lo normal: el hilo trae los
+   * últimos cien—, se cargan los mensajes de alrededor y se salta cuando
+   * estén pintados.
+   */
+  const irAResultado = async (r: Resultado): Promise<void> => {
+    const cargado = mensajes.find((m) => m.id === r.id
+      || (r.providerMessageId !== null && m.providerMessageId === r.providerMessageId));
+    if (cargado) { senalar(cargado.id); return; }
+    const alrededor = await historial(`around=${encodeURIComponent(r.timestamp)}&limit=60`);
+    if (!alrededor) return;
+    saltoPendiente.current = r.id;
+    setMensajes(alrededor);
+    setVentana(true);
+  };
+
+  const volverAlPresente = async (): Promise<void> => {
+    const ultimos = await historial("limit=100");
+    if (!ultimos) return;
+    setMensajes(ultimos);
+    setVentana(false);
+    setHayNuevos(false);
+    requestAnimationFrame(() => fondo.current?.scrollIntoView({ block: "end" }));
+  };
+
+  // El salto, cuando la ventana ya está pintada: antes no hay a dónde ir.
+  useEffect(() => {
+    const id = saltoPendiente.current;
+    if (!id) return;
+    saltoPendiente.current = null;
+    // De golpe: el hilo es otro, y deslizarse por sesenta mensajes que no se
+    // han pedido es ruido.
+    requestAnimationFrame(() => senalar(id, "instant"));
+  }, [mensajes]);
+
+  /*
+   * Lo que se anuncia de uno mismo: «escribiendo…» y «grabando audio…».
+   *
+   * Se manda al empezar y se renueva cada 8 s mientras se teclea —WhatsApp
+   * lo da por caducado si no—, y «paused» a los 4 s sin teclear, al enviar o
+   * al cambiar de conversación. Un fallo aquí no le importa a nadie: no se
+   * enseña.
+   */
+  const ultimoAnuncio = useRef(0);
+  const pausa = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const anunciar = (presence: "composing" | "recording" | "paused"): void => {
+    void fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/presence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ presence }),
+    }).catch(() => {});
+  };
+  const pararDeEscribir = (): void => {
+    if (pausa.current) clearTimeout(pausa.current);
+    pausa.current = null;
+    if (ultimoAnuncio.current) {
+      ultimoAnuncio.current = 0;
+      anunciar("paused");
+    }
+  };
+  const alEscribir = (texto: string): void => {
+    if (!texto.trim()) { pararDeEscribir(); return; }
+    if (marcaDeTiempo() - ultimoAnuncio.current > 8000) {
+      ultimoAnuncio.current = marcaDeTiempo();
+      anunciar("composing");
+    }
+    if (pausa.current) clearTimeout(pausa.current);
+    pausa.current = setTimeout(pararDeEscribir, 4000);
+  };
+  // Al cambiar de conversación o cerrarla, lo que se estuviera escribiendo
+  // ya no se escribe ahí.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => pararDeEscribir(), [chat]);
+
+  /*
+   * Mencionar con «@». Solo en grupos, como en WhatsApp: en un chat de dos
+   * solo hay a quién mencionar, y es a quien se le escribe.
+   */
+  // Los participantes y la consulta van atados a SU conversación: al cambiar
+  // de chat, lo del anterior deja de valer sin tener que borrarlo a mano.
+  const [delGrupo, setDelGrupo] = useState<{ chat: string; lista: Participante[] } | null>(null);
+  const [consultaDe, setConsulta] = useState<
+    { chat: string; inicio: number; filtro: string } | null
+  >(null);
+  /*
+   * Si no se pudo preguntar a WhatsApp —la línea está desconectada, o el
+   * grupo no responde—, se ofrece a quienes han escrito en el hilo. Es menos
+   * que la lista entera, pero el «@» no se queda mudo justo cuando falla.
+   */
+  const participantes = delGrupo?.chat === chat
+    ? delGrupo.lista
+    : chat.endsWith("@g.us") ? quienesEscribieron(mensajes) : [];
+  const consulta = consultaDe?.chat === chat ? consultaDe : null;
+  const [resaltada, setResaltada] = useState(0);
+  const elegidas = useRef(new Map<string, string>());
+  useEffect(() => {
+    elegidas.current = new Map();
+    if (!chat.endsWith("@g.us")) return;
+    let vivo = true;
+    void fetch(`/api/omni/v1/lines/${lineId}/groups/${encodeURIComponent(chat)}`)
+      .then(async (r) => (r.ok ? ((await r.json()) as { data: { participants: Participante[] } }) : null))
+      .then((g) => { if (vivo && g) setDelGrupo({ chat, lista: g.data.participants }); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [lineId, chat]);
+
+  const opcionesDeMencion = consulta ? filtrarParticipantes(participantes, consulta.filtro) : [];
+
+  const revisarMencion = (): void => {
+    const el = campo.current;
+    if (!el || participantes.length === 0) { setConsulta(null); return; }
+    const nueva = consultaDeMencion(el.value, el.selectionStart ?? el.value.length);
+    setConsulta(nueva ? { chat, ...nueva } : null);
+    if (nueva?.filtro !== consulta?.filtro) setResaltada(0);
+  };
+
+  const mencionar = (p: Participante): void => {
+    const el = campo.current;
+    if (!el || !consulta) return;
+    const r = insertarMencion(el.value, consulta.inicio, el.selectionStart ?? el.value.length, p.name);
+    el.value = r.texto;
+    el.setSelectionRange(r.cursor, r.cursor);
+    el.focus();
+    elegidas.current.set(p.name, p.address);
+    setConsulta(null);
   };
 
   /** Reacciona a un mensaje. Repetir el mismo emoji la retira, como WhatsApp. */
@@ -517,9 +699,11 @@ export function Conversacion({
 
   const esGrupo = info?.kind === "group";
   const nombre = info?.displayName ?? chat;
-  const detalle = info?.phone
+  const detalleFijo = info?.phone
     ? `+${info.phone.split("@")[0]}`
     : info?.kind === "group" ? "Grupo" : chat;
+  // Lo que está pasando gana a lo fijo: «escribiendo…», «en línea».
+  const vivo = describir(presencias, chat, esGrupo, ahora);
 
   return (
     <div className="relative flex h-full">
@@ -548,7 +732,14 @@ export function Conversacion({
             aria-expanded={ficha}
           >
             <span className="block truncate text-sm font-semibold">{nombre}</span>
-            <span className="block truncate text-xs text-(--color-tenue)">{detalle}</span>
+            <span
+              aria-live="polite"
+              className={`block truncate text-xs ${
+                vivo?.activo ? "font-medium text-(--color-acento-fuerte)" : "text-(--color-tenue)"
+              }`}
+            >
+              {vivo?.texto ?? detalleFijo}
+            </span>
           </button>
 
           <span
@@ -569,7 +760,22 @@ export function Conversacion({
 
           <button
             type="button"
-            onClick={() => setFicha((v) => !v)}
+            onClick={() => { setBuscando((v) => !v); setFicha(false); }}
+            aria-label={buscando ? "Cerrar la búsqueda" : "Buscar en esta conversación"}
+            title="Buscar mensajes"
+            aria-expanded={buscando}
+            className={`flex size-9 items-center justify-center rounded-lg transition-colors duration-150 ${
+              buscando
+                ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+                : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+            }`}
+          >
+            <IconoBuscar className="size-5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => { setFicha((v) => !v); setBuscando(false); }}
             aria-label={ficha ? "Ocultar información" : "Ver información del contacto"}
             className={`flex size-9 items-center justify-center rounded-lg transition-colors duration-150 ${
               ficha
@@ -806,6 +1012,25 @@ export function Conversacion({
           <div ref={fondo} />
         </ol>
 
+        {/*
+          Viendo mensajes antiguos tras una búsqueda. Sin esto no habría forma
+          de volver a la conversación de ahora, más que recargando; y lo que
+          llega mientras tanto se avisa con un punto.
+        */}
+        {ventana && (
+          <div className="pointer-events-none relative">
+            <button
+              type="button"
+              onClick={() => void volverAlPresente()}
+              className="pointer-events-auto absolute right-4 bottom-3 flex items-center gap-2 rounded-full border border-(--color-borde) bg-(--color-panel) px-3.5 py-2 text-xs font-medium shadow-[0_4px_16px_rgba(0,0,0,0.14)] hover:bg-(--color-hundido)"
+            >
+              {hayNuevos && <span aria-hidden className="size-2 rounded-full bg-(--color-acento)" />}
+              {hayNuevos ? "Mensajes nuevos: ir a lo reciente" : "Ir a lo más reciente"}
+              <span aria-hidden>↓</span>
+            </button>
+          </div>
+        )}
+
         {problema && (
           <p
             role="alert"
@@ -925,6 +1150,10 @@ export function Conversacion({
           ref={formulario}
           action={async (formData) => {
             const texto = String(formData.get("texto") ?? "").trim();
+            pararDeEscribir();
+            // Lo que se manda va al final del hilo de verdad, no al de una
+            // ventana de hace meses.
+            if (ventanaRef.current) await volverAlPresente();
 
             // Con adjunto, lo escrito es el PIE y no otro mensaje: dos
             // mensajes separados no es lo que se pidió al escribir junto.
@@ -951,11 +1180,15 @@ export function Conversacion({
               const total = pendientes.length;
               for (const [i, a] of [...pendientes].entries()) {
                 setProgreso({ hecho: i, total });
+                const pie = prepararMenciones(a.pie, elegidas.current);
                 const ok = await mandarFichero(
-                  a.file, a.campo, a.pie,
-                  // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
-                  // llama «GIF»; sin la marca llega como un vídeo normal.
-                  a.gif && a.campo === "video" ? { gifPlayback: true } : {},
+                  a.file, a.campo, pie.texto,
+                  {
+                    // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
+                    // llama «GIF»; sin la marca llega como un vídeo normal.
+                    ...(a.gif && a.campo === "video" ? { gifPlayback: true } : {}),
+                    ...(pie.mentions.length > 0 ? { mentions: pie.mentions } : {}),
+                  },
                   i === 0 ? citado?.providerMessageId ?? undefined : undefined,
                   i === 0 ? citaLocal : null,
                 );
@@ -964,6 +1197,7 @@ export function Conversacion({
                 setAdjuntos(pendientes);
               }
               setProgreso(null);
+              if (pendientes.length === 0) elegidas.current = new Map();
               setElegido(pendientes[0]?.id ?? null);
               if (campo.current) campo.current.value = pendientes[0]?.pie ?? "";
               if (selector.current) selector.current.value = "";
@@ -972,9 +1206,17 @@ export function Conversacion({
 
             if (!texto) return;
             formulario.current?.reset();
+            setConsulta(null);
             startTransition(() => anadirPendiente(texto));
 
-            const enviado = await enviar(texto, citado?.providerMessageId ?? undefined);
+            // Lo que se ve dice «@Rodrigo»; lo que se manda, «@número» y a
+            // quién. Ver lib/menciones.ts.
+            const conMenciones = prepararMenciones(texto, elegidas.current);
+            elegidas.current = new Map();
+            const enviado = await enviar(
+              conMenciones.texto, citado?.providerMessageId ?? undefined,
+              conMenciones.mentions.length > 0 ? conMenciones.mentions : undefined,
+            );
             if (enviado) {
               /*
                * La cita se pinta con lo que YA tenemos aquí.
@@ -983,7 +1225,11 @@ export function Conversacion({
                * esperar a eso dejaría la respuesta sin cita unos segundos,
                * justo la que se acaba de mandar.
                */
-              const conCita = citaLocal ? { ...enviado, replyTo: citaLocal } : enviado;
+              const conCita = {
+                ...enviado,
+                ...(citaLocal ? { replyTo: citaLocal } : {}),
+                ...(conMenciones.menciones.length > 0 ? { mentions: conMenciones.menciones } : {}),
+              };
               setMensajes((prev) =>
                 prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
             }
@@ -1003,6 +1249,33 @@ export function Conversacion({
           }}
           className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
+          {opcionesDeMencion.length > 0 && (
+            <ul
+              id="menciones"
+              role="listbox"
+              aria-label="Mencionar a"
+              className="absolute bottom-full left-3 z-30 mb-2 w-72 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-xl border border-(--color-borde) bg-(--color-panel) py-1 shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
+            >
+              {opcionesDeMencion.map((p, i) => (
+                <li
+                  key={p.address}
+                  id={`mencion-${i}`}
+                  role="option"
+                  aria-selected={i === resaltada}
+                  // `mousedown` y no `click`: el clic llega después de que el
+                  // campo pierda el foco, y para entonces la lista ya se cerró.
+                  onMouseDown={(e) => { e.preventDefault(); mencionar(p); }}
+                  onMouseEnter={() => setResaltada(i)}
+                  className={`flex cursor-pointer items-center gap-2.5 px-3 py-1.5 text-sm ${
+                    i === resaltada ? "bg-(--color-hundido)" : ""
+                  }`}
+                >
+                  <Avatar nombre={p.name} direccion={p.address} kind="pn" tamano="sm" />
+                  <span className="truncate">{p.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           {stickers && (
             <Stickers
               lineId={lineId}
@@ -1058,6 +1331,7 @@ export function Conversacion({
             deshabilitado={subiendo || adjuntos.length > 0}
             onError={setProblema}
             onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
+            onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
           />
           {/*
             El de vídeo, solo en escritorio.
@@ -1071,6 +1345,7 @@ export function Conversacion({
               deshabilitado={subiendo || adjuntos.length > 0}
               onError={setProblema}
               onGrabado={async (file) => { await mandarFichero(file, "video", ""); }}
+              onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
             />
           </span>
 
@@ -1078,6 +1353,30 @@ export function Conversacion({
             ref={campo}
             name="texto"
             autoComplete="off"
+            role="combobox"
+            aria-expanded={opcionesDeMencion.length > 0}
+            aria-controls="menciones"
+            aria-autocomplete="list"
+            aria-activedescendant={opcionesDeMencion.length > 0 ? `mencion-${resaltada}` : undefined}
+            onInput={(e) => { alEscribir(e.currentTarget.value); revisarMencion(); }}
+            onSelect={revisarMencion}
+            onBlur={() => setTimeout(() => setConsulta(null), 150)}
+            onKeyDown={(e) => {
+              if (opcionesDeMencion.length === 0) return;
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const n = opcionesDeMencion.length;
+                setResaltada((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+              } else if (e.key === "Enter" || e.key === "Tab") {
+                // Con la lista abierta, Enter elige: mandar «@Ro» a medias
+                // nunca es lo que se quiere.
+                e.preventDefault();
+                mencionar(opcionesDeMencion[Math.min(resaltada, opcionesDeMencion.length - 1)]!);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setConsulta(null);
+              }
+            }}
             placeholder={actual
               ? adjuntos.length > 1 ? "Pie de este (opcional)…" : "Añade un pie (opcional)…"
               : "Escribe un mensaje"}
@@ -1100,6 +1399,15 @@ export function Conversacion({
         onCerrar={menu.cerrar}
       />
 
+      {buscando && (
+        <BuscarEnChat
+          lineId={lineId}
+          chat={chat}
+          esGrupo={esGrupo}
+          onElegir={(r) => void irAResultado(r)}
+          onCerrar={() => setBuscando(false)}
+        />
+      )}
       {ficha && info && (
         <FichaContacto
           info={info}

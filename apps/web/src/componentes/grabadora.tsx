@@ -17,11 +17,14 @@ export function Grabadora({
   onGrabado,
   onError,
   deshabilitado,
+  onGrabando,
 }: {
   tipo: "audio" | "video";
   onGrabado: (file: File) => void | Promise<void>;
   onError: (mensaje: string) => void;
   deshabilitado?: boolean;
+  /** Avisa al empezar y al acabar: es lo que hace ver «grabando audio…» al otro. */
+  onGrabando?: (activo: boolean) => void;
 }) {
   const [grabando, setGrabando] = useState(false);
   const [segundos, setSegundos] = useState(0);
@@ -50,6 +53,7 @@ export function Grabadora({
       grabadorRef.current = g;
       setSegundos(0);
       setGrabando(true);
+      onGrabando?.(true);
       if (tipo === "video" && video.current) {
         video.current.srcObject = g.stream;
         await video.current.play().catch(() => {});
@@ -70,6 +74,7 @@ export function Grabadora({
     if (!g) return;
     grabadorRef.current = null;
     setGrabando(false);
+    onGrabando?.(false);
     try {
       const { file, segundos: dur } = await g.detener();
       /*
@@ -91,6 +96,7 @@ export function Grabadora({
     grabadorRef.current?.cancelar();
     grabadorRef.current = null;
     setGrabando(false);
+    onGrabando?.(false);
   };
 
   if (!soportado) return null;

@@ -11,7 +11,7 @@ import {
   type Address, type ChannelDescriptor, type DeliveryState, type LineId, type MessageKind,
 } from "@omni/shared";
 import {
-  EventEmitterBase,
+  EventEmitterBase, PRESENCIA_ALQUILER_MS,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
   type ChatAnchorMessage, type Collection, type CommunityMetadata, type ContactProfile,
   type DownloadedMedia, type ForwardSource, type GroupMetadata, type GroupPatch,
@@ -40,7 +40,7 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
     "send.sticker", "send.location", "send.contact", "send.poll", "send.reaction",
     "send.reply", "send.mentions", "send.viewOnce", "send.forward",
     "message.edit", "message.delete", "message.receipts",
-    "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
+    "chat.read", "chat.presence", "chat.typing", "presence.watch", "chat.archive", "chat.mute", "chat.ephemeral",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "chat.clear", "chat.delete",
     "contact.check", "contact.block", "contact.profile", "identity.lid",
@@ -82,6 +82,13 @@ interface LineRuntime {
    * porque los acuses hablaban de un identificador que él no conocía.
    */
   readonly porProveedor: Map<string, string>;
+  /**
+   * El alquiler de «en línea»: cuándo vence, y el temporizador que vuelve a
+   * poner la cuenta fuera de línea. Ver `watchPresence`.
+   */
+  enLinea: { hasta: number; temporizador: ReturnType<typeof setTimeout> } | null;
+  /** A quién ya se pidió seguir, y cuándo: no hace falta repetirlo cada vez. */
+  readonly seguidas: Map<string, number>;
   /**
    * Envíos recientes por `clientMessageId`.
    *
@@ -170,6 +177,8 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       recent: new Map(),
       enviados: new Map(),
       porProveedor: new Map(),
+      enLinea: null,
+      seguidas: new Map(),
     };
     this.#lines.set(req.lineId, line);
 
@@ -218,6 +227,11 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     } as Parameters<typeof makeWASocket>[0]);
 
     line.socket = socket;
+    // Un socket nuevo nace fuera de línea y sin seguir a nadie: lo anterior
+    // era del socket viejo, y darlo por vigente dejaría de pedirlo.
+    if (line.enLinea) clearTimeout(line.enLinea.temporizador);
+    line.enLinea = null;
+    line.seguidas.clear();
     this.#wire(lineId, line, socket, config);
   }
 
@@ -566,6 +580,8 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const line = this.#lines.get(lineId);
     if (!line) return;
     line.closing = true;
+    if (line.enLinea) clearTimeout(line.enLinea.temporizador);
+    line.enLinea = null;
     try {
       line.socket?.end(undefined);
     } catch { /* ya estaba cerrado */ }
@@ -687,6 +703,45 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   ): Promise<void> {
     const { socket } = this.#require(lineId);
     await socket.sendPresenceUpdate(presence, chat.value);
+  }
+
+  /**
+   * En línea un rato, y siguiendo la presencia de una conversación.
+   *
+   * WhatsApp solo entrega el «escribiendo…» de los demás a una cuenta que está
+   * en línea, y esta conecta FUERA de línea a propósito (`markOnlineOnConnect:
+   * false`): mientras haya un cliente en línea, el teléfono deja de recibir
+   * avisos. Así que se hace como WhatsApp Web: en línea mientras alguien mira
+   * el panel, y fuera en cuanto deja de renovarlo.
+   *
+   * `presenceSubscribe` es lo que trae el «en línea» y la última conexión de
+   * esa persona. Se pide una vez cada diez minutos por conversación, no en
+   * cada renovación.
+   */
+  async watchPresence(lineId: LineId, chat: Address | null): Promise<void> {
+    const { line, socket } = this.#require(lineId);
+
+    if (!line.enLinea) await socket.sendPresenceUpdate("available");
+    else clearTimeout(line.enLinea.temporizador);
+    const temporizador = setTimeout(() => {
+      line.enLinea = null;
+      // Si la conexión ya cayó, no hay nada que apagar.
+      void line.socket?.sendPresenceUpdate("unavailable").catch(() => {});
+    }, PRESENCIA_ALQUILER_MS);
+    // Un temporizador pendiente no debe impedir que el proceso termine.
+    temporizador.unref?.();
+    line.enLinea = { hasta: Date.now() + PRESENCIA_ALQUILER_MS, temporizador };
+
+    if (chat) {
+      const antes = line.seguidas.get(chat.value) ?? 0;
+      if (Date.now() - antes > 10 * 60_000) {
+        line.seguidas.set(chat.value, Date.now());
+        await socket.presenceSubscribe(chat.value).catch(() => {
+          // Sin suscripción se pierde el «en línea», no el «escribiendo».
+          line.seguidas.delete(chat.value);
+        });
+      }
+    }
   }
 
   async checkContact(lineId: LineId, address: Address): Promise<{ exists: boolean; address: Address | null }> {

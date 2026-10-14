@@ -2,7 +2,7 @@ import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver, type GroupMetadata } from "@omni/channels";
 import { authorize, route as routeOf } from "@omni/core";
-import { groupInfoTable, groupParticipantTable, lineTable } from "@omni/db";
+import { fichasDe, groupInfoTable, groupParticipantTable, lineTable, nombresDe } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
 import type { ApiEnv } from "./shared.js";
@@ -11,7 +11,17 @@ import { errors, json, body } from "./shared.js";
 const GroupSchema = z.object({
   address: z.string(), subject: z.string(), description: z.string().nullable(),
   owner: z.string().nullable(),
-  participants: z.array(z.object({ address: z.string(), role: z.string() })),
+  participants: z.array(z.object({
+    address: z.string(), role: z.string(),
+    /**
+     * El nombre a enseñar, con la regla de siempre: agenda, el suyo,
+     * @usuario, número, id. Solo al pedir UN grupo: en la lista de todos sería
+     * resolver cientos de nombres que nadie va a mirar.
+     */
+    name: z.string().optional(),
+    /** Si es la propia línea. Para no ofrecerse a uno mismo al mencionar. */
+    me: z.boolean().optional(),
+  })),
 }).openapi("Group");
 
 const present = (g: GroupMetadata) => ({
@@ -96,7 +106,29 @@ export function registerGroupRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
       assertCapability(driver, "group.read");
       const meta = await driver.groupMetadata!(lineId as LineId, group);
       await persist(lineId, meta);
-      return c.json({ data: present(meta) }, 200);
+
+      const direcciones = meta.participants.map((p) => p.address.value);
+      const [nombres, fichas, linea] = await Promise.all([
+        nombresDe(container.dbh.db, lineId, direcciones),
+        fichasDe(container.dbh.db, lineId, direcciones),
+        container.dbh.db.select({ address: lineTable.address }).from(lineTable)
+          .where(eq(lineTable.id, lineId)).limit(1),
+      ]);
+      // La propia línea puede venir por su teléfono o por su LID: el LID se
+      // reconoce porque el mapa de identidad lo ata a nuestro teléfono.
+      const propia = linea[0]?.address ?? null;
+      const datos = present(meta);
+      return c.json({
+        data: {
+          ...datos,
+          participants: datos.participants.map((p) => ({
+            ...p,
+            name: nombres.get(p.address) ?? p.address.split("@")[0]!,
+            me: propia !== null
+              && (p.address === propia || fichas.get(p.address)?.phone === propia),
+          })),
+        },
+      }, 200);
     },
   );
 

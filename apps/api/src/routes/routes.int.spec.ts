@@ -196,6 +196,20 @@ run("grupos", () => {
     expect(Number(filas[0]!["size"])).toBe(2);
   });
 
+  it("cada participante viene con su nombre, y se sabe cuál es la propia línea", async () => {
+    // Es lo que lista el «@» al mencionar: nombres, no números, y sin uno mismo.
+    await container.runtime.publish("contact.updated", LINE, {
+      address: "51988777666@s.whatsapp.net", savedName: "Ana de Ventas",
+    });
+    const { data } = await j<{ data: { participants: {
+      address: string; name: string; me: boolean;
+    }[] } }>(await call(`/v1/lines/${LINE}/groups/${enc(grupo)}`));
+    const ana = data.participants.find((p) => p.address.startsWith("51988777666"));
+    expect(ana?.name).toBe("Ana de Ventas");
+    expect(ana?.me).toBe(false);
+    expect(data.participants.filter((p) => p.me)).toHaveLength(1);
+  });
+
   it("informa por participante en vez de un sí o no global", async () => {
     const res = await call(`/v1/lines/${LINE}/groups/${enc(grupo)}/participants`, {
       method: "POST",
@@ -1137,6 +1151,89 @@ run("organización y limpieza", () => {
     expect(vivo?.["text"]).toContain("@220000000000002");
     expect((vivo?.["mentionNames"] as Record<string, string>)["220000000000002"]).toBe("Raquel");
     expect(vivo?.["senderName"]).toBe("@andre.v");
+  });
+
+  it("buscar en un chat no distingue tildes ni mayúsculas, y no encuentra lo retirado", async () => {
+    const chat = "51901000030@s.whatsapp.net";
+    let n = 0;
+    const llega = async (text: string, extra: Record<string, unknown> = {}) => {
+      await container.runtime.publish("message.received", LINE, {
+        key: { id: `BUSCA-${++n}`, remoteJid: chat }, kind: "text", text,
+        timestamp: Date.UTC(2026, 9, 1, 10, n), ...extra,
+      });
+    };
+    await llega("Mañana te paso la CANCIÓN");
+    await llega("la cancion nueva ya salió");
+    await llega("nada que ver");
+    await llega("esta canción la retiraron");
+    await llega("rebaja del 50% hoy");
+    await llega("rebaja del 50 por ciento");
+    await esperarValor(async () => {
+      const f = await dbh.sql`SELECT 1 FROM message WHERE line_id = ${LINE} AND chat_id = ${chat}`;
+      return f.length === 6 ? true : null;
+    }, "los seis mensajes se guardaron");
+    await container.runtime.publish("message.deleted", LINE, { key: { id: "BUSCA-4" } });
+    await new Promise((r) => setTimeout(r, 200));
+
+    type R = { providerMessageId: string; texto: string; timestamp: string };
+    const buscar = async (q: string) => (await j<{ data: R[] }>(await call(
+      `/v1/lines/${LINE}/chats/${enc(chat)}/messages/search?q=${enc(q)}`))).data;
+
+    // Sin tilde encuentra con tilde, y al revés; lo más reciente primero.
+    expect((await buscar("cancion")).map((r) => r.providerMessageId)).toEqual(["BUSCA-2", "BUSCA-1"]);
+    expect((await buscar("CANCIÓN")).map((r) => r.providerMessageId)).toEqual(["BUSCA-2", "BUSCA-1"]);
+    // El «%» escrito se busca tal cual, no como comodín.
+    expect((await buscar("50%")).map((r) => r.providerMessageId)).toEqual(["BUSCA-5"]);
+    expect(await buscar("zzz")).toEqual([]);
+
+    // Y la ventana alrededor de un resultado: lo de antes y lo de después.
+    const [primero] = await buscar("mañana");
+    const { data: ventana } = await j<{ data: { providerMessageId: string }[] }>(await call(
+      `/v1/lines/${LINE}/chats/${enc(chat)}/messages?around=${enc(primero!.timestamp)}&limit=4`));
+    // De más nuevo a más viejo, como el resto del historial: 2 de después y él.
+    expect(ventana.map((m) => m.providerMessageId)).toEqual(["BUSCA-3", "BUSCA-2", "BUSCA-1"]);
+  });
+
+  it("el «escribiendo» llega con el nombre de quien escribe, y nunca el propio", async () => {
+    const grupo = "120363000000000555@g.us";
+    await container.runtime.publish("contact.updated", LINE, {
+      address: "51901000040@s.whatsapp.net", savedName: "Rodrigo Chumpitaz",
+    });
+    const vivos: { estados?: { address: string; name: string; state: string }[] }[] = [];
+    container.runtime.onEvent((e) => {
+      if (e.event === "presence.updated") vivos.push(e.data as never);
+    });
+
+    // Seguir la presencia pone la línea en línea y anota la conversación.
+    const res = await call(`/v1/lines/${LINE}/presence/watch`, {
+      method: "POST", body: JSON.stringify({ chat: grupo }),
+    });
+    expect(res.status).toBe(200);
+    const estado = container.sandbox!.presenceOf(LINE as never, grupo);
+    expect(estado.enLinea).toBe(true);
+    expect(estado.seguida).toBe(true);
+
+    await container.sandbox!.typing(LINE as never, grupo, "51901000040@s.whatsapp.net", "composing");
+    // La propia línea escribiendo desde el teléfono no es «alguien escribe».
+    await container.sandbox!.typing(LINE as never, grupo, "51999888777@s.whatsapp.net", "composing");
+
+    const conNombre = await esperarValor(async () =>
+      vivos.find((v) => v.estados?.length) ?? null, "llegó la presencia");
+    expect(conNombre.estados).toEqual([{
+      address: "51901000040@s.whatsapp.net", name: "Rodrigo Chumpitaz", state: "composing",
+    }]);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(vivos.filter((v) => v.estados?.some((e) => e.address.startsWith("51999888777"))))
+      .toHaveLength(0);
+
+    // Anunciar lo propio no se cuela como presencia del otro.
+    const antes = vivos.length;
+    await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/presence`, {
+      method: "POST", body: JSON.stringify({ presence: "composing" }),
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(vivos.length).toBe(antes);
+    expect(container.sandbox!.presenceOf(LINE as never, grupo).propia).toBe("composing");
   });
 
   it("un chat por LID se llama como lo guardaste por su TELÉFONO", async () => {

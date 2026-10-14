@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Chat, Linea, Lista } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { conNombres, cuando, resumen } from "@/lib/formato";
+import { describir, usePresencias } from "@/lib/presencia";
 import { Avatar } from "@/componentes/piezas";
 import {
   IconoArchivar, IconoBuscar, IconoCampana, IconoCampanaTachada, IconoCanal,
@@ -38,6 +39,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   const [chats, setChats] = useState<Chat[]>(iniciales);
   const [busqueda, setBusqueda] = useState("");
   const { conectado, suscribir } = useEventos(linea.id);
+  const { presencias, ahora } = usePresencias(suscribir);
   const params = useParams<{ chatId?: string }>();
   const ruta = usePathname();
   const enEstados = ruta.endsWith("/estados");
@@ -50,6 +52,38 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     setChats((prev) => prev.map((c) =>
       c.address === abierto && c.unreadCount > 0 ? { ...c, unreadCount: 0 } : c));
   }, [abierto]);
+
+  /*
+   * En línea mientras se mira el panel, y siguiendo la conversación abierta.
+   *
+   * WhatsApp solo manda el «escribiendo…» de los demás a una cuenta en línea,
+   * y mientras lo está, el TELÉFONO no recibe avisos. Por eso no se deja en
+   * línea para siempre: se renueva cada 30 s solo con la pestaña visible, y
+   * el servidor la apaga sola a los 90 s sin renovar. Cerrar o esconder el
+   * panel devuelve los avisos al teléfono enseguida.
+   *
+   * Un transporte que no sabe hacerlo contesta 422, y se deja de pedir.
+   */
+  useEffect(() => {
+    let sinSoporte = false;
+    const renovar = async (): Promise<void> => {
+      if (sinSoporte || document.visibilityState !== "visible") return;
+      const r = await fetch(`/api/omni/v1/lines/${linea.id}/presence/watch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat: abierto }),
+      }).catch(() => null);
+      if (r?.status === 422) sinSoporte = true;
+    };
+    void renovar();
+    const reloj = setInterval(() => void renovar(), 30_000);
+    const alVolver = (): void => { void renovar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    return () => {
+      clearInterval(reloj);
+      document.removeEventListener("visibilitychange", alVolver);
+    };
+  }, [linea.id, abierto]);
 
   const menu = useMenu();
   const [sobre, setSobre] = useState<Chat | null>(null);
@@ -708,13 +742,28 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                         </span>
                       </span>
                       <span className="mt-0.5 flex items-center justify-between gap-2">
-                        <span className="truncate text-xs text-(--color-tenue)">
-                          {c.ultimo
-                            ? `${c.ultimoPropio ? "Tú: " : ""}${c.ultimo}`
-                            : c.phone
-                              ? `+${c.phone.split("@")[0]}`
-                              : c.address}
-                        </span>
+                        {(() => {
+                          // «escribiendo…» en el sitio del adelanto y en el
+                          // color de acento, como en WhatsApp. Solo lo que
+                          // está pasando: «en línea» no va en la lista.
+                          const p = describir(presencias, c.address, c.kind === "group", ahora);
+                          if (p?.activo) {
+                            return (
+                              <span className="truncate text-xs font-medium text-(--color-acento-fuerte)">
+                                {p.texto}
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="truncate text-xs text-(--color-tenue)">
+                              {c.ultimo
+                                ? `${c.ultimoPropio ? "Tú: " : ""}${c.ultimo}`
+                                : c.phone
+                                  ? `+${c.phone.split("@")[0]}`
+                                  : c.address}
+                            </span>
+                          );
+                        })()}
                         {c.unreadCount > 0 && (
                           <span
                             className={`flex min-w-5 shrink-0 justify-center rounded-full px-1.5 text-[11px] leading-5 font-semibold group-hover/fila:hidden ${

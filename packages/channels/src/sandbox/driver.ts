@@ -4,7 +4,7 @@ import {
   type LineId, type MessageKind,
 } from "@omni/shared";
 import {
-  EventEmitterBase,
+  EventEmitterBase, PRESENCIA_ALQUILER_MS,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
   type Collection, type CommunityMetadata, type ContactProfile, type DownloadedMedia,
   type ForwardSource,
@@ -60,6 +60,10 @@ interface LineState {
   readonly productos: Map<string, Product>;
   readonly pedidos: Map<string, { token: string; detalles: OrderDetails }>;
   readonly known: Set<string>;
+  /** Lo que la línea anunció de sí misma y a quién sigue: no son eventos. */
+  readonly presenciaPropia: Map<string, string>;
+  readonly seguidas: Set<string>;
+  enLineaHasta: number;
   pendingQr: string | null;
   /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
   saveCredentials: ((blob: Uint8Array) => Promise<void>) | null;
@@ -79,7 +83,7 @@ export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
     "send.reaction", "send.buttons", "send.list", "send.template",
     "send.reply", "send.mentions", "send.viewOnce", "send.forward",
     "message.edit", "message.delete", "message.receipts",
-    "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
+    "chat.read", "chat.presence", "chat.typing", "presence.watch", "chat.archive", "chat.mute", "chat.ephemeral",
     "chat.clear", "chat.delete", "send.forward", "contact.profile", "contact.block",
     "community.read", "community.manage", "catalog.read", "catalog.manage",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
@@ -126,6 +130,9 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
       productos: new Map(),
       pedidos: new Map(),
       known: new Set(),
+      presenciaPropia: new Map(),
+      seguidas: new Set(),
+      enLineaHasta: 0,
       pendingQr: null,
       saveCredentials: null,
     };
@@ -348,9 +355,47 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
     await this.emit("chat.read", line.orgId, lineId, { chat: chat.value, messageIds: [...ids] });
   }
 
+  /*
+   * La presencia PROPIA se anota y no se emite.
+   *
+   * Antes salía como `presence.updated`, que es el evento de lo que hace la
+   * OTRA persona: con el panel escuchando, escribir uno mismo enseñaba
+   * «escribiendo…» en la cabecera del otro.
+   */
   async setPresence(lineId: LineId, chat: Address, presence: "composing" | "recording" | "paused"): Promise<void> {
     const line = this.#require(lineId);
-    await this.emit("presence.updated", line.orgId, lineId, { chat: chat.value, presence });
+    line.presenciaPropia.set(chat.value, presence);
+  }
+
+  async watchPresence(lineId: LineId, chat: Address | null): Promise<void> {
+    const line = this.#require(lineId);
+    this.#requireConnected(line, lineId);
+    line.enLineaHasta = this.#now() + PRESENCIA_ALQUILER_MS;
+    if (chat) line.seguidas.add(chat.value);
+  }
+
+  /** Lo que la línea anunció de sí misma, para las pruebas. */
+  presenceOf(lineId: LineId, chat: string): { propia: string | null; seguida: boolean; enLinea: boolean } {
+    const line = this.#require(lineId);
+    return {
+      propia: line.presenciaPropia.get(chat) ?? null,
+      seguida: line.seguidas.has(chat),
+      enLinea: line.enLineaHasta > this.#now(),
+    };
+  }
+
+  /**
+   * Simula que alguien escribe, graba o para. Con la forma de Baileys:
+   * `presences` por participante, que en un grupo son varios.
+   */
+  async typing(
+    lineId: LineId, chat: string, from: string,
+    state: "composing" | "recording" | "paused" | "available" | "unavailable",
+  ): Promise<void> {
+    const line = this.#require(lineId);
+    await this.emit("presence.updated", line.orgId, lineId, {
+      chat, presences: { [from]: { lastKnownPresence: state } },
+    });
   }
 
   async checkContact(lineId: LineId, address: Address): Promise<{ exists: boolean; address: Address | null }> {

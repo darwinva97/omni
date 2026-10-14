@@ -244,6 +244,33 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "post", path: "/v1/lines/{lineId}/presence/watch",
+      tags: ["chats"], summary: "Estar en línea un rato y ver quién escribe",
+      description:
+        "Pone la línea en línea durante 90 segundos desde la última llamada y, si se " +
+        "indica `chat`, sigue su presencia. Mientras dure, llegan los eventos " +
+        "`presence.updated` —«escribiendo», «grabando», «en línea»— y el teléfono NO " +
+        "recibe notificaciones, que es como funciona WhatsApp con un cliente en " +
+        "línea. Hay que renovarlo mientras se mire; al dejar de hacerlo, se apaga solo.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        ...body(z.object({ chat: z.string().nullable().default(null) })),
+      },
+      responses: { 200: json(Ok, "en línea"), ...errors },
+    }),
+    async (c) => {
+      const { lineId } = c.req.valid("param");
+      const { chat } = c.req.valid("json");
+      await authorize(c.get("principal"), routeOf("presence.watch"), { lineId });
+      const driver = await driverOf(lineId);
+      assertCapability(driver, "presence.watch");
+      await driver.watchPresence!(lineId as LineId, chat ? parseAddress(chat) : null);
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get", path: "/v1/lines/{lineId}/contacts",
       tags: ["contactos"], summary: "Contactos conocidos por esta línea",
       request: {

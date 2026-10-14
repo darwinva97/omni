@@ -330,6 +330,48 @@ export const COMMANDS: readonly Command[] = [
       { messageIds: req(a, 2, "mensajes").split(",").map((s) => s.trim()).filter(Boolean) }),
   },
   {
+    name: "sandbox:escribir",
+    summary: "Fabricar que un contacto del sandbox escribe, graba o para",
+    operation: "POST /v1/sandbox/lines/{lineId}/typing",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "de", required: true, description: "Quién escribe" },
+      { name: "estado", required: false, description: "composing, recording, paused, available o unavailable" },
+    ],
+    flags: [{ name: "chat", description: "Dónde, si no es su chat con la línea (un grupo)" }],
+    run: (c, a) => c.request("POST", `/v1/sandbox/lines/${req(a, 0, "linea")}/typing`, {
+      from: req(a, 1, "de"),
+      state: a.positional[2] ?? "composing",
+      ...(flag(a, "chat") ? { chat: flag(a, "chat") } : {}),
+    }),
+  },
+  {
+    name: "presencia:seguir",
+    summary: "Estar en línea 90 segundos y ver quién escribe",
+    operation: "POST /v1/lines/{lineId}/presence/watch",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: false, description: "Conversación cuya presencia seguir" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/presence/watch`,
+      { chat: a.positional[1] ?? null }),
+  },
+  {
+    name: "mensajes:buscar",
+    summary: "Buscar en una conversación, sin tildes ni mayúsculas",
+    operation: "GET /v1/lines/{lineId}/chats/{chatId}/messages/search",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "texto", required: true, description: "Lo que se busca" },
+    ],
+    flags: [{ name: "limite", description: "Cuántos resultados, hasta 100" }],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/search`
+      + `?q=${enc(req(a, 2, "texto"))}${flag(a, "limite") ? `&limit=${enc(flag(a, "limite")!)}` : ""}`),
+  },
+  {
     name: "chat:escribiendo",
     summary: "Mostrar que se está escribiendo o grabando",
     operation: "POST /v1/lines/{lineId}/chats/{chatId}/presence",

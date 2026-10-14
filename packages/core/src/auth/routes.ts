@@ -66,6 +66,13 @@ export const ROUTES = {
   "chat.clear": { id: "chat.clear", permission: "chat.manage", scope: "chat", chatSafe: true },
   "chat.presence": { id: "chat.presence", permission: "message.send", scope: "chat", chatSafe: true },
   "message.list": { id: "message.list", permission: "message.read", scope: "chat", chatSafe: true },
+  "message.search": { id: "message.search", permission: "message.read", scope: "chat", chatSafe: true },
+  /*
+   * Ponerse en línea afecta a TODA la cuenta —el teléfono deja de recibir
+   * avisos mientras dure—, así que es de línea y no apto para una clave
+   * acotada a un chat: esa clave no puede decidir algo que nota el dueño.
+   */
+  "presence.watch": { id: "presence.watch", permission: "message.read", scope: "line" },
   "message.send": { id: "message.send", permission: "message.send", scope: "chat", chatSafe: true },
   "message.edit": { id: "message.edit", permission: "message.send", scope: "chat", chatSafe: true },
   "message.delete": { id: "message.delete", permission: "message.delete", scope: "chat", chatSafe: true },

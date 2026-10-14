@@ -803,6 +803,7 @@ export class EngineRuntime {
    * la mención → nombre).
    */
   async #conNombres(envelope: EventEnvelope): Promise<EventEnvelope> {
+    if (envelope.event === "presence.updated") return this.#presenciaConNombres(envelope);
     if (envelope.event !== "message.received" && envelope.event !== "message.sent") {
       return envelope;
     }
@@ -840,6 +841,59 @@ export class EngineRuntime {
       };
     } catch {
       // Sin nombres el evento sigue valiendo: se publica tal cual llegó.
+      return envelope;
+    }
+  }
+
+  /**
+   * La presencia, lista para enseñar: quién, qué hace y cómo se llama.
+   *
+   * WhatsApp manda `presences` indexado por participante, con su
+   * `lastKnownPresence`. Se añade `estados` —una entrada por persona, sin la
+   * propia línea— con el nombre puesto por la misma regla que los mensajes:
+   * en un grupo, «Rodrigo está escribiendo…» y no un número.
+   */
+  async #presenciaConNombres(envelope: EventEnvelope): Promise<EventEnvelope> {
+    try {
+      const d = envelope.data as {
+        chat?: string;
+        presences?: Record<string, { lastKnownPresence?: string; lastSeen?: number }>;
+      };
+      if (!d.chat || !d.presences) return envelope;
+
+      // Las direcciones de la propia línea, por las dos vías: su teléfono y
+      // su LID. Con varios dispositivos, WhatsApp a veces reporta la nuestra.
+      const [linea] = await this.#deps.db
+        .select({ address: lineTable.address }).from(lineTable)
+        .where(eq(lineTable.id, envelope.lineId)).limit(1);
+      const propias = new Set<string>();
+      if (linea?.address) {
+        propias.add(linea.address);
+        const lids = await this.#deps.db
+          .select({ lid: identityMapTable.lid }).from(identityMapTable)
+          .where(and(eq(identityMapTable.lineId, envelope.lineId),
+            eq(identityMapTable.phone, linea.address)));
+        for (const l of lids) propias.add(l.lid);
+      }
+      const usuario = (a: string): string => a.split("@")[0]!.split(":")[0]!;
+      const esPropia = (a: string): boolean =>
+        [...propias].some((p) => usuario(p) === usuario(a));
+
+      const entradas = Object.entries(d.presences).filter(([a]) => !esPropia(a));
+      const nombres = await nombresDe(this.#deps.db, envelope.lineId, entradas.map(([a]) => a));
+      return {
+        ...envelope,
+        data: {
+          ...d,
+          estados: entradas.map(([address, p]) => ({
+            address,
+            name: nombres.get(address) ?? usuario(address),
+            state: p.lastKnownPresence ?? "unavailable",
+            ...(p.lastSeen ? { lastSeen: p.lastSeen * 1000 } : {}),
+          })),
+        },
+      };
+    } catch {
       return envelope;
     }
   }

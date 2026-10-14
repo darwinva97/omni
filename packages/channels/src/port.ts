@@ -63,6 +63,15 @@ export interface ChannelDriverOptional {
   react?(lineId: LineId, chat: Address, providerMessageId: string, emoji: string): Promise<void>;
   markRead?(lineId: LineId, chat: Address, providerMessageIds: readonly string[]): Promise<void>;
   setPresence?(lineId: LineId, chat: Address, presence: "composing" | "recording" | "paused"): Promise<void>;
+  /**
+   * Ponerse en línea un rato y seguir la presencia de una conversación.
+   *
+   * Es un ALQUILER, no un interruptor: dura `PRESENCIA_ALQUILER_MS` desde la
+   * última llamada y luego la cuenta vuelve a no estar en línea sola. Quien
+   * mira la pantalla lo renueva; si se cierra la pestaña sin avisar, el
+   * teléfono vuelve a recibir notificaciones al poco igualmente.
+   */
+  watchPresence?(lineId: LineId, chat: Address | null): Promise<void>;
   checkContact?(lineId: LineId, address: Address): Promise<{ exists: boolean; address: Address | null }>;
   groupMetadata?(lineId: LineId, group: Address): Promise<GroupMetadata>;
   createGroup?(lineId: LineId, subject: string, participants: readonly Address[]): Promise<GroupMetadata>;
@@ -329,6 +338,15 @@ export interface ChannelDriver extends ChannelDriverOptional {
   send(cmd: OutboundCommand): Promise<SendReceipt>;
   subscribe(handler: EventHandler): Unsubscribe;
 }
+
+/**
+ * Cuánto dura estar en línea tras la última renovación.
+ *
+ * Corto a propósito: mientras la cuenta está en línea, WhatsApp no manda avisos
+ * al teléfono. Si se cierra el panel sin despedirse, en minuto y medio el
+ * teléfono vuelve a sonar.
+ */
+export const PRESENCIA_ALQUILER_MS = 90_000;
 
 export const supports = (d: ChannelDriver, c: Capability): boolean => d.descriptor.capabilities.has(c);
 

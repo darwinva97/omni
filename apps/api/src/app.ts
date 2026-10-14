@@ -5,7 +5,7 @@ import {
 } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
 import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
-import { and, desc, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import type { LineId } from "@omni/shared";
 import type { Container } from "./container.js";
@@ -277,6 +277,28 @@ async function conFichas<T extends FilaDeChat>(
       phone: r.phone ?? f.phone,
     };
   });
+}
+
+/*
+ * Buscar sin tildes ni mayúsculas, con `translate` y no con la extensión
+ * `unaccent`: así funciona en cualquier Postgres, sin pedir permisos para
+ * instalar nada. Las dos cadenas tienen que tener la misma longitud.
+ *
+ * Las mayúsculas con tilde van en la tabla aunque antes se haga `lower()`: en
+ * una base con `LC_CTYPE=C` —la nuestra— `lower('CANCIÓN')` da «canciÓn»,
+ * porque solo baja las letras ASCII. Sin esto, «cancion» no encontraba
+ * «CANCIÓN».
+ */
+const CON_TILDE = "áàäâãéèëêíìïîóòöôõúùüûñçÁÀÄÂÃÉÈËÊÍÌÏÎÓÒÖÔÕÚÙÜÛÑÇ";
+const SIN_TILDE = "aaaaaeeeeiiiiooooouuuuncaaaaaeeeeiiiiooooouuuunc";
+
+export function normalizarBusqueda(texto: string): string {
+  const desde = [...CON_TILDE];
+  const hacia = [...SIN_TILDE];
+  return [...texto.toLowerCase()].map((ch) => {
+    const i = desde.indexOf(ch);
+    return i >= 0 ? hacia[i]! : ch;
+  }).join("");
 }
 
 /** Las listas de Omni de cada conversación, en UNA consulta. */
@@ -992,6 +1014,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         query: z.object({
           limit: z.coerce.number().int().min(1).max(200).default(50),
           before: z.string().optional().describe("ISO-8601: devuelve lo anterior a esa marca"),
+          around: z.string().optional().describe(
+            "ISO-8601: la mitad de antes y la mitad de después de esa marca. Es lo que " +
+            "permite saltar a un resultado de búsqueda que ya no está entre los últimos."),
         }),
       },
       responses: { 200: json(z.object({
@@ -1002,16 +1027,33 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     async (c) => {
       const principal = c.get("principal");
       const { lineId, chatId } = c.req.valid("param");
-      const { limit, before } = c.req.valid("query");
+      const { limit, before, around } = c.req.valid("query");
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(principal, routeOf("message.list"), { lineId, chat });
 
       const conds = [eq(messageTable.lineId, lineId), eq(messageTable.chatId, chat.value)];
-      if (before) conds.push(lt(messageTable.timestamp, new Date(before)));
-      const rows = await container.dbh.db.select().from(messageTable)
-        .where(and(...conds))
-        .orderBy(desc(messageTable.timestamp), desc(messageTable.id))
-        .limit(limit);
+      let rows: (typeof messageTable.$inferSelect)[];
+      if (around) {
+        // Una ventana centrada: lo de antes, de más nuevo a más viejo, y lo de
+        // después dado la vuelta para que el conjunto mantenga ese orden.
+        const centro = new Date(around);
+        const mitad = Math.ceil(limit / 2);
+        const [antes, despues] = await Promise.all([
+          container.dbh.db.select().from(messageTable)
+            .where(and(...conds, lte(messageTable.timestamp, centro)))
+            .orderBy(desc(messageTable.timestamp), desc(messageTable.id)).limit(mitad),
+          container.dbh.db.select().from(messageTable)
+            .where(and(...conds, gt(messageTable.timestamp, centro)))
+            .orderBy(asc(messageTable.timestamp), asc(messageTable.id)).limit(limit - mitad),
+        ]);
+        rows = [...despues.reverse(), ...antes];
+      } else {
+        if (before) conds.push(lt(messageTable.timestamp, new Date(before)));
+        rows = await container.dbh.db.select().from(messageTable)
+          .where(and(...conds))
+          .orderBy(desc(messageTable.timestamp), desc(messageTable.id))
+          .limit(limit);
+      }
 
       /*
        * Los nombres de quienes escriben, en UNA consulta.
@@ -1230,6 +1272,79 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     },
   );
 
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/chats/{chatId}/messages/search", tags: ["mensajes"],
+      summary: "Buscar en una conversación",
+      description:
+        "Sin distinguir mayúsculas ni tildes: «cancion» encuentra «Canción». Busca en el " +
+        "texto, en el pie de los ficheros y en su nombre, y no en lo retirado. Devuelve " +
+        "lo más reciente primero, con el `timestamp` que hace falta para cargar los " +
+        "mensajes de alrededor (`around` en el historial).",
+      request: {
+        params: z.object({ lineId: z.string(), chatId: z.string() }),
+        query: z.object({
+          q: z.string().trim().min(1).max(100),
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+        }),
+      },
+      responses: { 200: json(z.object({ data: z.array(z.object({
+        id: z.string(),
+        providerMessageId: z.string().nullable(),
+        timestamp: z.string(),
+        fromMe: z.boolean(),
+        senderName: z.string().nullable(),
+        kind: z.string(),
+        /** El texto en que se encontró, con las menciones ya con su nombre. */
+        texto: z.string(),
+      })) }), "ok"), ...errors },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const { lineId, chatId } = c.req.valid("param");
+      const { q, limit } = c.req.valid("query");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(principal, routeOf("message.search"), { lineId, chat });
+
+      // Los comodines de LIKE escritos por la persona se buscan tal cual: quien
+      // escribe «50%» quiere encontrar «50%», no cualquier cosa que empiece por 50.
+      const patron = `%${normalizarBusqueda(q).replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      const normal = (col: unknown) => sql`translate(lower(coalesce(${col}, '')), ${CON_TILDE}, ${SIN_TILDE})`;
+
+      const filas = await container.dbh.db.select().from(messageTable)
+        .where(and(
+          eq(messageTable.lineId, lineId),
+          eq(messageTable.chatId, chat.value),
+          isNull(messageTable.deletedAt),
+          sql`(${normal(messageTable.body)} LIKE ${patron}
+               OR ${normal(messageTable.mediaFileName)} LIKE ${patron})`,
+        ))
+        .orderBy(desc(messageTable.timestamp), desc(messageTable.id))
+        .limit(limit);
+
+      const remitentes = [...new Set(filas.filter((f) => !f.fromMe).map((f) => f.senderAddress))];
+      const nombres = await nombresDe(container.dbh.db, lineId, remitentes);
+      const menciones = await nombresDeMenciones(
+        container.dbh.db, lineId,
+        [...new Set(filas.flatMap((f) => tokensDeMencion(f.body)))],
+        [...new Set(filas.flatMap((f) => f.mentions ?? []))],
+      );
+      const porToken = new Map([...menciones].map(([t, m]) => [t, m.name]));
+
+      return c.json({
+        data: filas.map((f) => ({
+          id: f.id,
+          providerMessageId: f.providerMessageId,
+          timestamp: f.timestamp.toISOString(),
+          fromMe: f.fromMe,
+          senderName: f.fromMe ? null : nombres.get(f.senderAddress) ?? null,
+          kind: f.kind,
+          texto: f.body ? conNombres(f.body, porToken) : f.mediaFileName ?? "",
+        })),
+      }, 200);
+    },
+  );
+
   /*
    * Compatibilidad de cable. Migrar desde WasenderAPI es cambiar la URL base.
    * Se monta bajo `/compat/wasender` y NO pasa por el middleware de `/v1`:
@@ -1435,6 +1550,36 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
         ...(input.kind ? { kind: input.kind } : {}),
       });
       return c.json({ data: { id: msg.id, chat: msg.chat } }, 201);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/sandbox/lines/{lineId}/typing", tags: ["sandbox"],
+      summary: "Fabricar que un contacto escribe, graba o para",
+      description:
+        "Sale un `presence.updated` con la misma forma que el de una línea real, para " +
+        "probar el «escribiendo…» sin que nadie escriba. `from` es quién; `chat`, dónde " +
+        "—por defecto su conversación con la línea, y en un grupo, el grupo—.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        ...body(z.object({
+          from: z.string().min(5),
+          chat: z.string().optional(),
+          state: z.enum(["composing", "recording", "paused", "available", "unavailable"])
+            .default("composing"),
+        })),
+      },
+      responses: { 200: json(z.object({ data: z.object({ ok: z.boolean() }) }), "hecho"), ...errors },
+    }),
+    async (c) => {
+      const principal = guard(c);
+      const { lineId } = c.req.valid("param");
+      const { from, chat, state } = c.req.valid("json");
+      await authorize(principal, routeOf("line.connect"), { lineId });
+      const quien = parseAddress(from).value;
+      await container.sandbox!.typing(lineId as LineId, chat ? parseAddress(chat).value : quien, quien, state);
+      return c.json({ data: { ok: true } }, 200);
     },
   );
 

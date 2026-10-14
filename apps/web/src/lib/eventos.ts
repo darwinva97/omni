@@ -48,7 +48,9 @@ export function useEventos(lineId: string): {
           setConectado(true);
           ws?.send(JSON.stringify({
             type: "subscribe",
-            events: ["message.*", "chat.*", "session.*"],
+            // `presence.*`: quién escribe o graba. Sin él, el «escribiendo…»
+            // llegaba al motor y no salía de ahí.
+            events: ["message.*", "chat.*", "session.*", "presence.*"],
             lines: [lineId],
           }));
         };

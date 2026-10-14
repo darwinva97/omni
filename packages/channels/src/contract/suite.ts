@@ -42,6 +42,7 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "chat.presence": "setPresence",
   // Escribir es una presencia más: quien declare una tiene que tener el método.
   "chat.typing": "setPresence",
+  "presence.watch": "watchPresence",
   "contact.check": "checkContact",
   "group.read": "groupMetadata",
   "group.create": "createGroup",
