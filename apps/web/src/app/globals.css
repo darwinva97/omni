@@ -62,6 +62,13 @@
    */
   --color-leido: oklch(0.6 0.16 245);
 
+  /*
+   * Un enlace dentro de una burbuja. Azul como en WhatsApp, y un paso más
+   * oscuro que el del acuse: va sobre el fondo de la burbuja propia, que es
+   * del color de acento, y ahí el azul del acuse no llega al contraste.
+   */
+  --color-enlace: oklch(0.5 0.15 245);
+
   /* Estados. */
   --color-exito: oklch(0.55 0.13 150);
   --color-exito-tenue: oklch(0.95 0.04 150);
@@ -121,6 +128,7 @@
     --color-cita-ajena: oklch(0.195 0.009 240);
 
     --color-leido: oklch(0.72 0.14 245);
+    --color-enlace: oklch(0.78 0.12 240);
 
     --color-exito: oklch(0.72 0.13 150);
     --color-exito-tenue: oklch(0.28 0.05 150);

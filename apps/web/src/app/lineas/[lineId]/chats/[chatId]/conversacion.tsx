@@ -4,6 +4,7 @@ import { useCallback, useEffect, useOptimistic, useRef, useState, startTransitio
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
+import { partirEnlaces } from "@/lib/enlaces";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
@@ -1494,19 +1495,35 @@ function Cita({
 }
 
 /**
- * El texto de un mensaje, con las menciones como en WhatsApp.
+ * El texto de un mensaje, con las menciones y los enlaces como en WhatsApp.
  *
  * WhatsApp manda `@120238196658384` y deja al cliente poner el nombre. Aquí
  * se pinta `@Nadkym` en el color de acento y en negrita suave, que es como se
  * distingue en el teléfono que eso es una persona y no texto. El número sigue
  * en el `title`: es el detalle, no lo que se lee.
+ *
+ * Los enlaces se abren en otra pestaña y sin `opener` ni `referrer`: quien
+ * manda un enlace no tiene por qué saber desde dónde se abrió, ni la página
+ * abierta tocar la del panel.
  */
 function Texto({ mensaje }: { mensaje: Mensaje }) {
   return (
     <>
       {trozosConMenciones(mensaje.body ?? "", mensaje.mentions).map((t, i) =>
         "texto" in t
-          ? <span key={i}>{t.texto}</span>
+          ? partirEnlaces(t.texto).map((e, j) => "texto" in e
+            ? <span key={`${i}-${j}`}>{e.texto}</span>
+            : (
+              <a
+                key={`${i}-${j}`}
+                href={e.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-(--color-enlace) underline decoration-1 underline-offset-2 hover:decoration-2"
+              >
+                {e.enlace}
+              </a>
+            ))
           : (
             <span
               key={i}
