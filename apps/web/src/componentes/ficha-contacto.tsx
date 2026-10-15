@@ -6,6 +6,7 @@ import { diaDeSeparador, hora } from "@/lib/formato";
 import { Avatar } from "./piezas";
 import type { Resultado } from "./buscar-en-chat";
 import { IconoCerrar, IconoDocumento, IconoEstrella } from "./iconos";
+import { Temporales } from "./temporales";
 
 /** Un destacado, como lo da la API. */
 interface Destacado {
@@ -180,6 +181,11 @@ export function FichaContacto({
             De lo que hay cargado en esta conversación, no de todo el historial.
           </p>
         </section>
+      )}
+
+      {/* Un canal no tiene con quién acordar que los mensajes caduquen. */}
+      {info.kind !== "newsletter" && info.kind !== "broadcast" && (
+        <Temporales lineId={lineId} chat={info.address} actuales={info.ephemeralSeconds ?? null} />
       )}
 
       {/*

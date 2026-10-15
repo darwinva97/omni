@@ -88,6 +88,8 @@ export interface Chat {
   mutedUntil?: string | null;
   archived?: boolean;
   pinned?: boolean;
+  /** Cuánto duran los mensajes, en segundos: 0 = desactivados, `null` = no se sabe. */
+  ephemeralSeconds?: number | null;
   /** Las listas de Omni en las que está. No existen en WhatsApp. */
   labelIds?: string[];
   /**

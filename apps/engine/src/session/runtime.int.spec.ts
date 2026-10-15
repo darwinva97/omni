@@ -269,6 +269,28 @@ run("runtime del motor, de punta a punta", () => {
     expect(todas.find((m) => m.id === fila!.id)!.deletedAt).not.toBeNull();
   });
 
+  it("cuando el otro lado pone los mensajes temporales, el chat lo apunta", async () => {
+    // Es la única forma de saberlo: WhatsApp no deja preguntarlo.
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    await H.driver.inbound(asLineId(LINE), "51988777666", "hola");
+    await settle(400);
+
+    await H.runtime.publish("message.received", LINE, {
+      key: { id: "PROTO-EF", remoteJid: "51988777666@s.whatsapp.net" },
+      kind: "system", timestamp: Date.now(),
+      raw: { message: { protocolMessage: { type: 3, ephemeralExpiration: 86400 } } },
+    });
+    await settle(300);
+
+    const [chat] = await h.db.select({ s: chatTable.ephemeralSeconds }).from(chatTable)
+      .where(and(eq(chatTable.lineId, LINE), eq(chatTable.address, "51988777666@s.whatsapp.net")));
+    expect(chat?.s).toBe(86400);
+    // Y no deja burbuja: es un aviso sobre el chat, no un mensaje.
+    const todas = await h.db.select().from(messageTable).where(eq(messageTable.lineId, LINE));
+    expect(todas.find((m) => m.providerMessageId === "PROTO-EF")).toBeUndefined();
+  });
+
   it("un canal sin nombre lo aprende al sincronizar, y no toca los que ya tienen", async () => {
     /*
      * Un mensaje de canal no trae el nombre del canal, solo su dirección: sin

@@ -190,6 +190,15 @@ const ChatSchema = z.object({
   archived: z.boolean().default(false),
   pinned: z.boolean().default(false),
   /**
+   * Cuánto duran los mensajes antes de desaparecer, en segundos: 0 si están
+   * desactivados, y `null` si no se sabe.
+   *
+   * No se sabe hasta que alguien lo cambia —desde aquí, desde el teléfono o el
+   * otro lado— o WhatsApp lo dice al sincronizar: no hay forma de preguntarlo.
+   * Decir «desactivados» sin saberlo sería afirmar algo que puede ser falso.
+   */
+  ephemeralSeconds: z.number().nullable().default(null),
+  /**
    * Las listas de Omni en las que está.
    *
    * Son etiquetas NUESTRAS, no de WhatsApp: agrupan conversaciones en el panel
@@ -226,6 +235,7 @@ interface FilaDeChat {
   avatarKey?: string | null; avatarUrl?: string | null;
   ultimo?: string | null; ultimoPropio?: boolean;
   muteUntil?: Date | null; archived?: boolean; pinned?: boolean;
+  ephemeralSeconds?: number | null;
   labelIds?: string[];
   conversation?: ReturnType<typeof presentarConversacion> | null;
 }
@@ -551,6 +561,7 @@ function presentarChat(r: FilaDeChat) {
     mutedUntil: r.muteUntil?.toISOString() ?? null,
     archived: r.archived ?? false,
     pinned: r.pinned ?? false,
+    ephemeralSeconds: r.ephemeralSeconds ?? null,
     labelIds: r.labelIds ?? [],
     conversation: r.conversation ?? null,
   };
@@ -888,7 +899,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
           avatarKey: chatTable.avatarKey,
           muteUntil: chatTable.muteUntil, archived: chatTable.archived,
-          pinned: chatTable.pinned,
+          pinned: chatTable.pinned, ephemeralSeconds: chatTable.ephemeralSeconds,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           username: contactTable.username,
           phone: identityMapTable.phone,
@@ -1104,7 +1115,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
           avatarKey: chatTable.avatarKey,
           muteUntil: chatTable.muteUntil, archived: chatTable.archived,
-          pinned: chatTable.pinned,
+          pinned: chatTable.pinned, ephemeralSeconds: chatTable.ephemeralSeconds,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           username: contactTable.username,
           phone: identityMapTable.phone,

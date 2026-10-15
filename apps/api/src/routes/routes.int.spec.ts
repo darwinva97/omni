@@ -1954,6 +1954,33 @@ run("organización y limpieza", () => {
     expect(cita.disponible).toBe(false);
   });
 
+  it("los mensajes temporales no se saben hasta que se ponen, y entonces se apuntan", async () => {
+    /*
+     * WhatsApp no deja preguntar si un chat tiene los mensajes temporales: se
+     * sabe cuando alguien los cambia. Hasta entonces es `null`, no «0»: decir
+     * «desactivados» sin saberlo sería afirmar algo que puede ser falso.
+     */
+    const chat = "51901000009@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000009", text: "hola" }),
+    });
+    await esperarChat(chat);
+    const leer = async () => (await j<{ data: { ephemeralSeconds: number | null } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}`))).data.ephemeralSeconds;
+    expect(await leer()).toBeNull();
+
+    const poner = (seconds: number) => call(`/v1/lines/${LINE}/chats/${enc(chat)}/ephemeral`, {
+      method: "POST", body: JSON.stringify({ seconds }),
+    });
+    expect((await poner(604800)).status).toBe(200);
+    expect(await leer()).toBe(604800);
+    // Un valor que WhatsApp ignoraría en silencio se rechaza antes.
+    expect((await poner(3600)).status).toBe(422);
+    expect(await leer()).toBe(604800);
+    expect((await poner(0)).status).toBe(200);
+    expect(await leer()).toBe(0);
+  });
+
   it("silenciar una conversación se guarda AQUÍ, no solo en el transporte", async () => {
     /*
      * Antes solo se le decía a WhatsApp. El panel no sabía que estaba

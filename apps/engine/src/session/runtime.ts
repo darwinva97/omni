@@ -94,7 +94,11 @@ const MEDIA_KINDS = new Set(["image", "video", "audio", "document", "sticker"]);
 type Protocolo = {
   key?: { id?: string }; type?: number | string;
   editedMessage?: object; timestampMs?: number | string;
+  ephemeralExpiration?: number | null;
 };
+
+/** `Message.ProtocolMessage.Type.EPHEMERAL_SETTING`: «los mensajes de aquí caducan en…». */
+const EPHEMERAL_SETTING = 3;
 
 /** `Message.ProtocolMessage.Type.MESSAGE_EDIT`: «este mensaje dice ahora otra cosa». */
 const MESSAGE_EDIT = 14;
@@ -1808,6 +1812,22 @@ export class EngineRuntime {
       );
       return;
     }
+    /*
+     * Alguien puso o quitó los mensajes temporales —el otro lado, o nosotros
+     * desde el teléfono—. Es la única forma de enterarse: WhatsApp no deja
+     * preguntarlo, así que se apunta en el chat cuando pasa.
+     */
+    if (protocolo.type === EPHEMERAL_SETTING || protocolo.type === "EPHEMERAL_SETTING") {
+      const d = envelope.data as { key?: { remoteJid?: string } };
+      const direccion = d.key?.remoteJid ? tryParseAddress(d.key.remoteJid) : null;
+      if (!direccion) return;
+      const chat = await this.#conversacionDe(envelope.lineId, direccion);
+      await this.#deps.db
+        .update(chatTable)
+        .set({ ephemeralSeconds: Number(protocolo.ephemeralExpiration ?? 0) })
+        .where(and(eq(chatTable.lineId, envelope.lineId), eq(chatTable.address, chat.value)));
+      return;
+    }
     if (protocolo.type !== REVOKE && protocolo.type !== "REVOKE") return;
     await this.#marcarRetirado(envelope.lineId, protocolo.key?.id, envelope.timestamp);
   }
@@ -1899,6 +1919,8 @@ export class EngineRuntime {
     const d = envelope.data as {
       chat?: string; archived?: boolean; pinned?: boolean;
       mutedUntil?: number | null; unreadCount?: number;
+      /** Segundos que duran los mensajes; 0 = desactivados. */
+      ephemeral?: number | null;
     };
     if (!d.chat) return;
     const direccion = tryParseAddress(d.chat);
@@ -1911,6 +1933,7 @@ export class EngineRuntime {
       cambios.muteUntil = d.mutedUntil ? new Date(d.mutedUntil) : null;
     }
     if (d.unreadCount !== undefined) cambios.unreadCount = Math.max(0, d.unreadCount);
+    if (d.ephemeral !== undefined) cambios.ephemeralSeconds = Number(d.ephemeral ?? 0);
     if (Object.keys(cambios).length === 0) return;
 
     await this.#deps.db
