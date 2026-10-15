@@ -151,6 +151,8 @@ export interface Mensaje {
   mediaError?: string | null;
   /** Por qué no salió, cuando `state` es `failed`: lo que dijo el transporte. */
   failureReason?: string | null;
+  /** Si lo tiene destacado quien mira. La estrella es de cada uno, no del chat. */
+  starred?: boolean;
   /** Reacciones agrupadas por emoji. */
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
   /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */

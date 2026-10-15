@@ -23,7 +23,7 @@ import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
   IconoAdjuntar, IconoAlerta, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
-  IconoDocumento, IconoEditar, IconoImagen, IconoMicrofono, IconoSonido,
+  IconoDocumento, IconoEditar, IconoEstrella, IconoImagen, IconoMicrofono, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoReenviar, IconoResponder, IconoSticker,
   IconoVolver,
 } from "@/componentes/iconos";
@@ -672,6 +672,8 @@ export function Conversacion({
    */
   const [editando, setEditando] = useState<Mensaje | null>(null);
   const [reenviando, setReenviando] = useState<Mensaje | null>(null);
+  // Sube cada vez que se destaca o se quita algo: la ficha vuelve a pedir su lista.
+  const [versionDestacados, setVersionDestacados] = useState(0);
   const [senalado, setSenalado] = useState<string | null>(null);
   const campo = useRef<HTMLTextAreaElement>(null);
   /*
@@ -1099,6 +1101,29 @@ export function Conversacion({
   };
 
   /**
+   * Destaca o quita la estrella. Se pinta al instante, como una reacción; si
+   * la API dice que no, vuelve como estaba y se dice por qué.
+   *
+   * Se señala por el identificador de WhatsApp si lo hay y si no por el
+   * nuestro: lo recién llegado por el socket solo trae el primero, y lo
+   * recién enviado, el segundo. La API acepta los dos.
+   */
+  const destacar = async (m: Mensaje, si: boolean): Promise<void> => {
+    const marcar = (starred: boolean) => setMensajes((prev) =>
+      prev.map((x) => (x.id === m.id ? { ...x, starred } : x)));
+    marcar(si);
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId ?? m.id)}/star`,
+      { method: si ? "PUT" : "DELETE" },
+    ).catch(() => null);
+    if (r?.ok) { setVersionDestacados((v) => v + 1); return; }
+    marcar(!si);
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    const motivo = detalle?.detail ?? (r ? `el servidor respondió ${r.status}` : "no hay conexión con el servidor");
+    setProblema(`No se pudo ${si ? "destacar" : "quitar la estrella"}: ${motivo}.`);
+  };
+
+  /**
    * Las acciones de un mensaje.
    *
    * Solo aparecen las que de verdad se pueden hacer con ESE mensaje: borrar
@@ -1159,6 +1184,12 @@ export function Conversacion({
     // no hay forma de señalarlo.
     if (m.providerMessageId && !m.deleted) {
       opciones.push({ texto: "Reenviar", Icono: IconoReenviar, onSelect: () => setReenviando(m) });
+    }
+    // Lo que todavía se está enviando no tiene fila a la que poner la estrella.
+    if (!m.deleted && !m.id.startsWith("pendiente-")) {
+      opciones.push(m.starred
+        ? { texto: "No destacar", Icono: IconoEstrellaLlena, onSelect: () => destacar(m, false) }
+        : { texto: "Destacar", Icono: IconoEstrella, onSelect: () => destacar(m, true) });
     }
     if (m.fromMe && m.providerMessageId) {
       opciones.push({
@@ -1520,6 +1551,7 @@ export function Conversacion({
                           suelto ? "pr-1" : ""
                         }`}
                       >
+                        {m.starred && <Destacado />}
                         <time dateTime={m.timestamp}>{hora(m.timestamp)}</time>
                         {m.fromMe && <Acuse estado={m.state} />}
                       </span>
@@ -2065,8 +2097,15 @@ export function Conversacion({
       )}
       {ficha && info && (
         <FichaContacto
+          lineId={lineId}
           info={info}
           mensajes={mensajes}
+          versionDestacados={versionDestacados}
+          onIrA={(r) => {
+            // En un teléfono la ficha tapa el hilo: se cierra para ver a dónde se fue.
+            if (window.matchMedia("(max-width: 767px)").matches) setFicha(false);
+            void irAResultado(r);
+          }}
           onCerrar={() => setFicha(false)}
         />
       )}
@@ -2225,12 +2264,27 @@ function Miniatura({ file }: { file: File }) {
   return <img ref={enlazar} alt="" className="size-12 rounded-md object-cover" />; // impeccable-disable-line broken-image -- src asignado por la ref al montar
 }
 
+/** En el menú de uno ya destacado: la estrella llena dice cómo está ahora. */
+function IconoEstrellaLlena(p: { className?: string }) {
+  return <IconoEstrella {...p} relleno />;
+}
+
+/** La estrella junto a la hora, como en WhatsApp: pequeña, del color de la hora. */
+function Destacado() {
+  return <IconoEstrella relleno titulo="Destacado" className="size-3 shrink-0" />;
+}
+
 function Firma({ mensaje }: { mensaje: Mensaje }) {
   return (
     <>
       {/* Hueco reservado para que la hora no se monte sobre la última palabra. */}
-      <span aria-hidden className={`inline-block select-none ${mensaje.editedAt ? "w-24" : "w-14"}`} />
+      <span
+        aria-hidden
+        className="inline-block select-none"
+        style={{ width: `${3.5 + (mensaje.editedAt ? 2.5 : 0) + (mensaje.starred ? 1 : 0)}rem` }}
+      />
       <span className="float-right ml-1.5 inline-flex translate-y-0.5 items-center gap-1 text-[11px] leading-none text-(--color-apagado)">
+        {mensaje.starred && <Destacado />}
         {/* Como en WhatsApp: «Editado» delante de la hora, y cuándo al pasar por encima. */}
         {mensaje.editedAt && (
           <span title={`Editado ${new Date(mensaje.editedAt).toLocaleString("es")}`}>Editado</span>

@@ -1,9 +1,23 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Chat, Mensaje } from "@/lib/api";
+import { diaDeSeparador, hora } from "@/lib/formato";
 import { Avatar } from "./piezas";
-import { IconoCerrar, IconoDocumento } from "./iconos";
+import type { Resultado } from "./buscar-en-chat";
+import { IconoCerrar, IconoDocumento, IconoEstrella } from "./iconos";
+
+/** Un destacado, como lo da la API. */
+interface Destacado {
+  id: string; providerMessageId: string | null; fromMe: boolean;
+  senderName: string | null; kind: string; body: string | null; timestamp: string;
+}
+
+/** Lo que se lee de un destacado sin texto: qué es. */
+const QUE_ES: Record<string, string> = {
+  image: "Foto", video: "Vídeo", audio: "Audio", document: "Documento", sticker: "Sticker",
+  poll: "Encuesta", contact: "Contacto", location: "Ubicación",
+};
 
 /**
  * La ficha de la conversación.
@@ -16,12 +30,32 @@ import { IconoCerrar, IconoDocumento } from "./iconos";
  * del hilo cargado, así que son los recientes y no «todos», y lo dice.
  */
 export function FichaContacto({
-  info, mensajes, onCerrar,
+  lineId, info, mensajes, versionDestacados, onIrA, onCerrar,
 }: {
+  lineId: string;
   info: Chat;
   mensajes: Mensaje[];
+  /** Cambia cuando se destaca o se quita algo en el hilo: hay que volver a pedir. */
+  versionDestacados: number;
+  /** Lleva a un mensaje del hilo, aunque sea de hace meses. */
+  onIrA: (r: Resultado) => void;
   onCerrar: () => void;
 }) {
+  /*
+   * Los destacados se piden a la API y no se sacan del hilo: el hilo trae los
+   * últimos cien, y lo que se destaca para acordarse suele ser de antes.
+   */
+  const [destacados, setDestacados] = useState<{ de: string; lista: Destacado[] } | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    void fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(info.address)}/starred`)
+      .then(async (r) => (r.ok ? ((await r.json()) as { data: Destacado[] }).data : []))
+      .catch(() => [] as Destacado[])
+      .then((lista) => { if (vivo) setDestacados({ de: info.address, lista }); });
+    return () => { vivo = false; };
+  }, [lineId, info.address, versionDestacados]);
+  const estrellas = destacados?.de === info.address ? destacados.lista : null;
+
   const medios = useMemo(
     () => mensajes.filter((m) => m.media && (m.kind === "image" || m.kind === "video"))
       .slice(-12).reverse(),
@@ -147,6 +181,51 @@ export function FichaContacto({
           </p>
         </section>
       )}
+
+      {/*
+        Los destacados de esta conversación, los últimos primero. Pulsar uno
+        lleva a él en el hilo, aunque sea de hace meses: es el mismo salto que
+        el de la búsqueda.
+      */}
+      <section className="border-t border-(--color-borde) px-4 py-4">
+        <h3 className="flex items-center gap-1.5 text-xs font-medium text-(--color-tenue)">
+          <IconoEstrella className="size-3.5" />
+          Mensajes destacados
+          {estrellas && estrellas.length > 0 && (
+            <span className="ml-auto tabular-nums text-(--color-apagado)">{estrellas.length}</span>
+          )}
+        </h3>
+        {estrellas === null ? null : estrellas.length === 0 ? (
+          <p className="mt-2 text-xs text-(--color-apagado)">
+            Ninguno. Destaca un mensaje desde su menú (clic derecho) para encontrarlo aquí.
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-0.5">
+            {estrellas.map((d) => (
+              <li key={d.id}>
+                <button
+                  type="button"
+                  onClick={() => onIrA({
+                    id: d.id, providerMessageId: d.providerMessageId, timestamp: d.timestamp,
+                    fromMe: d.fromMe, senderName: d.senderName, kind: d.kind, texto: d.body ?? "",
+                  })}
+                  className="block w-full rounded-lg px-2 py-2 text-left hover:bg-(--color-hundido)"
+                >
+                  <span className="flex items-baseline justify-between gap-2 text-[11px] text-(--color-apagado)">
+                    <span className="truncate font-medium text-(--color-tenue)">
+                      {d.fromMe ? "Tú" : d.senderName ?? info.displayName}
+                    </span>
+                    <span className="shrink-0">{diaDeSeparador(d.timestamp)}, {hora(d.timestamp)}</span>
+                  </span>
+                  <span className="mt-0.5 line-clamp-2 text-sm wrap-anywhere">
+                    {d.body || <em className="text-(--color-tenue)">{QUE_ES[d.kind] ?? "Mensaje"}</em>}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {documentos.length > 0 && (
         <section className="border-t border-(--color-borde) px-4 py-4">

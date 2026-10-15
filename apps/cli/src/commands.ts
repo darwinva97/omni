@@ -299,6 +299,44 @@ export const COMMANDS: readonly Command[] = [
       { text: req(a, 3, "texto") }),
   },
   {
+    name: "mensaje:destacar",
+    summary: "Destacar un mensaje; la estrella es de esta clave, no del chat",
+    operation: "PUT /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/star",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador de Omni o del proveedor" },
+    ],
+    run: (c, a) => c.request("PUT",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/star`),
+  },
+  {
+    name: "mensaje:no-destacar",
+    summary: "Quitar un mensaje de los destacados",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/star",
+    // Toda operación DELETE pide `--yes`, aunque lo que borre sea una estrella:
+    // la regla es mecánica para que nadie tenga que decidir cuál «no cuenta».
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador de Omni o del proveedor" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/star`),
+  },
+  {
+    name: "destacados",
+    summary: "Los mensajes destacados de una conversación",
+    operation: "GET /v1/lines/{lineId}/chats/{chatId}/starred",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/starred`),
+  },
+  {
     name: "mensaje:borrar",
     summary: "Borrar un mensaje para todos",
     operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}",

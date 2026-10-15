@@ -275,6 +275,27 @@ export const IconoReenviar = (p: Props) => (
   <Base {...p}><path d="M13 5.5 20 12l-7 6.5V15c-6 0-8 2.5-9 4.5.5-7 4.5-9 9-9z" /></Base>
 );
 
+/**
+ * Estrella: destacar. Rellena cuando el mensaje YA está destacado, que es como
+ * se distingue en el menú y junto a la hora sin leer ninguna palabra.
+ */
+export const IconoEstrella = ({ relleno = false, ...p }: Props & { relleno?: boolean }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill={relleno ? "currentColor" : "none"}
+    stroke="currentColor"
+    strokeWidth={1.75}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={p.className ?? "size-5"}
+    aria-hidden={p.titulo ? undefined : true}
+    role={p.titulo ? "img" : undefined}
+  >
+    {p.titulo && <title>{p.titulo}</title>}
+    <path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />
+  </svg>
+);
+
 /** Lápiz: editar lo ya enviado. */
 export const IconoEditar = (p: Props) => (
   <Base {...p}>

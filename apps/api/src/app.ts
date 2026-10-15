@@ -80,6 +80,8 @@ const MensajeSchema = z.object({
    * de algo (una línea desconectada) o no (un número que no existe).
    */
   failureReason: z.string().nullable().default(null),
+  /** Si quien pregunta lo tiene destacado. La estrella es de cada uno, no del chat. */
+  starred: z.boolean().default(false),
   /** Reacciones, agrupadas por emoji. `mia` dice si una es nuestra. */
   reacciones: z.array(z.object({
     emoji: z.string(), cuantas: z.number(), mia: z.boolean(),
@@ -520,6 +522,7 @@ import { registerMessagingRoutes } from "./routes/messaging.js";
 import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
 import { registerLabelRoutes } from "./routes/labels.js";
+import { destacadosDe, registerStarredRoutes } from "./routes/destacados.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
 import { ConversationSchema, registerCrmRoutes } from "./routes/crm.js";
@@ -1019,6 +1022,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
             : null,
           mediaError: null,
           failureReason: null,
+          starred: false,
           reacciones: [],
           deleted: false,
           editedAt: null,
@@ -1321,6 +1325,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         }
       }
 
+      // Los que tiene destacados QUIEN pregunta: la estrella es de cada uno.
+      const destacado = await destacadosDe(container.dbh.db, principal, lineId, rows);
+
       const data = await Promise.all(rows.map(async (r) => ({
         id: r.id, providerMessageId: r.providerMessageId,
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
@@ -1350,6 +1357,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
          */
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
         failureReason: r.state === "failed" ? r.failureReason : null,
+        starred: destacado(r),
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
         deleted: r.deletedAt !== null,
         editedAt: r.editedAt?.toISOString() ?? null,
@@ -1454,6 +1462,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerGroupRoutes(app, container);
   registerGroupChatRoutes(app, container);
   registerLabelRoutes(app, container);
+  registerStarredRoutes(app, container);
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
   registerNewsletterRoutes(app, container);
   registerCrmRoutes(app, container);

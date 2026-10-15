@@ -84,6 +84,13 @@ export const ROUTES = {
   "message.edit": { id: "message.edit", permission: "message.send", scope: "chat", chatSafe: true },
   "message.delete": { id: "message.delete", permission: "message.delete", scope: "chat", chatSafe: true },
   "message.react": { id: "message.react", permission: "message.send", scope: "chat", chatSafe: true },
+  /*
+   * Destacar es una nota PERSONAL sobre lo que ya se puede leer: no cambia
+   * nada para nadie más, así que basta con poder leer, y es seguro para una
+   * clave acotada a ese chat.
+   */
+  "message.star": { id: "message.star", permission: "message.read", scope: "chat", chatSafe: true },
+  "message.starred": { id: "message.starred", permission: "message.read", scope: "chat", chatSafe: true },
   // Subir un fichero es parte de poder enviar: una clave acotada a chats debe
   // poder hacerlo, porque si no no puede mandar más que texto en los suyos.
   // El ámbito es de LÍNEA y no de chat: al subir todavía no hay destinatario.
