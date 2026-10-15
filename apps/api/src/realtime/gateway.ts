@@ -15,20 +15,29 @@ export function visibleFor(t: TicketPayload, e: EventEnvelope): boolean {
   if (t.allowedLines.length > 0 && !t.allowedLines.includes(e.lineId)) return false;
 
   if (t.allowedChats.length > 0) {
-    const chat = chatDe(e);
+    const chats = chatsDe(e);
     // Un evento sin chat identificable —el estado de la sesión, por ejemplo— NO
     // se entrega a una credencial acotada a chats: en la duda, no se enseña.
-    if (!chat) return false;
-    if (!t.allowedChats.includes(chat)) return false;
+    if (chats.length === 0) return false;
+    if (!chats.some((c) => t.allowedChats.includes(c))) return false;
   }
   return true;
 }
 
-function chatDe(e: EventEnvelope): string | null {
+/**
+ * Las direcciones que nombran el chat de un evento.
+ *
+ * Puede haber dos de la MISMA persona: `remoteJid`, por donde escribió, y
+ * `chatId`, la conversación donde el motor lo guardó —su teléfono o su LID—.
+ * El evento de una conversación de atención solo trae `chatId`. Basta con que
+ * una esté al alcance de la credencial: las dos son la misma conversación.
+ */
+function chatsDe(e: EventEnvelope): string[] {
   const d = (e.data ?? {}) as Record<string, unknown>;
   const key = (d["key"] ?? {}) as Record<string, unknown>;
-  const candidato = key["remoteJid"] ?? d["chat"] ?? d["group"] ?? d["address"];
-  return typeof candidato === "string" && candidato.length > 0 ? candidato : null;
+  const principal = key["remoteJid"] ?? d["chat"] ?? d["group"] ?? d["address"];
+  return [d["chatId"], principal]
+    .filter((c): c is string => typeof c === "string" && c.length > 0);
 }
 
 export interface Suscripcion {

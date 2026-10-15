@@ -26,7 +26,12 @@ export interface RouteDescriptor {
 export const ROUTES = {
   // --- organización
   "org.read": { id: "org.read", permission: "line.read", scope: "org" },
-  "org.members.list": { id: "org.members.list", permission: "org.members.manage", scope: "org" },
+  /*
+   * VER el equipo es de cualquiera que atienda: para asignar una conversación,
+   * o para saber quién la lleva, hace falta saber quién hay. CAMBIARLO sigue
+   * siendo del propietario.
+   */
+  "org.members.list": { id: "org.members.list", permission: "message.read", scope: "org" },
   "org.members.update": { id: "org.members.update", permission: "org.members.manage", scope: "org" },
   "org.audit.list": { id: "org.audit.list", permission: "org.audit.read", scope: "org" },
   "apikey.list": { id: "apikey.list", permission: "apikey.manage", scope: "org" },

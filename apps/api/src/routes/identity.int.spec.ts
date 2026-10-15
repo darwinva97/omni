@@ -139,6 +139,20 @@ run("identidad", () => {
     expect(data.find((m) => m.email === "linus@ejemplo.com")?.role).toBe("agent");
   });
 
+  it("quien atiende ve al equipo, para poder asignar, pero no lo cambia", async () => {
+    const entrada = await post("/v1/auth/login", {
+      email: "linus@ejemplo.com", password: "contraseña del invitado",
+    });
+    const cookieAgente = cookieDe(entrada);
+    const res = await app.request("/v1/members", { headers: { cookie: cookieAgente } });
+    expect(res.status).toBe(200);
+    const { data } = await j<{ data: { email: string }[] }>(res);
+    expect(data.map((m) => m.email)).toContain("ada@ejemplo.com");
+
+    const invitar = await post("/v1/invitations", { email: "y@ejemplo.com", role: "viewer" }, cookieAgente);
+    expect(invitar.status).toBe(403);
+  });
+
   it("cerrar sesión invalida el token, no solo borra la cookie", async () => {
     const entrada = await post("/v1/auth/login", {
       email: "ada@ejemplo.com", password: "una contraseña larga",

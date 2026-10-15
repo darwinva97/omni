@@ -4,7 +4,7 @@ import {
   tokensDeMencion,
 } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, conversationTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import { citadoDe, detallesDeMedio } from "@omni/channels";
@@ -187,6 +187,14 @@ const ChatSchema = z.object({
    * no cueste una petición por pestaña.
    */
   labelIds: z.array(z.string()).default([]),
+  /**
+   * El episodio de atención del chat: quién lo lleva y en qué estado está.
+   *
+   * La abierta si la hay; si no, la última, ya resuelta. `null` si el chat no
+   * ha tenido ninguna todavía. Viene con el chat para que la lista diga de un
+   * vistazo quién lleva cada uno sin una petición más por fila.
+   */
+  conversation: ConversationSchema.nullable().default(null),
 }).openapi("Chat");
 
 /**
@@ -209,6 +217,7 @@ interface FilaDeChat {
   ultimo?: string | null; ultimoPropio?: boolean;
   muteUntil?: Date | null; archived?: boolean; pinned?: boolean;
   labelIds?: string[];
+  conversation?: ReturnType<typeof presentarConversacion> | null;
 }
 
 /**
@@ -312,6 +321,32 @@ export function normalizarBusqueda(texto: string): string {
     const i = desde.indexOf(ch);
     return i >= 0 ? hacia[i]! : ch;
   }).join("");
+}
+
+/**
+ * La conversación de atención de cada chat, en UNA consulta.
+ *
+ * Una por chat: la abierta si la hay —solo puede haber una— y si no, la
+ * última que se resolvió. Es lo que la lista necesita para decir quién lleva
+ * cada chat y para el filtro de «Resueltos».
+ */
+async function conversacionesDe(
+  container: Container, lineId: string, direcciones: readonly string[],
+): Promise<Map<string, ReturnType<typeof presentarConversacion>>> {
+  if (direcciones.length === 0) return new Map();
+  const filas = await container.dbh.db
+    .selectDistinctOn([conversationTable.chatId])
+    .from(conversationTable)
+    .where(and(
+      eq(conversationTable.lineId, lineId),
+      inArray(conversationTable.chatId, [...direcciones]),
+    ))
+    .orderBy(
+      conversationTable.chatId,
+      sql`(${conversationTable.status} <> 'resolved') DESC`,
+      desc(conversationTable.openedAt),
+    );
+  return new Map(filas.map((f) => [f.chatId, presentarConversacion(f)]));
 }
 
 /** Las listas de Omni de cada conversación, en UNA consulta. */
@@ -467,6 +502,7 @@ function presentarChat(r: FilaDeChat) {
     archived: r.archived ?? false,
     pinned: r.pinned ?? false,
     labelIds: r.labelIds ?? [],
+    conversation: r.conversation ?? null,
   };
 }
 import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
@@ -478,7 +514,8 @@ import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js
 import { registerLabelRoutes } from "./routes/labels.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
-import { registerCrmRoutes } from "./routes/crm.js";
+import { ConversationSchema, registerCrmRoutes } from "./routes/crm.js";
+import { presentarConversacion } from "./crm/conversaciones.js";
 import { registerCommerceRoutes } from "./routes/commerce.js";
 import { HOST_VERSION } from "./container.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
@@ -826,6 +863,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
       const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
       const listas = await listasDe(container, lineId, visible.map((r) => r.address));
+      const convs = await conversacionesDe(container, lineId, visible.map((r) => r.address));
       const conNombre = await conFichas(container, lineId, visible);
       const data = await Promise.all(conNombre.map(async (r) => presentarChat({
         ...r,
@@ -833,6 +871,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         ultimo: ultimos.get(r.address)?.texto ?? null,
         ultimoPropio: ultimos.get(r.address)?.propio ?? false,
         labelIds: listas.get(r.address) ?? [],
+        conversation: convs.get(r.address) ?? null,
       })));
       return c.json({ data }, 200);
     },
@@ -1031,6 +1070,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       const [fila] = await conFichas(container, lineId, [rows[0]]);
       const ultimo = (await ultimosMensajes(container, lineId, [chat.value])).get(chat.value);
       const listas = await listasDe(container, lineId, [chat.value]);
+      const convs = await conversacionesDe(container, lineId, [chat.value]);
       return c.json({
         data: presentarChat({
           ...fila!,
@@ -1038,6 +1078,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           ultimo: ultimo?.texto ?? null,
           ultimoPropio: ultimo?.propio ?? false,
           labelIds: listas.get(chat.value) ?? [],
+          conversation: convs.get(chat.value) ?? null,
         }),
       }, 200);
     },

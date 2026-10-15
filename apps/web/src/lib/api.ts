@@ -90,6 +90,29 @@ export interface Chat {
   pinned?: boolean;
   /** Las listas de Omni en las que está. No existen en WhatsApp. */
   labelIds?: string[];
+  /**
+   * Quién lo lleva y en qué estado: la conversación de atención del chat.
+   *
+   * La abierta, o si no hay, la última ya resuelta. `null` si el chat aún no
+   * ha tenido ninguna.
+   */
+  conversation?: Conversacion | null;
+}
+
+export type EstadoDeConversacion = "open" | "pending" | "snoozed" | "resolved";
+
+export interface Conversacion {
+  id: string; lineId: string; chatId: string;
+  status: EstadoDeConversacion;
+  priority: string;
+  assigneeId: string | null;
+  openedAt: string;
+  resolvedAt: string | null;
+}
+
+/** Alguien del equipo, como lo da `/v1/members`. */
+export interface Miembro {
+  userId: string; email: string; name: string; role: string;
 }
 
 /**

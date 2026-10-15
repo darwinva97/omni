@@ -17,7 +17,7 @@ import { createDatabase, migrate, webhookDeliveryTable, webhookEndpointTable, ty
 import { EngineRuntime, SecretBox } from "@omni/engine";
 import { LocalStorage, S3Storage, type Storage } from "@omni/storage";
 import { PluginRegistry } from "./plugins/registry.js";
-import { Conversaciones } from "./crm/conversaciones.js";
+import { Conversaciones, presentarConversacion } from "./crm/conversaciones.js";
 import { Automatizaciones } from "./crm/automatizaciones.js";
 import { hostApiPara } from "./plugins/api.js";
 import { and, eq, or, isNull } from "drizzle-orm";
@@ -234,7 +234,20 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
    * conversación y después se evalúan las reglas, para que una condición sobre
    * el estado vea el estado de AHORA y no el de antes del mensaje.
    */
-  const conversaciones = new Conversaciones(dbh.db);
+  /*
+   * Un cambio de conversación sale por el mismo camino que un mensaje: el bus,
+   * para el panel en vivo, y los webhooks, para quien integre. Quien asigna
+   * desde una pestaña lo ve aplicado en todas las demás sin recargar.
+   */
+  const conversaciones = new Conversaciones(dbh.db, async (conv) => {
+    const envelope: EventEnvelope = {
+      id: crypto.randomUUID(), event: "conversation.updated",
+      orgId: conv.orgId, lineId: conv.lineId, timestamp: Date.now(),
+      data: presentarConversacion(conv),
+    };
+    await bus.publish(`org:${conv.orgId}`, envelope);
+    await dispatcher.dispatch(envelope);
+  });
   const automatizaciones = new Automatizaciones({
     db: dbh.db, runtime, conversaciones, kv,
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
@@ -293,21 +306,33 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
 }
 
 /**
- * Abre la conversación de un chat con su primer mensaje y anota los siguientes.
+ * Lleva los mensajes a su conversación: la abre con el primero y la reabre
+ * cuando el cliente vuelve a escribir (ver `alRecibirMensaje`).
  *
  * Vive aquí, y no dentro de la ingesta del motor, porque una conversación es
  * un concepto de atención y no de transporte: el motor no debería saber que
  * existe.
+ *
+ * El chat es `chatId`, la conversación donde el motor GUARDÓ el mensaje, y no
+ * `remoteJid`: la misma persona escribe a veces por su teléfono y a veces por
+ * su LID, y con `remoteJid` cada dirección abría su propio expediente, que
+ * además no coincidía con el chat que enseña el panel.
  */
 async function anotarConversacion(
   conversaciones: Conversaciones, e: EventEnvelope,
 ): Promise<void> {
   if (e.event !== "message.received" && e.event !== "message.sent") return;
-  const data = e.data as { key?: { remoteJid?: string; fromMe?: boolean } };
-  const chat = data.key?.remoteJid;
+  const data = e.data as {
+    chatId?: string; kind?: string;
+    key?: { remoteJid?: string; fromMe?: boolean };
+  };
+  const chat = data.chatId ?? data.key?.remoteJid;
   if (!chat) return;
+  // Ni los estados ni lo que no es contenido abren una conversación: una
+  // reacción o un aviso del sistema no son alguien pidiendo que le atiendan.
+  if (chat === "status@broadcast" || data.kind === "reaction" || data.kind === "system") return;
 
-  const cuando = new Date(e.timestamp);
-  const conv = await conversaciones.abrirOEncontrar(e.orgId, e.lineId, chat, cuando);
-  await conversaciones.anotarMensaje(conv.id, cuando, data.key?.fromMe === true);
+  await conversaciones.alRecibirMensaje(
+    e.orgId, e.lineId, chat, new Date(e.timestamp), data.key?.fromMe === true,
+  );
 }

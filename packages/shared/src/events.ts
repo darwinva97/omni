@@ -35,6 +35,14 @@ export const eventNames = [
   "chat.updated",
   "chat.read",
   "chat.archived",
+  /*
+   * Conversaciones: el episodio de atención dentro de un chat.
+   *
+   * Uno solo para todo cambio —se abre, se reabre, se asigna, se resuelve—
+   * con la conversación entera en `data`: quien lo recibe pinta el estado
+   * nuevo sin tener que adivinar qué campo cambió ni pedirlo aparte.
+   */
+  "conversation.updated",
   // grupos
   "group.created",
   "group.updated",
