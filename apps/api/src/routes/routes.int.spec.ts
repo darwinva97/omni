@@ -114,6 +114,43 @@ run("rutas de mensajes y chats", () => {
       method: "PATCH", body: JSON.stringify({ text: "corregido" }),
     });
     expect(res.status).toBe(200);
+
+    // Lo editado vuelve editado, con su hora: es lo que pinta «Editado».
+    const { data } = await j<{ data: { providerMessageId: string; body: string; editedAt: string | null }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages?limit=5`));
+    const editado = data.find((m) => m.providerMessageId === providerId);
+    expect(editado?.body).toBe("corregido");
+    expect(editado?.editedAt).not.toBeNull();
+  });
+
+  it("pasados 15 minutos no se edita: se dice por qué, en vez de ignorarse", async () => {
+    await call(`/v1/lines/${LINE}/messages`, {
+      method: "POST", body: JSON.stringify({ to: CHAT, text: "de hace rato", clientMessageId: "r-viejo" }),
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    // WhatsApp no falla con una edición tardía: la descarta en el teléfono
+    // de quien la recibe. Sin el 422, el panel diría «Editado» y nadie más
+    // vería el cambio.
+    await dbh.sql`
+      UPDATE message SET timestamp = now() - interval '20 minutes'
+      WHERE line_id = ${LINE} AND client_message_id = 'r-viejo'`;
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages/SBX-r-viejo`, {
+      method: "PATCH", body: JSON.stringify({ text: "tarde" }),
+    });
+    expect(res.status).toBe(422);
+    expect((await j<{ detail: string }>(res)).detail).toMatch(/15 minutos.*hace 20 min/);
+  });
+
+  it("lo que escribió otro no se edita", async () => {
+    const { data } = await j<{ data: { id: string } }>(await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51988777666", text: "suyo" }),
+    }));
+    await new Promise((r) => setTimeout(r, 300));
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages/${data.id}`, {
+      method: "PATCH", body: JSON.stringify({ text: "mío ahora" }),
+    });
+    expect(res.status).toBe(422);
+    expect((await j<{ detail: string }>(res)).detail).toContain("propios");
   });
 
   it("reacciona y marca como leído", async () => {

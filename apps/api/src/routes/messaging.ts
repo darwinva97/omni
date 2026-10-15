@@ -1,6 +1,7 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver } from "@omni/channels";
+import type { Capability } from "@omni/shared";
 import { authorize, route as routeOf } from "@omni/core";
 import { agendaDe, contactTable, lineTable, messageTable } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
@@ -24,6 +25,18 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
     return container.runtime.driverFor(rows[0].kind);
   };
 
+  /**
+   * Exige una capacidad y, si falta, dice qué transportes SÍ la tienen.
+   *
+   * Un 422 que solo dice «no» deja a quien lo recibe sin saber si el problema
+   * es su línea o lo que pide. El sandbox no se ofrece como alternativa: no
+   * es un transporte al que nadie pueda cambiarse.
+   */
+  const exigir = (driver: ChannelDriver, capacidad: Capability): void =>
+    assertCapability(driver, capacidad, container.drivers
+      .filter((d) => d.descriptor.kind !== "sandbox" && d.descriptor.capabilities.has(capacidad))
+      .map((d) => d.descriptor.kind));
+
   const Ok = z.object({ data: z.object({ ok: z.boolean() }) });
   const lineChat = z.object({ lineId: z.string(), chatId: z.string() });
 
@@ -31,7 +44,10 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
     createRoute({
       method: "patch", path: "/v1/lines/{lineId}/chats/{chatId}/messages/{messageId}",
       tags: ["mensajes"], summary: "Editar un mensaje ya enviado",
-      description: "WhatsApp solo lo permite durante una ventana corta tras el envío.",
+      description:
+        "Solo los propios. WhatsApp deja editar durante 15 minutos tras el envío; " +
+        "pasado ese tiempo la edición no falla allí, se IGNORA, así que aquí se " +
+        "rechaza con 422 antes de que alguien crea que la ha corregido.",
       request: {
         params: lineChat.extend({ messageId: z.string() }),
         ...body(z.object({ text: z.string().min(1).max(65536) })),
@@ -45,7 +61,36 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       await authorize(c.get("principal"), routeOf("message.edit"), { lineId, chat });
 
       const driver = await driverOf(lineId);
-      assertCapability(driver, "message.edit");
+      exigir(driver, "message.edit");
+
+      /*
+       * Lo que WhatsApp no aplicaría se dice aquí. Si el mensaje no está en
+       * esta base —se mandó antes de enlazar la línea— no hay con qué
+       * comprobarlo, y se deja intentar.
+       */
+      const [fila] = await container.dbh.db
+        .select({
+          fromMe: messageTable.fromMe, timestamp: messageTable.timestamp,
+          deletedAt: messageTable.deletedAt,
+        })
+        .from(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.providerMessageId, messageId)))
+        .limit(1);
+      if (fila && !fila.fromMe) {
+        throw new OmniError("validation_failed", "solo se pueden editar los mensajes propios");
+      }
+      if (fila?.deletedAt) {
+        throw new OmniError("validation_failed", "ese mensaje se borró para todos y ya no se puede editar");
+      }
+      const ventana = VENTANA_DE_EDICION_MS[driver.descriptor.network];
+      if (fila && ventana !== undefined && Date.now() - fila.timestamp.getTime() > ventana) {
+        throw new OmniError(
+          "validation_failed",
+          `WhatsApp solo deja editar un mensaje durante ${ventana / 60_000} minutos después de enviarlo, ` +
+            `y este salió hace ${haceCuanto(Date.now() - fila.timestamp.getTime())}`,
+        );
+      }
+
       await driver.editMessage!(lineId as LineId, chat, messageId, text);
       await container.dbh.db.update(messageTable)
         .set({ body: text, editedAt: new Date() })
@@ -67,7 +112,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       await authorize(c.get("principal"), routeOf("message.delete"), { lineId, chat });
 
       const driver = await driverOf(lineId);
-      assertCapability(driver, "message.delete");
+      exigir(driver, "message.delete");
       await driver.deleteMessage!(lineId as LineId, chat, messageId);
       // Se marca como borrado en vez de eliminar la fila: la auditoría necesita
       // saber que existió y quién lo quitó.
@@ -95,7 +140,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("message.react"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "send.reaction");
+      exigir(driver, "send.reaction");
       await driver.react!(lineId as LineId, chat, messageId, emoji);
       return c.json({ data: { ok: true } }, 200);
     },
@@ -149,7 +194,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       }
 
       const driver = await driverOf(lineId);
-      assertCapability(driver, "chat.read");
+      exigir(driver, "chat.read");
       if (ids.length > 0) {
         // Que la red falle no puede dejar el contador puesto: lo que el usuario
         // ve aquí es nuestro, y ya lo ha leído.
@@ -181,7 +226,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.clear"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "chat.clear");
+      exigir(driver, "chat.clear");
 
       /*
        * WhatsApp no borra "hasta ahora": borra hasta un punto del historial, y
@@ -236,7 +281,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.presence"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "chat.presence");
+      exigir(driver, "chat.presence");
       await driver.setPresence!(lineId as LineId, chat, presence);
       return c.json({ data: { ok: true } }, 200);
     },
@@ -294,7 +339,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const { chat } = c.req.valid("json");
       await authorize(c.get("principal"), routeOf("presence.watch"), { lineId });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "presence.watch");
+      exigir(driver, "presence.watch");
       await driver.watchPresence!(lineId as LineId, chat ? parseAddress(chat) : null);
       return c.json({ data: { ok: true } }, 200);
     },
@@ -374,7 +419,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const { lineId, address } = c.req.valid("param");
       await authorize(c.get("principal"), routeOf("contact.check"), { lineId });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "contact.check");
+      exigir(driver, "contact.check");
       const res = await driver.checkContact!(lineId as LineId, parseAddress(decodeURIComponent(address)));
       return c.json({ data: { exists: res.exists, address: res.address?.value ?? null } }, 200);
     },
@@ -433,7 +478,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
       if (scope === "network") {
         const driver = await driverOf(lineId);
-        assertCapability(driver, "chat.delete");
+        exigir(driver, "chat.delete");
 
         /*
          * El ancla se lee ANTES de borrar nada: son los últimos mensajes que
@@ -526,7 +571,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
        * en los demás la respuesta sería un `null` que parecería un hueco de
        * datos en vez de "esta red no usa LIDs".
        */
-      assertCapability(driver, "identity.lid");
+      exigir(driver, "identity.lid");
 
       if (direccion.kind === "lid") {
         const telefono = await container.runtime.phoneForLid(lineId, direccion);
@@ -566,7 +611,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("history.sync"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "history.sync");
+      exigir(driver, "history.sync");
       await driver.fetchHistory!(
         lineId as LineId, chat, before ? new Date(before).getTime() : Date.now(), count,
       );
@@ -591,7 +636,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.mute"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "chat.mute");
+      exigir(driver, "chat.mute");
       await driver.muteChat!(lineId as LineId, chat, until ? new Date(until).getTime() : null);
 
       /*
@@ -632,7 +677,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(chatId));
       await authorize(c.get("principal"), routeOf("chat.ephemeral"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "chat.ephemeral");
+      exigir(driver, "chat.ephemeral");
       await driver.setEphemeral!(lineId as LineId, chat, seconds);
       return c.json({ data: { ok: true } }, 200);
     },
@@ -662,7 +707,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const destino = parseAddress(to);
       await authorize(c.get("principal"), routeOf("message.forward"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "send.forward");
+      exigir(driver, "send.forward");
 
       const filas = await container.dbh.db
         .select({ raw: messageTable.raw })
@@ -704,7 +749,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const contacto = parseAddress(decodeURIComponent(address));
       await authorize(c.get("principal"), routeOf("contact.profile"), { lineId, chat: contacto });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "contact.profile");
+      exigir(driver, "contact.profile");
       const perfil = await driver.contactProfile!(lineId as LineId, contacto);
       return c.json({ data: {
         address: perfil.address.value,
@@ -736,7 +781,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const { lineId } = c.req.valid("param");
       await authorize(c.get("principal"), routeOf("label.network.read"), { lineId });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "label.manage");
+      exigir(driver, "label.manage");
       const etiquetas = await driver.listNetworkLabels!(lineId as LineId);
       return c.json({ data: etiquetas.map((l) => ({
         id: l.id, name: l.name, ...(l.color ? { color: l.color } : {}),
@@ -762,7 +807,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const { from } = c.req.valid("json");
       await authorize(c.get("principal"), routeOf("call.reject"), { lineId });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "call.reject");
+      exigir(driver, "call.reject");
       await driver.rejectCall!(lineId as LineId, callId, parseAddress(from));
       return c.json({ data: { ok: true } }, 200);
     },
@@ -784,7 +829,7 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const chat = parseAddress(decodeURIComponent(address));
       await authorize(c.get("principal"), routeOf("contact.block"), { lineId, chat });
       const driver = await driverOf(lineId);
-      assertCapability(driver, "contact.block");
+      exigir(driver, "contact.block");
       // Primero WhatsApp. Escribir solo en nuestra tabla marcaba el contacto
       // como bloqueado en el panel y lo dejaba escribiendo tan tranquilo.
       await driver.blockContact!(lineId as LineId, chat, blocked);
@@ -798,4 +843,27 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       return c.json({ data: { ok: true } }, 200);
     },
   );
+}
+
+/**
+ * Cuánto dura la posibilidad de editar, por red.
+ *
+ * Es de WhatsApp, no de un transporte: Baileys y whatsapp-web.js mandan la
+ * edición tarde sin quejarse, y el teléfono de quien la recibe la descarta.
+ * El sandbox imita a WhatsApp también en esto, para que una prueba no deje
+ * pasar lo que en producción no llega. Lo que no está aquí no tiene límite
+ * nuestro: si su red tiene uno, lo dirá ella.
+ */
+export const VENTANA_DE_EDICION_MS: Readonly<Record<string, number>> = {
+  whatsapp: 15 * 60_000,
+  sandbox: 15 * 60_000,
+};
+
+/** «3 h», «20 min», «2 días»: lo justo para entender el motivo de un 422. */
+function haceCuanto(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h} h`;
+  return `${Math.floor(h / 24)} días`;
 }
