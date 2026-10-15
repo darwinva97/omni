@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useOptimistic, useRef, useState, startTransition } from "react";
+import {
+  useCallback, useEffect, useLayoutEffect, useOptimistic, useRef, useState, startTransition,
+} from "react";
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
@@ -31,6 +33,7 @@ import {
   agregarAdjuntos, ETIQUETAS, ficherosPegados, MAX_ADJUNTOS, type Adjunto, type CampoDeMedio,
 } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
+import { guardarBorrador, leerBorrador, type Borrador } from "@/lib/borradores";
 
 /** Quienes han escrito en el hilo cargado, una vez cada uno. */
 function quienesEscribieron(mensajes: readonly Mensaje[]): Participante[] {
@@ -415,6 +418,12 @@ export function Conversacion({
     const { lista, avisos } = agregarAdjuntos(conPie, ficheros, () => crypto.randomUUID());
     setProblema(avisos.length > 0 ? avisos.join(" ") : null);
     if (lista.length === conPie.length) return;
+    // El campo pasa a ser el pie del adjunto: lo que hubiera de borrador se va
+    // con él, y queda solo la cita, que sí acompaña a los adjuntos al enviar.
+    if (conPie.length === 0) {
+      if (campo.current) campo.current.value = "";
+      apuntarBorrador();
+    }
     setAdjuntos(lista);
     // Se elige el primero de los recién añadidos, que es lo que se acaba de
     // mirar, y su pie (vacío) pasa al campo.
@@ -634,8 +643,9 @@ export function Conversacion({
   const consulta = consultaDe?.chat === chat ? consultaDe : null;
   const [resaltada, setResaltada] = useState(0);
   const elegidas = useRef(new Map<string, string>());
+  // Las menciones elegidas se reponen con el borrador, más abajo: vaciarlas
+  // aquí las borraba justo después de devolverlas.
   useEffect(() => {
-    elegidas.current = new Map();
     if (!chat.endsWith("@g.us")) return;
     let vivo = true;
     void fetch(`/api/omni/v1/lines/${lineId}/groups/${encodeURIComponent(chat)}`)
@@ -672,7 +682,82 @@ export function Conversacion({
     // Solo lo del grupo es mención de verdad; lo demás se queda en texto.
     if (!p.fuera) elegidas.current.set(p.name, p.address);
     setConsulta(null);
+    apuntarBorrador();
   };
+
+  /*
+   * El borrador de esta conversación: lo que se deja escrito a medias vuelve
+   * al volver, como en WhatsApp. Ver lib/borradores.ts.
+   *
+   * Qué se guarda y qué no:
+   *
+   * - **El texto**, con sus menciones elegidas y la cita a la que se responde.
+   *   Es lo que cuesta volver a escribir.
+   * - **Los adjuntos, no.** Son ficheros del disco de quien los eligió: el
+   *   navegador no deja guardarlos para otra visita, y un pie guardado sin su
+   *   foto no es nada que se pueda enviar. Mientras hay adjuntos, el campo es
+   *   el PIE del elegido, no un mensaje, y no se guarda como borrador.
+   *
+   * Se escribe con un respiro de medio segundo y no a cada tecla —la lista
+   * repinta su «Borrador:» con cada escritura—, y lo pendiente se escribe sí o
+   * sí al salir del chat o cerrar la pestaña.
+   */
+  const pendiente = useRef<{ lineId: string; chat: string; b: Borrador | null } | null>(null);
+  const reloj = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const escribirBorrador = (): void => {
+    if (reloj.current) clearTimeout(reloj.current);
+    reloj.current = null;
+    const p = pendiente.current;
+    pendiente.current = null;
+    if (p) guardarBorrador(p.lineId, p.chat, p.b);
+  };
+  /**
+   * Apunta lo que hay ahora en el campo. La cita se pasa cuando acaba de
+   * cambiar: el estado de React no la tendría hasta el próximo pintado.
+   */
+  const apuntarBorrador = (cita: Mensaje | null = respondiendo): void => {
+    if (adjuntos.length > 0) return;
+    pendiente.current = {
+      lineId, chat,
+      b: {
+        texto: campo.current?.value ?? "",
+        cita,
+        menciones: [...elegidas.current],
+        en: marcaDeTiempo(),
+      },
+    };
+    if (reloj.current) clearTimeout(reloj.current);
+    reloj.current = setTimeout(escribirBorrador, 500);
+  };
+  /** Al enviar: lo que había ya no es un borrador, y se quita en el acto. */
+  const olvidarBorrador = (): void => {
+    if (reloj.current) clearTimeout(reloj.current);
+    reloj.current = null;
+    pendiente.current = null;
+    guardarBorrador(lineId, chat, null);
+  };
+
+  /*
+   * Al abrir la conversación se repone, ANTES de pintar: con un efecto normal
+   * se vería el campo vacío un instante y luego saltar al texto y a su altura.
+   */
+  useLayoutEffect(() => {
+    const b = leerBorrador(lineId, chat);
+    if (campo.current) campo.current.value = b?.texto ?? "";
+    // El borrador vive fuera de React, en el almacén del navegador, y solo se
+    // puede leer después de hidratar: el servidor no lo tiene.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRespondiendo(b?.cita ?? null);
+    elegidas.current = new Map(b?.menciones ?? []);
+    ajustarAltura();
+    // Cerrar la pestaña no desmonta nada: sin esto se perdería lo escrito en
+    // el último medio segundo.
+    window.addEventListener("pagehide", escribirBorrador);
+    return () => {
+      window.removeEventListener("pagehide", escribirBorrador);
+      escribirBorrador();
+    };
+  }, [lineId, chat]);
 
   /**
    * Vuelve a pedir un fichero que no se pudo bajar. Pasa a «Descargando…» al
@@ -739,6 +824,7 @@ export function Conversacion({
         Icono: IconoResponder,
         onSelect: () => {
           setRespondiendo(m);
+          apuntarBorrador(m);
           campo.current?.focus();
         },
       });
@@ -1235,7 +1321,7 @@ export function Conversacion({
             </div>
             <button
               type="button"
-              onClick={() => setRespondiendo(null)}
+              onClick={() => { setRespondiendo(null); apuntarBorrador(null); }}
               aria-label="No responder a ese mensaje"
               className="flex size-8 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
             >
@@ -1278,6 +1364,7 @@ export function Conversacion({
                */
               const citado = respondiendo;
               setRespondiendo(null);
+              olvidarBorrador();
               const citaLocal = citado ? citaDeMensaje(citado) : null;
 
               if (adjuntos.length > 0) {
@@ -1480,7 +1567,9 @@ export function Conversacion({
             aria-controls="menciones"
             aria-autocomplete="list"
             aria-activedescendant={opcionesDeMencion.length > 0 ? `mencion-${resaltada}` : undefined}
-            onInput={(e) => { alEscribir(e.currentTarget.value); revisarMencion(); ajustarAltura(); }}
+            onInput={(e) => {
+              alEscribir(e.currentTarget.value); revisarMencion(); ajustarAltura(); apuntarBorrador();
+            }}
             onSelect={revisarMencion}
             onBlur={() => setTimeout(() => setConsulta(null), 150)}
             onKeyDown={(e) => {

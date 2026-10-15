@@ -8,6 +8,7 @@ import { useEventos } from "@/lib/eventos";
 import { conNombres, cuando, resumen } from "@/lib/formato";
 import { describir, usePresencias } from "@/lib/presencia";
 import { buscarEnAgenda, useAgenda } from "@/lib/agenda";
+import { resumenDeBorrador, useBorradores } from "@/lib/borradores";
 import { Avatar } from "@/componentes/piezas";
 import {
   IconoArchivar, IconoBuscar, IconoCampana, IconoCampanaTachada, IconoCanal,
@@ -46,6 +47,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   const enEstados = ruta.endsWith("/estados");
   const enCanales = ruta.endsWith("/canales");
   const abierto = params.chatId ? decodeURIComponent(params.chatId) : null;
+  const borradores = useBorradores(linea.id);
   // La conversación abierta no tiene pendientes: el contador avisaba de algo
   // que se tiene delante.
   useEffect(() => {
@@ -759,6 +761,20 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                             return (
                               <span className="truncate text-xs font-medium text-(--color-acento-fuerte)">
                                 {p.texto}
+                              </span>
+                            );
+                          }
+                          /*
+                           * Lo que se dejó a medias gana al último mensaje,
+                           * como en WhatsApp: es lo que hay que retomar. En la
+                           * abierta no, que el borrador se tiene delante.
+                           */
+                          const borrador = c.address === abierto ? undefined : borradores.get(c.address);
+                          if (borrador) {
+                            return (
+                              <span className="truncate text-xs text-(--color-tenue)">
+                                <span className="font-medium text-(--color-acento-fuerte)">Borrador: </span>
+                                {resumenDeBorrador(borrador)}
                               </span>
                             );
                           }
