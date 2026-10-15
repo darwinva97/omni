@@ -1,0 +1,11 @@
+[Unit]
+Description=Omni — mira cada minuto si hay algo en main que desplegar
+
+[Timer]
+# Con calendario y no «un minuto después de la última vez»: así sigue
+# disparando aunque la ejecución anterior haya acabado en fallo.
+OnCalendar=minutely
+Persistent=false
+
+[Install]
+WantedBy=timers.target
