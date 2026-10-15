@@ -796,6 +796,14 @@ export class EngineRuntime {
         const d = envelope.data as { key?: { id?: string } };
         await this.#marcarRetirado(envelope.lineId, d.key?.id, envelope.timestamp);
       }
+      /*
+       * Una caída que nadie pidió llega SOLO como evento: Baileys emite
+       * `session.disconnected` sin `session.status`. Sin apuntarlo aquí, la
+       * línea seguía «conectada» en la base —y en el panel— mientras no
+       * recibía nada.
+       */
+      if (envelope.event === "session.disconnected") await this.#setStatus(envelope.lineId, "disconnected");
+      if (envelope.event === "session.logged_out") await this.#setStatus(envelope.lineId, "logged-out");
       if (envelope.event === "session.connected" || envelope.event === "session.status") {
         const data = envelope.data as { state?: string; self?: string };
         if (data.state) await this.#setStatus(envelope.lineId, data.state);

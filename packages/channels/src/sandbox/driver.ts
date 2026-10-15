@@ -67,6 +67,11 @@ interface LineState {
   pendingQr: string | null;
   /** Sumidero de credenciales que entregó `connect`. Un driver real persiste solo. */
   saveCredentials: ((blob: Uint8Array) => Promise<void>) | null;
+  /**
+   * WhatsApp desvinculó el dispositivo: las credenciales guardadas ya no
+   * valen y el próximo `connect` tiene que pedir QR, como en una línea real.
+   */
+  desvinculada?: boolean;
 }
 
 export const SANDBOX_DESCRIPTOR: ChannelDescriptor = {
@@ -142,7 +147,10 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
 
     // Con credenciales previas reconecta sin volver a pedir el QR. Es justo lo
     // que un gateway real debe hacer en un redespliegue y lo que `wapi` no hacía.
-    if (req.credentials && req.credentials.byteLength > 0) {
+    // Salvo si WhatsApp desvinculó el dispositivo: entonces ya no valen.
+    const desvinculada = line.desvinculada === true;
+    line.desvinculada = false;
+    if (req.credentials && req.credentials.byteLength > 0 && !desvinculada) {
       const self = parseAddress(new TextDecoder().decode(req.credentials));
       line.status = { state: "connected", self, pushName: "Sandbox" };
       await this.emit("session.connected", line.orgId, req.lineId, { self: self.value });
@@ -166,6 +174,32 @@ export class SandboxDriver extends EventEmitterBase implements ChannelDriver {
 
   status(lineId: LineId): LineStatus {
     return this.#lines.get(lineId)?.status ?? { state: "disconnected" };
+  }
+
+  /**
+   * Simula que la conexión se CAE, sin que nadie la haya pedido cerrar.
+   *
+   * Es distinto de `disconnect`: ahí el motor sabe que la cerró él y apunta
+   * el estado por su cuenta. Aquí el aviso llega solo por el evento, como en
+   * una línea real cuando se va la red o WhatsApp corta —y con `loggedOut`,
+   * cuando desvinculan el dispositivo desde el teléfono—. Es lo que permite
+   * probar que el panel se entera de verdad.
+   */
+  async simulateDrop(lineId: LineId, { loggedOut = false }: { loggedOut?: boolean } = {}): Promise<LineStatus> {
+    const line = this.#require(lineId);
+    if (loggedOut) {
+      line.status = { state: "logged-out", reason: "el dispositivo fue desvinculado" };
+      line.desvinculada = true;
+      // Lo mismo, y en el mismo orden, que emite Baileys.
+      await this.emit("session.logged_out", line.orgId, lineId, { code: 401 });
+      await this.emit("session.status", line.orgId, lineId, { state: "logged-out" });
+    } else {
+      line.status = { state: "disconnected" };
+      await this.emit("session.disconnected", line.orgId, lineId, {
+        code: 428, reason: "la conexión se cerró (simulado)",
+      });
+    }
+    return line.status;
   }
 
   // ---------------------------------------------------------------- API del sandbox

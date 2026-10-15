@@ -1818,6 +1818,31 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
 
   app.openapi(
     createRoute({
+      method: "post", path: "/v1/sandbox/lines/{lineId}/drop", tags: ["sandbox"],
+      summary: "Fabricar que la conexión se cae, o que desvinculan el dispositivo",
+      description:
+        "No es `disconnect`, que cierra a propósito: aquí la caída llega como en una " +
+        "línea real, solo por el evento (`session.disconnected`, o `session.logged_out` " +
+        "con `loggedOut`). Con `loggedOut` el próximo enlace pide QR otra vez. Sirve " +
+        "para probar el aviso de línea caída del panel y las reglas sobre `line.disconnected`.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        ...body(z.object({ loggedOut: z.boolean().default(false) })),
+      },
+      responses: { 200: json(z.object({ data: LinkStateSchema }), "caída"), ...errors },
+    }),
+    async (c) => {
+      const principal = guard(c);
+      const { lineId } = c.req.valid("param");
+      const { loggedOut } = c.req.valid("json");
+      await authorize(principal, routeOf("line.connect"), { lineId });
+      const status = await container.sandbox!.simulateDrop(lineId as LineId, { loggedOut });
+      return c.json({ data: linkState(status) }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "post", path: "/v1/sandbox/lines/{lineId}/typing", tags: ["sandbox"],
       summary: "Fabricar que un contacto escribe, graba o para",
       description:

@@ -3,6 +3,7 @@ import { apiFetchAuth, type Chat, type Linea } from "@/lib/api";
 import { Rail } from "@/componentes/armazon";
 import { ListaChats } from "./lista-chats";
 import { PanelDerecho } from "./panel-derecho";
+import { FranjaDeLineas } from "@/componentes/franja-lineas";
 
 /**
  * Dos columnas: conversaciones a la izquierda, lo que se abra a la derecha.
@@ -45,9 +46,14 @@ export default async function LayoutLinea({
       <Rail actual="/lineas" />
       {/* `pb-16` en móvil: la barra inferior flota sobre el contenido y sin
           esto taparía el compositor de mensajes. */}
-      <div className="flex h-dvh overflow-hidden pb-16 md:ml-14 md:pb-0">
-        <ListaChats linea={linea} iniciales={chats} />
-        <PanelDerecho lineId={lineId}>{children}</PanelDerecho>
+      <div className="flex h-dvh flex-col overflow-hidden pb-16 md:ml-14 md:pb-0">
+        {/* Encima de las dos columnas: una línea caída se ve también desde
+            una conversación de OTRA línea, que es donde se está. */}
+        <FranjaDeLineas />
+        <div className="flex min-h-0 flex-1">
+          <ListaChats linea={linea} iniciales={chats} />
+          <PanelDerecho lineId={lineId}>{children}</PanelDerecho>
+        </div>
       </div>
     </>
   );

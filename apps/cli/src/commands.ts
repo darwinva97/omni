@@ -393,6 +393,16 @@ export const COMMANDS: readonly Command[] = [
       { messageIds: req(a, 2, "mensajes").split(",").map((s) => s.trim()).filter(Boolean) }),
   },
   {
+    name: "sandbox:caida",
+    summary: "Fabricar que la línea del sandbox se cae, o que la desvinculan",
+    operation: "POST /v1/sandbox/lines/{lineId}/drop",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    flags: [{ name: "desvinculada", description: "Como si la desvincularan desde el teléfono" }],
+    run: (c, a) => c.request("POST", `/v1/sandbox/lines/${req(a, 0, "linea")}/drop`, {
+      loggedOut: a.flags["desvinculada"] === true,
+    }),
+  },
+  {
     name: "sandbox:escribir",
     summary: "Fabricar que un contacto del sandbox escribe, graba o para",
     operation: "POST /v1/sandbox/lines/{lineId}/typing",

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FranjaDeLineas } from "./franja-lineas";
 import {
   IconoBitacora, IconoEntregas, IconoGrupo, IconoLineas, IconoLlave, IconoRayo, IconoRespuestas,
   IconoSalir,
@@ -117,6 +118,7 @@ export function Pagina({
     <>
       <Rail actual={actual} />
       <div className="min-h-dvh pb-16 md:ml-14 md:pb-0">
+        <FranjaDeLineas />
         <header className="border-b border-(--color-borde) bg-(--color-panel)">
           <div className="mx-auto flex max-w-5xl flex-wrap items-end justify-between gap-4 px-5 py-5 md:px-8 md:py-6">
             <div>
