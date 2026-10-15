@@ -5,7 +5,7 @@ import {
 } from "react";
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
+import { conNombres, diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
 import { partirEnlaces } from "@/lib/enlaces";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
@@ -92,7 +92,14 @@ function citaDeMensaje(m: Mensaje): CitaDe {
     fromMe: m.fromMe,
     senderName: m.senderName ?? null,
     kind: m.kind,
-    body: m.body,
+    /*
+     * La cita es texto plano: las menciones van ya con su nombre. El mensaje
+     * del hilo trae «@120413787029685» en el texto y a quién es aparte; sin
+     * esto la burbuja decía «@Luisin» y su cita, debajo, el número.
+     */
+    body: m.body && m.mentions?.length
+      ? conNombres(m.body, Object.fromEntries(m.mentions.map((x) => [x.token, x.name])))
+      : m.body,
     // Solo lo que es imagen se cita con imagen: la URL de un audio en una
     // `<img>` es una imagen rota.
     thumbUrl: m.kind === "image" || m.kind === "sticker" ? m.media?.url ?? null : null,

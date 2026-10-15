@@ -1266,6 +1266,40 @@ run("organización y limpieza", () => {
     expect(vivo?.["senderName"]).toBe("@andre.v");
   });
 
+  it("la cita de un mensaje con mención la enseña con el nombre, aunque el citado no esté en la página", async () => {
+    /*
+     * El caso real: «Me confirmas @120413787029685», y horas después alguien
+     * le responde. Al cargar el hilo, la respuesta está en la página y el
+     * citado ya no; su lista de mencionadas tampoco, y su cita salía con el
+     * número en vez de «@Luisin».
+     */
+    const grupo = "120363000000000888@g.us";
+    const quienPregunta = "230000000000001@lid";
+    const mencionado = "230000000000002@lid";
+    await container.runtime.publish("contact.updated", LINE, {
+      address: mencionado, savedName: null, pushName: "Luisin",
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CITA-MENCION-1", remoteJid: grupo, participant: quienPregunta },
+      kind: "text", timestamp: Date.now() - 60_000,
+      text: "Me confirmas @230000000000002", mentions: [mencionado],
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CITA-MENCION-2", remoteJid: grupo, participant: mencionado },
+      kind: "text", timestamp: Date.now(), text: "4 soles por el B3",
+      replyTo: { id: "CITA-MENCION-1", author: quienPregunta, kind: "text", text: "Me confirmas @230000000000002" },
+    });
+
+    type M = { providerMessageId: string | null; replyTo: { body: string | null } | null };
+    // `limit=1`: solo la respuesta. El citado se queda fuera de la página.
+    const respuesta = await esperarValor(async () => {
+      const { data } = await j<{ data: M[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/messages?limit=1`));
+      return data.find((x) => x.providerMessageId === "CITA-MENCION-2") ?? null;
+    }, "la respuesta se guardó");
+    expect(respuesta.replyTo?.body).toBe("Me confirmas @Luisin");
+  });
+
   it("buscar en un chat no distingue tildes ni mayúsculas, y no encuentra lo retirado", async () => {
     const chat = "51901000030@s.whatsapp.net";
     let n = 0;
