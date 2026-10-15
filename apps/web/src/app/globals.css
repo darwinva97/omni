@@ -80,6 +80,20 @@
   /* El lienzo de la conversación, que no es el panel. */
   --color-lienzo: oklch(0.955 0.006 240);
 
+  /*
+   * Notas internas: ámbar, el ÚNICO sitio del hilo con ese color.
+   *
+   * Lo que el cliente nunca ve no puede parecerse a lo que sí ve: ni la
+   * burbuja propia (acento) ni la ajena (superficie). El ámbar es el color de
+   * la nota adhesiva y se lee como «esto es de puertas adentro» sin tener que
+   * leer la etiqueta. El campo de escribir se tiñe igual en modo nota.
+   */
+  --color-nota: oklch(0.955 0.06 90);
+  --color-nota-borde: oklch(0.83 0.11 80);
+  --color-nota-texto: oklch(0.47 0.11 65);
+  --color-nota-fuerte: oklch(0.7 0.15 70);
+  --color-sobre-nota: oklch(0.22 0.04 65);
+
   --radius-burbuja: 0.75rem;
 
   /*
@@ -138,6 +152,11 @@
     --color-error-tenue: oklch(0.3 0.07 27);
 
     --color-lienzo: oklch(0.135 0.008 240);
+    --color-nota: oklch(0.29 0.055 80);
+    --color-nota-borde: oklch(0.45 0.09 75);
+    --color-nota-texto: oklch(0.85 0.11 82);
+    --color-nota-fuerte: oklch(0.78 0.14 75);
+    --color-sobre-nota: oklch(0.18 0.03 65);
     --l-remitente: 0.78;
   }
 }

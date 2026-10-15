@@ -966,6 +966,11 @@ run("reintento de envíos", () => {
       UPDATE message SET state = 'failed', failure_reason = 'prueba'
       WHERE line_id = ${LINE} AND client_message_id = 'fallido-1'`;
 
+    // El panel dice por qué no salió: el motivo viaja con el mensaje.
+    const { data: hilo } = await j<{ data: { id: string; state: string; failureReason: string | null }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages?limit=10`));
+    expect(hilo.find((m) => m.id === "m-fallido-1")).toMatchObject({ state: "failed", failureReason: "prueba" });
+
     const res = await call(`/v1/lines/${LINE}/messages/m-fallido-1/resend`, { method: "POST" });
     expect(res.status).toBe(202);
     const { data } = await j<{ data: { clientMessageId: string } }>(res);
@@ -1261,6 +1266,40 @@ run("organización y limpieza", () => {
     expect(vivo?.["senderName"]).toBe("@andre.v");
   });
 
+  it("la cita de un mensaje con mención la enseña con el nombre, aunque el citado no esté en la página", async () => {
+    /*
+     * El caso real: «Me confirmas @120413787029685», y horas después alguien
+     * le responde. Al cargar el hilo, la respuesta está en la página y el
+     * citado ya no; su lista de mencionadas tampoco, y su cita salía con el
+     * número en vez de «@Luisin».
+     */
+    const grupo = "120363000000000888@g.us";
+    const quienPregunta = "230000000000001@lid";
+    const mencionado = "230000000000002@lid";
+    await container.runtime.publish("contact.updated", LINE, {
+      address: mencionado, savedName: null, pushName: "Luisin",
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CITA-MENCION-1", remoteJid: grupo, participant: quienPregunta },
+      kind: "text", timestamp: Date.now() - 60_000,
+      text: "Me confirmas @230000000000002", mentions: [mencionado],
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CITA-MENCION-2", remoteJid: grupo, participant: mencionado },
+      kind: "text", timestamp: Date.now(), text: "4 soles por el B3",
+      replyTo: { id: "CITA-MENCION-1", author: quienPregunta, kind: "text", text: "Me confirmas @230000000000002" },
+    });
+
+    type M = { providerMessageId: string | null; replyTo: { body: string | null } | null };
+    // `limit=1`: solo la respuesta. El citado se queda fuera de la página.
+    const respuesta = await esperarValor(async () => {
+      const { data } = await j<{ data: M[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/messages?limit=1`));
+      return data.find((x) => x.providerMessageId === "CITA-MENCION-2") ?? null;
+    }, "la respuesta se guardó");
+    expect(respuesta.replyTo?.body).toBe("Me confirmas @Luisin");
+  });
+
   it("buscar en un chat no distingue tildes ni mayúsculas, y no encuentra lo retirado", async () => {
     const chat = "51901000030@s.whatsapp.net";
     let n = 0;
@@ -1300,6 +1339,44 @@ run("organización y limpieza", () => {
       `/v1/lines/${LINE}/chats/${enc(chat)}/messages?around=${enc(primero!.timestamp)}&limit=4`));
     // De más nuevo a más viejo, como el resto del historial: 2 de después y él.
     expect(ventana.map((m) => m.providerMessageId)).toEqual(["BUSCA-3", "BUSCA-2", "BUSCA-1"]);
+  });
+
+  it("buscar en TODOS los chats encuentra en cada uno, dice de cuál es y se pagina", async () => {
+    const otro = "51901000031@s.whatsapp.net";
+    await container.runtime.publish("contact.updated", LINE, {
+      address: otro, savedName: "Cliente de Búsqueda",
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "BUSCA-OTRO", remoteJid: otro }, kind: "text",
+      text: "¿me pasas esa CANCIÓN también?", timestamp: Date.UTC(2026, 9, 2, 9, 0),
+    });
+    await esperarValor(async () => {
+      const f = await dbh.sql`SELECT 1 FROM message WHERE line_id = ${LINE} AND chat_id = ${otro}`;
+      return f.length === 1 ? true : null;
+    }, "se guardó el del otro chat");
+
+    type R = {
+      providerMessageId: string; timestamp: string;
+      chat: { address: string; displayName: string };
+    };
+    const buscar = async (q: string, extra = "", clave?: string) => j<{ data: R[]; meta: { nextBefore: string | null } }>(
+      await call(`/v1/lines/${LINE}/messages/search?q=${enc(q)}${extra}`, {}, clave));
+
+    // Los de los dos chats, lo más reciente primero, y nada de lo retirado.
+    const { data } = await buscar("cancion");
+    expect(data.map((r) => r.providerMessageId)).toEqual(["BUSCA-OTRO", "BUSCA-2", "BUSCA-1"]);
+    // Cada uno con su chat ya con nombre, para enseñarlo sin otra petición.
+    expect(data[0]!.chat).toMatchObject({ address: otro, displayName: "Cliente de Búsqueda" });
+
+    // De uno en uno, siguiendo `nextBefore`.
+    const p1 = await buscar("cancion", "&limit=1");
+    expect(p1.data.map((r) => r.providerMessageId)).toEqual(["BUSCA-OTRO"]);
+    const p2 = await buscar("cancion", `&limit=1&before=${enc(p1.meta.nextBefore!)}`);
+    expect(p2.data.map((r) => r.providerMessageId)).toEqual(["BUSCA-2"]);
+
+    // Una clave acotada a un chat solo encuentra en el suyo.
+    const acotada = await buscar("cancion", "", scopedKey);
+    expect(acotada.data.every((r) => r.chat.address === CHAT)).toBe(true);
   });
 
   it("el «escribiendo» llega con el nombre de quien escribe, y nunca el propio", async () => {
@@ -1875,6 +1952,33 @@ run("organización y limpieza", () => {
     expect(cita.body).toBe("el plano");
     expect(cita.kind).toBe("image");
     expect(cita.disponible).toBe(false);
+  });
+
+  it("los mensajes temporales no se saben hasta que se ponen, y entonces se apuntan", async () => {
+    /*
+     * WhatsApp no deja preguntar si un chat tiene los mensajes temporales: se
+     * sabe cuando alguien los cambia. Hasta entonces es `null`, no «0»: decir
+     * «desactivados» sin saberlo sería afirmar algo que puede ser falso.
+     */
+    const chat = "51901000009@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51901000009", text: "hola" }),
+    });
+    await esperarChat(chat);
+    const leer = async () => (await j<{ data: { ephemeralSeconds: number | null } }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(chat)}`))).data.ephemeralSeconds;
+    expect(await leer()).toBeNull();
+
+    const poner = (seconds: number) => call(`/v1/lines/${LINE}/chats/${enc(chat)}/ephemeral`, {
+      method: "POST", body: JSON.stringify({ seconds }),
+    });
+    expect((await poner(604800)).status).toBe(200);
+    expect(await leer()).toBe(604800);
+    // Un valor que WhatsApp ignoraría en silencio se rechaza antes.
+    expect((await poner(3600)).status).toBe(422);
+    expect(await leer()).toBe(604800);
+    expect((await poner(0)).status).toBe(200);
+    expect(await leer()).toBe(0);
   });
 
   it("silenciar una conversación se guarda AQUÍ, no solo en el transporte", async () => {

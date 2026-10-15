@@ -94,7 +94,11 @@ const MEDIA_KINDS = new Set(["image", "video", "audio", "document", "sticker"]);
 type Protocolo = {
   key?: { id?: string }; type?: number | string;
   editedMessage?: object; timestampMs?: number | string;
+  ephemeralExpiration?: number | null;
 };
+
+/** `Message.ProtocolMessage.Type.EPHEMERAL_SETTING`: «los mensajes de aquí caducan en…». */
+const EPHEMERAL_SETTING = 3;
 
 /** `Message.ProtocolMessage.Type.MESSAGE_EDIT`: «este mensaje dice ahora otra cosa». */
 const MESSAGE_EDIT = 14;
@@ -683,14 +687,31 @@ export class EngineRuntime {
   }
 
   async #markFailed(job: OutboundJob, reason: string): Promise<void> {
-    await this.#deps.db
+    const [fila] = await this.#deps.db
       .update(messageTable)
       .set({ state: "failed", failureReason: reason })
-      .where(and(eq(messageTable.lineId, job.lineId), eq(messageTable.clientMessageId, job.clientMessageId)));
-    await this.#deps.dispatcher.dispatch({
+      .where(and(eq(messageTable.lineId, job.lineId), eq(messageTable.clientMessageId, job.clientMessageId)))
+      .returning({ chatId: messageTable.chatId });
+    /*
+     * Al bus también, no solo a los webhooks.
+     *
+     * Antes solo se enteraba quien tuviera un webhook: el panel seguía
+     * enseñando el reloj de «en cola» de un mensaje que ya no iba a salir, y
+     * quien lo escribió lo daba por enviado. La conversación va en `key`,
+     * como en el resto de eventos de mensaje, para que una credencial
+     * acotada a ese chat también lo vea; es la de la fila, no la que se pidió:
+     * «51988777666» se guardó como su chat de verdad, con su dominio.
+     */
+    const evento: EventEnvelope = {
       id: this.#newId(), event: "message.failed", orgId: job.orgId, lineId: job.lineId,
-      timestamp: this.#now(), data: { clientMessageId: job.clientMessageId, reason },
-    });
+      timestamp: this.#now(),
+      data: {
+        clientMessageId: job.clientMessageId, reason,
+        key: { remoteJid: fila?.chatId ?? job.input.to, fromMe: true },
+      },
+    };
+    await this.#deps.bus.publish(`org:${job.orgId}`, evento);
+    await this.#deps.dispatcher.dispatch(evento);
   }
 
   /**
@@ -775,6 +796,14 @@ export class EngineRuntime {
         const d = envelope.data as { key?: { id?: string } };
         await this.#marcarRetirado(envelope.lineId, d.key?.id, envelope.timestamp);
       }
+      /*
+       * Una caída que nadie pidió llega SOLO como evento: Baileys emite
+       * `session.disconnected` sin `session.status`. Sin apuntarlo aquí, la
+       * línea seguía «conectada» en la base —y en el panel— mientras no
+       * recibía nada.
+       */
+      if (envelope.event === "session.disconnected") await this.#setStatus(envelope.lineId, "disconnected");
+      if (envelope.event === "session.logged_out") await this.#setStatus(envelope.lineId, "logged-out");
       if (envelope.event === "session.connected" || envelope.event === "session.status") {
         const data = envelope.data as { state?: string; self?: string };
         if (data.state) await this.#setStatus(envelope.lineId, data.state);
@@ -1791,6 +1820,22 @@ export class EngineRuntime {
       );
       return;
     }
+    /*
+     * Alguien puso o quitó los mensajes temporales —el otro lado, o nosotros
+     * desde el teléfono—. Es la única forma de enterarse: WhatsApp no deja
+     * preguntarlo, así que se apunta en el chat cuando pasa.
+     */
+    if (protocolo.type === EPHEMERAL_SETTING || protocolo.type === "EPHEMERAL_SETTING") {
+      const d = envelope.data as { key?: { remoteJid?: string } };
+      const direccion = d.key?.remoteJid ? tryParseAddress(d.key.remoteJid) : null;
+      if (!direccion) return;
+      const chat = await this.#conversacionDe(envelope.lineId, direccion);
+      await this.#deps.db
+        .update(chatTable)
+        .set({ ephemeralSeconds: Number(protocolo.ephemeralExpiration ?? 0) })
+        .where(and(eq(chatTable.lineId, envelope.lineId), eq(chatTable.address, chat.value)));
+      return;
+    }
     if (protocolo.type !== REVOKE && protocolo.type !== "REVOKE") return;
     await this.#marcarRetirado(envelope.lineId, protocolo.key?.id, envelope.timestamp);
   }
@@ -1882,6 +1927,8 @@ export class EngineRuntime {
     const d = envelope.data as {
       chat?: string; archived?: boolean; pinned?: boolean;
       mutedUntil?: number | null; unreadCount?: number;
+      /** Segundos que duran los mensajes; 0 = desactivados. */
+      ephemeral?: number | null;
     };
     if (!d.chat) return;
     const direccion = tryParseAddress(d.chat);
@@ -1894,6 +1941,7 @@ export class EngineRuntime {
       cambios.muteUntil = d.mutedUntil ? new Date(d.mutedUntil) : null;
     }
     if (d.unreadCount !== undefined) cambios.unreadCount = Math.max(0, d.unreadCount);
+    if (d.ephemeral !== undefined) cambios.ephemeralSeconds = Number(d.ephemeral ?? 0);
     if (Object.keys(cambios).length === 0) return;
 
     await this.#deps.db

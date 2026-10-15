@@ -88,3 +88,48 @@ export const automationRunTable = pgTable(
   },
   (t) => [index("automation_run_regla_idx").on(t.ruleId, t.createdAt)],
 );
+
+/**
+ * Una nota interna: lo que el equipo se dice sobre un chat, dentro del chat.
+ *
+ * Tabla propia y NO una fila de `message`: todo lo de `message` es algo que
+ * pasó o va a pasar por la red —la cola de salida lee de ahí—, y una nota
+ * mezclada con los mensajes estaría a un filtro olvidado de llegar al cliente.
+ */
+export const internalNoteTable = pgTable(
+  "internal_note",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull().references(() => orgTable.id, { onDelete: "cascade" }),
+    lineId: text("line_id").notNull().references(() => lineTable.id, { onDelete: "cascade" }),
+    chatId: text("chat_id").notNull(),
+    /** Quién la escribió. Nulo si fue una integración, o si la cuenta ya no existe. */
+    authorUserId: text("author_user_id").references(() => userTable.id, { onDelete: "set null" }),
+    /** La clave de API que la escribió, cuando no fue una persona. */
+    authorKeyId: text("author_key_id"),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("internal_note_chat_idx").on(t.lineId, t.chatId, t.createdAt)],
+);
+
+/**
+ * Una respuesta rápida: un texto de la organización con su atajo.
+ *
+ * En el panel, «/precios» al principio del campo lo ofrece y se puede retocar
+ * antes de enviar. El atajo va sin la barra y en minúsculas, único por
+ * organización. Ver drizzle/0009_respuestas_rapidas.sql.
+ */
+export const quickReplyTable = pgTable(
+  "quick_reply",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull().references(() => orgTable.id, { onDelete: "cascade" }),
+    shortcut: text("shortcut").notNull(),
+    text: text("text").notNull(),
+    createdBy: text("created_by").references(() => userTable.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("quick_reply_org_shortcut_idx").on(t.orgId, t.shortcut)],
+);

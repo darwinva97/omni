@@ -426,6 +426,10 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
           ...(c.muteEndTime !== undefined
             ? { mutedUntil: c.muteEndTime ? Number(c.muteEndTime) : null }
             : {}),
+          // Los mensajes temporales, cuando WhatsApp los dice: 0 = desactivados.
+          ...(c.ephemeralExpiration !== undefined
+            ? { ephemeral: Number(c.ephemeralExpiration ?? 0) }
+            : {}),
         });
       }
     });

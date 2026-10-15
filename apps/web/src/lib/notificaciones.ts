@@ -232,12 +232,18 @@ export function silenciado(mutedUntil: string | null | undefined): boolean {
 
 export function avisar(
   prefs: Preferencias,
-  { titulo, cuerpo, etiqueta, alPulsar }: {
+  { titulo, cuerpo, etiqueta, alPulsar, privado = true }: {
     titulo: string;
     cuerpo: string | null;
     /** Agrupa: un segundo aviso de la misma conversación sustituye al primero. */
     etiqueta: string;
     alPulsar: () => void;
+    /**
+     * Si el cuerpo es contenido de un mensaje, que la «vista previa» puede
+     * esconder. Un aviso del propio panel —«la línea se ha desconectado»— no
+     * lo es, y esconderlo dejaría un aviso que no dice qué pasa.
+     */
+    privado?: boolean;
   },
 ): void {
   if (prefs.sonido) sonar();
@@ -254,7 +260,7 @@ export function avisar(
 
   try {
     const aviso = new Notification(titulo, {
-      body: prefs.vistaPrevia ? cuerpo ?? "Mensaje nuevo" : "Mensaje nuevo",
+      body: !privado || prefs.vistaPrevia ? cuerpo ?? "Mensaje nuevo" : "Mensaje nuevo",
       tag: etiqueta,
       icon: "/icono-192.png",
       silent: true, // El sonido lo ponemos nosotros; dos a la vez es un eco.

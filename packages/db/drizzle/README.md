@@ -31,3 +31,7 @@ cada fichero se aplica **en una transacción**: o entra entero o no entra.
 | `0005_identidad_contacto.sql` | Foto de perfil de cada conversación, como clave del almacén. |
 | `0006_usuario_whatsapp.sql` | El @usuario de WhatsApp de cada contacto, para el orden de nombres. |
 | `0007_foto_de_contacto.sql` | Foto de perfil también en el contacto, para quien escribe en un grupo. |
+| `0008_destacados.sql` | Mensajes destacados, guardados en Omni y por persona. |
+| `0009_respuestas_rapidas.sql` | Respuestas rápidas de la organización, con su atajo único. |
+| `0010_notas_internas.sql` | Notas internas de un chat, en su propia tabla: nunca pasan por la cola de salida. |
+| `0011_buscar_en_la_linea.sql` | Índice `(line_id, timestamp)` para buscar en todos los chats de una línea, de lo más nuevo atrás. |

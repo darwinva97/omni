@@ -161,7 +161,9 @@ export function ControlesDeAtencion({
           aria-haspopup="menu"
           aria-label={`Estado: ${estado ? ESTADOS[estado].texto : "sin conversación"}. Cambiar`}
           title={estado ? `${ESTADOS[estado].texto}: ${ESTADOS[estado].explica}. Cambiar el estado` : "Cambiar el estado"}
-          className="flex items-center gap-1 border-l border-(--color-borde) px-1.5 text-xs text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-60"
+          // En un teléfono no cabe: el nombre del chat se quedaba en «Lu…».
+          // Resolver y reabrir siguen a mano; los otros estados, en escritorio.
+          className="hidden items-center gap-1 border-l border-(--color-borde) px-1.5 text-xs sm:flex text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-60"
         >
           {(estado === "pending" || estado === "snoozed") && (
             <span className="hidden font-medium text-(--color-aviso) sm:inline">{ESTADOS[estado].texto}</span>

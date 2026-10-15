@@ -386,6 +386,21 @@ run("automatizaciones", () => {
     expect(regla.priority).toBe(42);
   });
 
+  it("la zona horaria de una condición de hora se guarda, para no contar en hora del servidor", async () => {
+    const res = await llamar("/v1/automations", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Fuera de horario",
+        trigger: "message.received",
+        conditions: [{ field: "hour", op: "gte", value: 19, timeZone: "America/Lima" }],
+        actions: [{ type: "set_priority", priority: "low" }],
+      }),
+    });
+    expect(res.status).toBe(201);
+    const { data } = await j<{ data: { conditions: { timeZone?: string }[] } }>(res);
+    expect(data.conditions[0]!.timeZone).toBe("America/Lima");
+  });
+
   it("una regla apagada no hace nada", async () => {
     const id = await crearRegla({
       name: "Dormida",

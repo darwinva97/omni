@@ -49,4 +49,5 @@ async function reenviar(req: Request, ruta: string[]): Promise<Response> {
 const manejador = async (req: Request, ctx: { params: Promise<{ ruta: string[] }> }) =>
   reenviar(req, (await ctx.params).ruta);
 
-export { manejador as GET, manejador as POST, manejador as PATCH, manejador as DELETE };
+// PUT también: destacar un mensaje es idempotente, y la API lo dice con PUT.
+export { manejador as GET, manejador as POST, manejador as PUT, manejador as PATCH, manejador as DELETE };

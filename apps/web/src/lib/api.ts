@@ -88,6 +88,8 @@ export interface Chat {
   mutedUntil?: string | null;
   archived?: boolean;
   pinned?: boolean;
+  /** Cuánto duran los mensajes, en segundos: 0 = desactivados, `null` = no se sabe. */
+  ephemeralSeconds?: number | null;
   /** Las listas de Omni en las que está. No existen en WhatsApp. */
   labelIds?: string[];
   /**
@@ -149,6 +151,10 @@ export interface Mensaje {
   media?: Medio | null;
   /** Por qué no hay fichero, cuando debería haberlo. */
   mediaError?: string | null;
+  /** Por qué no salió, cuando `state` es `failed`: lo que dijo el transporte. */
+  failureReason?: string | null;
+  /** Si lo tiene destacado quien mira. La estrella es de cada uno, no del chat. */
+  starred?: boolean;
   /** Reacciones agrupadas por emoji. */
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
   /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */
@@ -199,4 +205,13 @@ export interface Cita {
 
 export interface Yo {
   id: string; email: string; name: string; orgId: string | null; role: string | null;
+}
+
+/** Una nota interna: la ve el equipo dentro del chat, nunca el cliente. */
+export interface Nota {
+  id: string;
+  chatId: string;
+  body: string;
+  createdAt: string;
+  author: { kind: "user" | "api-key"; userId: string | null; name: string | null };
 }

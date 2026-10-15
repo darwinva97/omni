@@ -15,14 +15,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * billete: dura un minuto y sirve una vez.
  */
 
-type Oyente = (evento: string, data: Record<string, unknown>) => void | Promise<void>;
+type Oyente = (
+  evento: string, data: Record<string, unknown>, lineId: string,
+) => void | Promise<void>;
 
-export function useEventos(lineId: string): {
+/*
+ * `presence.*`: quién escribe o graba. Sin él, el «escribiendo…» llegaba al
+ * motor y no salía de ahí.
+ * `conversation.*`: quién lleva cada chat y si está resuelto.
+ * `note.*`: la nota interna que deja un compañero en el chat abierto.
+ */
+const DE_UNA_LINEA = [
+  "message.*", "chat.*", "session.*", "presence.*", "conversation.*", "note.*",
+] as const;
+
+/**
+ * `lineId` nulo = TODAS las líneas que alcance la sesión, para lo que se
+ * vigila desde cualquier pantalla (el aviso de línea caída). Con `eventos`
+ * se pide solo lo que hace falta: no tiene sentido recibir cada mensaje de
+ * cada línea para enterarse de que una se cayó.
+ */
+export function useEventos(lineId: string | null, eventos: readonly string[] = DE_UNA_LINEA): {
   conectado: boolean;
   suscribir: (oyente: Oyente) => () => void;
 } {
   const [conectado, setConectado] = useState(false);
   const oyentes = useRef(new Set<Oyente>());
+  // Por valor y no por identidad: un `[...]` escrito en la llamada es otro en
+  // cada repintado y reabriría el socket cada vez.
+  const patrones = eventos.join(",");
 
   const suscribir = useCallback((oyente: Oyente) => {
     oyentes.current.add(oyente);
@@ -48,20 +69,17 @@ export function useEventos(lineId: string): {
           setConectado(true);
           ws?.send(JSON.stringify({
             type: "subscribe",
-            // `presence.*`: quién escribe o graba. Sin él, el «escribiendo…»
-            // llegaba al motor y no salía de ahí.
-            // `conversation.*`: quién lleva cada chat y si está resuelto.
-            events: ["message.*", "chat.*", "session.*", "presence.*", "conversation.*"],
-            lines: [lineId],
+            events: patrones.split(","),
+            lines: lineId ? [lineId] : [],
           }));
         };
 
         ws.onmessage = (e) => {
           const m = JSON.parse(e.data as string) as {
-            type: string; event?: string; data?: Record<string, unknown>;
+            type: string; event?: string; lineId?: string; data?: Record<string, unknown>;
           };
           if (m.type !== "event" || !m.event) return;
-          for (const oyente of oyentes.current) void oyente(m.event, m.data ?? {});
+          for (const oyente of oyentes.current) void oyente(m.event, m.data ?? {}, m.lineId ?? "");
         };
 
         const reconectar = (): void => {
@@ -88,7 +106,7 @@ export function useEventos(lineId: string): {
       if (reintento) clearTimeout(reintento);
       ws?.close();
     };
-  }, [lineId]);
+  }, [lineId, patrones]);
 
   return { conectado, suscribir };
 }

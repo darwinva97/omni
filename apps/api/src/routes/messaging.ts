@@ -679,6 +679,13 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const driver = await driverOf(lineId);
       exigir(driver, "chat.ephemeral");
       await driver.setEphemeral!(lineId as LineId, chat, seconds);
+      // Y se apunta: WhatsApp no deja preguntarlo después, así que lo que no
+      // se guarda al cambiarlo no se sabe. Ver `ephemeralSeconds` en el chat.
+      const { chatTable } = await import("@omni/db");
+      await container.dbh.db
+        .update(chatTable)
+        .set({ ephemeralSeconds: seconds })
+        .where(and(eq(chatTable.lineId, lineId), eq(chatTable.address, chat.value)));
       return c.json({ data: { ok: true } }, 200);
     },
   );

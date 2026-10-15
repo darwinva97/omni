@@ -72,6 +72,16 @@ const MensajeSchema = z.object({
   }).nullable(),
   /** Por qué no hay fichero, cuando debería haberlo. */
   mediaError: z.string().nullable(),
+  /**
+   * Por qué no salió, cuando `state` es `failed`.
+   *
+   * Lo que dijo el transporte en el último intento. Sin él, un mensaje
+   * fallido solo dice «no» y quien lo escribió no sabe si reintentar sirve
+   * de algo (una línea desconectada) o no (un número que no existe).
+   */
+  failureReason: z.string().nullable().default(null),
+  /** Si quien pregunta lo tiene destacado. La estrella es de cada uno, no del chat. */
+  starred: z.boolean().default(false),
   /** Reacciones, agrupadas por emoji. `mia` dice si una es nuestra. */
   reacciones: z.array(z.object({
     emoji: z.string(), cuantas: z.number(), mia: z.boolean(),
@@ -180,6 +190,15 @@ const ChatSchema = z.object({
   archived: z.boolean().default(false),
   pinned: z.boolean().default(false),
   /**
+   * Cuánto duran los mensajes antes de desaparecer, en segundos: 0 si están
+   * desactivados, y `null` si no se sabe.
+   *
+   * No se sabe hasta que alguien lo cambia —desde aquí, desde el teléfono o el
+   * otro lado— o WhatsApp lo dice al sincronizar: no hay forma de preguntarlo.
+   * Decir «desactivados» sin saberlo sería afirmar algo que puede ser falso.
+   */
+  ephemeralSeconds: z.number().nullable().default(null),
+  /**
    * Las listas de Omni en las que está.
    *
    * Son etiquetas NUESTRAS, no de WhatsApp: agrupan conversaciones en el panel
@@ -216,6 +235,7 @@ interface FilaDeChat {
   avatarKey?: string | null; avatarUrl?: string | null;
   ultimo?: string | null; ultimoPropio?: boolean;
   muteUntil?: Date | null; archived?: boolean; pinned?: boolean;
+  ephemeralSeconds?: number | null;
   labelIds?: string[];
   conversation?: ReturnType<typeof presentarConversacion> | null;
 }
@@ -347,6 +367,46 @@ async function conversacionesDe(
       desc(conversationTable.openedAt),
     );
   return new Map(filas.map((f) => [f.chatId, presentarConversacion(f)]));
+}
+
+/**
+ * El nombre y la foto de varios chats, con la MISMA regla que la lista.
+ *
+ * Para los resultados de una búsqueda: cada uno tiene que decir de qué chat
+ * es, y con el nombre que se ve en la lista, no con su dirección.
+ */
+async function chatsConNombre(
+  container: Container, lineId: string, direcciones: readonly string[],
+): Promise<Map<string, { kind: string; displayName: string; avatarUrl: string | null }>> {
+  if (direcciones.length === 0) return new Map();
+  const filas = await container.dbh.db
+    .select({
+      address: chatTable.address, kind: chatTable.kind, title: chatTable.title,
+      lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
+      avatarKey: chatTable.avatarKey,
+      pushName: contactTable.pushName, savedName: contactTable.savedName,
+      username: contactTable.username,
+      phone: identityMapTable.phone,
+    })
+    .from(chatTable)
+    .leftJoin(contactTable, and(
+      eq(contactTable.lineId, chatTable.lineId),
+      eq(contactTable.address, chatTable.address),
+    ))
+    .leftJoin(identityMapTable, and(
+      eq(identityMapTable.lineId, chatTable.lineId),
+      eq(identityMapTable.lid, chatTable.address),
+    ))
+    .where(and(eq(chatTable.lineId, lineId), inArray(chatTable.address, [...direcciones])));
+  const conNombre = await conFichas(container, lineId, filas);
+  const mapa = new Map<string, { kind: string; displayName: string; avatarUrl: string | null }>();
+  for (const f of conNombre) {
+    const p = presentarChat(f);
+    mapa.set(f.address, {
+      kind: p.kind, displayName: p.displayName, avatarUrl: await urlDeAvatar(container, f.avatarKey),
+    });
+  }
+  return mapa;
 }
 
 /** Las listas de Omni de cada conversación, en UNA consulta. */
@@ -501,6 +561,7 @@ function presentarChat(r: FilaDeChat) {
     mutedUntil: r.muteUntil?.toISOString() ?? null,
     archived: r.archived ?? false,
     pinned: r.pinned ?? false,
+    ephemeralSeconds: r.ephemeralSeconds ?? null,
     labelIds: r.labelIds ?? [],
     conversation: r.conversation ?? null,
   };
@@ -512,10 +573,13 @@ import { registerMessagingRoutes } from "./routes/messaging.js";
 import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
 import { registerLabelRoutes } from "./routes/labels.js";
+import { destacadosDe, registerStarredRoutes } from "./routes/destacados.js";
+import { registerQuickReplyRoutes } from "./routes/respuestas.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
 import { ConversationSchema, registerCrmRoutes } from "./routes/crm.js";
 import { presentarConversacion } from "./crm/conversaciones.js";
+import { registerNoteRoutes } from "./routes/notas.js";
 import { registerCommerceRoutes } from "./routes/commerce.js";
 import { HOST_VERSION } from "./container.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
@@ -835,7 +899,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
           avatarKey: chatTable.avatarKey,
           muteUntil: chatTable.muteUntil, archived: chatTable.archived,
-          pinned: chatTable.pinned,
+          pinned: chatTable.pinned, ephemeralSeconds: chatTable.ephemeralSeconds,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           username: contactTable.username,
           phone: identityMapTable.phone,
@@ -1009,6 +1073,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
               }
             : null,
           mediaError: null,
+          failureReason: null,
+          starred: false,
           reacciones: [],
           deleted: false,
           editedAt: null,
@@ -1049,7 +1115,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           lastMessageAt: chatTable.lastMessageAt, unreadCount: chatTable.unreadCount,
           avatarKey: chatTable.avatarKey,
           muteUntil: chatTable.muteUntil, archived: chatTable.archived,
-          pinned: chatTable.pinned,
+          pinned: chatTable.pinned, ephemeralSeconds: chatTable.ephemeralSeconds,
           pushName: contactTable.pushName, savedName: contactTable.savedName,
           username: contactTable.username,
           phone: identityMapTable.phone,
@@ -1311,6 +1377,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         }
       }
 
+      // Los que tiene destacados QUIEN pregunta: la estrella es de cada uno.
+      const destacado = await destacadosDe(container.dbh.db, principal, lineId, rows);
+
       const data = await Promise.all(rows.map(async (r) => ({
         id: r.id, providerMessageId: r.providerMessageId,
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
@@ -1339,6 +1408,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
          * y nadie sabe si esperar o no.
          */
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
+        failureReason: r.state === "failed" ? r.failureReason : null,
+        starred: destacado(r),
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
         deleted: r.deletedAt !== null,
         editedAt: r.editedAt?.toISOString() ?? null,
@@ -1427,6 +1498,113 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     },
   );
 
+  app.openapi(
+    createRoute({
+      method: "get", path: "/v1/lines/{lineId}/messages/search", tags: ["mensajes"],
+      summary: "Buscar en los mensajes de TODOS los chats de una línea",
+      description:
+        "La misma búsqueda que dentro de un chat —sin mayúsculas ni tildes, en el texto, " +
+        "el pie y el nombre del fichero, sin lo retirado—, pero en todos a la vez. Cada " +
+        "resultado trae su chat ya con nombre y el `timestamp` para abrirlo EN ese " +
+        "mensaje (`around` en el historial). Lo más reciente primero; se pagina con " +
+        "`before` = `meta.nextBefore`. Ni los estados ni los canales: no son conversaciones.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        query: z.object({
+          q: z.string().trim().min(2).max(100),
+          limit: z.coerce.number().int().min(1).max(50).default(20),
+          before: z.string().datetime().optional().describe("ISO-8601: lo anterior a esa marca"),
+        }),
+      },
+      responses: { 200: json(z.object({
+        data: z.array(z.object({
+          id: z.string(),
+          providerMessageId: z.string().nullable(),
+          timestamp: z.string(),
+          fromMe: z.boolean(),
+          senderName: z.string().nullable(),
+          kind: z.string(),
+          texto: z.string(),
+          chat: z.object({
+            address: z.string(), kind: z.string(), displayName: z.string(),
+            avatarUrl: z.string().nullable(),
+          }),
+        })),
+        meta: z.object({ nextBefore: z.string().nullable() }),
+      }), "ok"), ...errors },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const { lineId } = c.req.valid("param");
+      const { q, limit, before } = c.req.valid("query");
+      await authorize(principal, routeOf("message.search.line"), { lineId });
+
+      const patron = `%${normalizarBusqueda(q).replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      const normal = (col: unknown) => sql`translate(lower(coalesce(${col}, '')), ${CON_TILDE}, ${SIN_TILDE})`;
+      // Una clave acotada a chats busca solo en los suyos, como ve solo esos
+      // en la lista: la búsqueda no puede ser una puerta lateral.
+      const acotada = principal.kind === "api-key" && principal.allowedChats.length > 0
+        ? principal.allowedChats : null;
+
+      /*
+       * Recorre la línea de lo más nuevo a lo más viejo y para en cuanto junta
+       * `limit` coincidencias; el índice `(line_id, timestamp)` de la 0011 es
+       * lo que le permite hacerlo sin ordenar antes todos los mensajes de la
+       * línea. Lo que NO puede hacer un índice B-tree es saltarse los que no
+       * coinciden: una palabra que no aparece obliga a mirarlos todos. Por eso
+       * el límite es corto, y el `before` deja seguir bajo demanda.
+       */
+      const filas = await container.dbh.db.select().from(messageTable)
+        .where(and(
+          eq(messageTable.lineId, lineId),
+          isNull(messageTable.deletedAt),
+          ne(messageTable.chatId, "status@broadcast"),
+          sql`${messageTable.chatId} NOT LIKE '%@newsletter'`,
+          ...(acotada ? [inArray(messageTable.chatId, [...acotada])] : []),
+          ...(before ? [lt(messageTable.timestamp, new Date(before))] : []),
+          sql`(${normal(messageTable.body)} LIKE ${patron}
+               OR ${normal(messageTable.mediaFileName)} LIKE ${patron})`,
+        ))
+        .orderBy(desc(messageTable.timestamp), desc(messageTable.id))
+        .limit(limit);
+
+      const remitentes = [...new Set(filas.filter((f) => !f.fromMe).map((f) => f.senderAddress))];
+      const direcciones = [...new Set(filas.map((f) => f.chatId))];
+      const [nombres, menciones, chats] = await Promise.all([
+        nombresDe(container.dbh.db, lineId, remitentes),
+        nombresDeMenciones(
+          container.dbh.db, lineId,
+          [...new Set(filas.flatMap((f) => tokensDeMencion(f.body)))],
+          [...new Set(filas.flatMap((f) => f.mentions ?? []))],
+        ),
+        chatsConNombre(container, lineId, direcciones),
+      ]);
+      const porToken = new Map([...menciones].map(([t, m]) => [t, m.name]));
+
+      return c.json({
+        data: filas.map((f) => {
+          const chat = chats.get(f.chatId);
+          return {
+            id: f.id,
+            providerMessageId: f.providerMessageId,
+            timestamp: f.timestamp.toISOString(),
+            fromMe: f.fromMe,
+            senderName: f.fromMe ? null : nombres.get(f.senderAddress) ?? null,
+            kind: f.kind,
+            texto: f.body ? conNombres(f.body, porToken) : f.mediaFileName ?? "",
+            chat: {
+              address: f.chatId,
+              kind: chat?.kind ?? "pn",
+              displayName: chat?.displayName ?? f.chatId.split("@")[0]!,
+              avatarUrl: chat?.avatarUrl ?? null,
+            },
+          };
+        }),
+        meta: { nextBefore: filas.length === limit ? filas.at(-1)!.timestamp.toISOString() : null },
+      }, 200);
+    },
+  );
+
   /*
    * Compatibilidad de cable. Migrar desde WasenderAPI es cambiar la URL base.
    * Se monta bajo `/compat/wasender` y NO pasa por el middleware de `/v1`:
@@ -1443,9 +1621,12 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerGroupRoutes(app, container);
   registerGroupChatRoutes(app, container);
   registerLabelRoutes(app, container);
+  registerStarredRoutes(app, container);
+  registerQuickReplyRoutes(app, container);
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
   registerNewsletterRoutes(app, container);
   registerCrmRoutes(app, container);
+  registerNoteRoutes(app, container);
   registerCommerceRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);
@@ -1632,6 +1813,31 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
         ...(input.kind ? { kind: input.kind } : {}),
       });
       return c.json({ data: { id: msg.id, chat: msg.chat } }, 201);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/sandbox/lines/{lineId}/drop", tags: ["sandbox"],
+      summary: "Fabricar que la conexión se cae, o que desvinculan el dispositivo",
+      description:
+        "No es `disconnect`, que cierra a propósito: aquí la caída llega como en una " +
+        "línea real, solo por el evento (`session.disconnected`, o `session.logged_out` " +
+        "con `loggedOut`). Con `loggedOut` el próximo enlace pide QR otra vez. Sirve " +
+        "para probar el aviso de línea caída del panel y las reglas sobre `line.disconnected`.",
+      request: {
+        params: z.object({ lineId: z.string() }),
+        ...body(z.object({ loggedOut: z.boolean().default(false) })),
+      },
+      responses: { 200: json(z.object({ data: LinkStateSchema }), "caída"), ...errors },
+    }),
+    async (c) => {
+      const principal = guard(c);
+      const { lineId } = c.req.valid("param");
+      const { loggedOut } = c.req.valid("json");
+      await authorize(principal, routeOf("line.connect"), { lineId });
+      const status = await container.sandbox!.simulateDrop(lineId as LineId, { loggedOut });
+      return c.json({ data: linkState(status) }, 200);
     },
   );
 

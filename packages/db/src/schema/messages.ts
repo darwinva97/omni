@@ -59,6 +59,8 @@ export const messageTable = pgTable(
   (t) => [
     primaryKey({ columns: [t.id, t.timestamp] }),
     index("message_chat_idx").on(t.lineId, t.chatId, t.timestamp.desc(), t.id),
+    // La búsqueda en toda la línea, de lo más nuevo atrás (migración 0011).
+    index("message_linea_tiempo_idx").on(t.lineId, t.timestamp.desc()),
     index("message_provider_idx").on(t.lineId, t.providerMessageId),
     index("message_client_idx").on(t.lineId, t.clientMessageId),
     index("message_state_idx").on(t.lineId, t.state),
@@ -76,6 +78,32 @@ export const messageReceiptTable = pgTable(
     at: timestamp("at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [primaryKey({ columns: [t.lineId, t.providerMessageId, t.participant] })],
+);
+
+/**
+ * Un mensaje destacado por alguien: la estrella de WhatsApp.
+ *
+ * Vive en Omni y no en el teléfono, así que funciona igual en todos los
+ * transportes, y es de quien la puso —una persona del panel o una clave de
+ * API—, como en WhatsApp es de cada cuenta. Sin clave foránea al mensaje:
+ * `message` está particionada y su clave es (id, timestamp); `messageAt` es
+ * la segunda mitad. Ver drizzle/0008_destacados.sql.
+ */
+export const starredMessageTable = pgTable(
+  "starred_message",
+  {
+    ownerKind: text("owner_kind").$type<"user" | "api-key">().notNull(),
+    ownerId: text("owner_id").notNull(),
+    lineId: text("line_id").notNull().references(() => lineTable.id, { onDelete: "cascade" }),
+    chatId: text("chat_id").notNull(),
+    messageId: text("message_id").notNull(),
+    messageAt: timestamp("message_at", { withTimezone: true }).notNull(),
+    starredAt: timestamp("starred_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.ownerKind, t.ownerId, t.lineId, t.messageId] }),
+    index("starred_message_chat_idx").on(t.ownerKind, t.ownerId, t.lineId, t.chatId, t.starredAt.desc()),
+  ],
 );
 
 export const reactionTable = pgTable(

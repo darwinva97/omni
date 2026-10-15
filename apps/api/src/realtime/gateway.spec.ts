@@ -45,6 +45,15 @@ describe("qué puede ver una conexión", () => {
     expect(visibleFor(b, conversacion("51900000000@s.whatsapp.net"))).toBe(false);
   });
 
+  it("una nota interna no llega a una clave acotada a chats, ni de su propio chat", () => {
+    const b = billete({ allowedChats: ["51999000111@s.whatsapp.net"] });
+    const nota = evento({
+      event: "note.created", data: { id: "nota-1", chatId: "51999000111@s.whatsapp.net", body: "ojo" },
+    });
+    expect(visibleFor(b, nota)).toBe(false);
+    expect(visibleFor(billete(), nota)).toBe(true);
+  });
+
   it("un evento sin chat identificable NO se entrega a una credencial acotada", () => {
     // El estado de la sesión no pertenece a ningún chat. En la duda, no se
     // enseña: es el mismo criterio que en el guard REST.

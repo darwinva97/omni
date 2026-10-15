@@ -72,6 +72,9 @@ export const ROUTES = {
   "chat.presence": { id: "chat.presence", permission: "message.send", scope: "chat", chatSafe: true },
   "message.list": { id: "message.list", permission: "message.read", scope: "chat", chatSafe: true },
   "message.search": { id: "message.search", permission: "message.read", scope: "chat", chatSafe: true },
+  // En todos los chats de una línea. Apta para una clave acotada: la ruta
+  // filtra por SUS chats, igual que la lista.
+  "message.search.line": { id: "message.search.line", permission: "message.read", scope: "line", chatSafe: true },
   // Reintentar la descarga de un fichero que ya llegó: no manda nada a nadie.
   "media.retry": { id: "media.retry", permission: "message.read", scope: "chat", chatSafe: true },
   /*
@@ -84,6 +87,13 @@ export const ROUTES = {
   "message.edit": { id: "message.edit", permission: "message.send", scope: "chat", chatSafe: true },
   "message.delete": { id: "message.delete", permission: "message.delete", scope: "chat", chatSafe: true },
   "message.react": { id: "message.react", permission: "message.send", scope: "chat", chatSafe: true },
+  /*
+   * Destacar es una nota PERSONAL sobre lo que ya se puede leer: no cambia
+   * nada para nadie más, así que basta con poder leer, y es seguro para una
+   * clave acotada a ese chat.
+   */
+  "message.star": { id: "message.star", permission: "message.read", scope: "chat", chatSafe: true },
+  "message.starred": { id: "message.starred", permission: "message.read", scope: "chat", chatSafe: true },
   // Subir un fichero es parte de poder enviar: una clave acotada a chats debe
   // poder hacerlo, porque si no no puede mandar más que texto en los suyos.
   // El ámbito es de LÍNEA y no de chat: al subir todavía no hay destinatario.
@@ -128,6 +138,29 @@ export const ROUTES = {
   "conversation.list": { id: "conversation.list", permission: "message.read", scope: "line", chatSafe: true },
   "conversation.update": { id: "conversation.update", permission: "chat.manage", scope: "chat", chatSafe: true },
   "automation.manage": { id: "automation.manage", permission: "org.manage", scope: "org" },
+
+  /*
+   * --- respuestas rápidas
+   *
+   * Verlas es de cualquiera que pueda leer: son textos de la organización.
+   * Cambiarlas es de quien gestiona, como las reglas: lo que dicen sale a los
+   * clientes en nombre de todo el equipo. Como todo lo de ámbito de
+   * organización, una clave limitada a líneas no llega.
+   */
+  "quickreply.list": { id: "quickreply.list", permission: "message.read", scope: "org" },
+  "quickreply.manage": { id: "quickreply.manage", permission: "automation.manage", scope: "org" },
+
+  /*
+   * --- notas internas
+   *
+   * Leerlas es de quien lee el chat; escribirlas y borrarlas, de quien lo
+   * atiende. Ninguna es para una clave acotada a chats: esas claves son de
+   * integraciones que hablan CON el cliente, y lo que el equipo dice de él
+   * no es asunto suyo.
+   */
+  "note.list": { id: "note.list", permission: "message.read", scope: "chat" },
+  "note.create": { id: "note.create", permission: "chat.manage", scope: "chat" },
+  "note.delete": { id: "note.delete", permission: "chat.manage", scope: "chat" },
 
   /*
    * --- comunidades y catálogo

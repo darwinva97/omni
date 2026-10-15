@@ -130,6 +130,23 @@ export const IconoDesplegar = (p: Props) => (
   <Base {...p}><path d="m7 10 5 5 5-5" /></Base>
 );
 
+/** Una nota con la esquina doblada: nota interna. */
+export const IconoNota = (p: Props) => (
+  <Base {...p}>
+    <path d="M5 4.5h14v9.5l-5 5.5H5z" /><path d="M14 19.5V14h5" /><path d="M8.5 9h7M8.5 12h4" />
+  </Base>
+);
+
+/** Candado: lo que no sale de aquí. */
+export const IconoCandado = (p: Props) => (
+  <Base {...p}><rect x="5.5" y="10.5" width="13" height="9.5" rx="2" /><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" /></Base>
+);
+
+/** Un rayo: lo que pasa solo, sin que nadie lo pulse. Automatizaciones. */
+export const IconoRayo = (p: Props) => (
+  <Base {...p}><path d="M13 3 5 13.5h6L10 21l8-10.5h-6z" /></Base>
+);
+
 export const IconoLineas = (p: Props) => (
   <Base {...p}>
     <rect x="3" y="3" width="7.5" height="7.5" rx="2" />
@@ -261,6 +278,35 @@ export const IconoResponder = (p: Props) => (
 
 export const IconoReenviar = (p: Props) => (
   <Base {...p}><path d="M13 5.5 20 12l-7 6.5V15c-6 0-8 2.5-9 4.5.5-7 4.5-9 9-9z" /></Base>
+);
+
+/**
+ * Estrella: destacar. Rellena cuando el mensaje YA está destacado, que es como
+ * se distingue en el menú y junto a la hora sin leer ninguna palabra.
+ */
+export const IconoEstrella = ({ relleno = false, ...p }: Props & { relleno?: boolean }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill={relleno ? "currentColor" : "none"}
+    stroke="currentColor"
+    strokeWidth={1.75}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={p.className ?? "size-5"}
+    aria-hidden={p.titulo ? undefined : true}
+    role={p.titulo ? "img" : undefined}
+  >
+    {p.titulo && <title>{p.titulo}</title>}
+    <path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />
+  </svg>
+);
+
+/** Bocadillo con una barra: las respuestas rápidas, que se piden con «/». */
+export const IconoRespuestas = (p: Props) => (
+  <Base {...p}>
+    <path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9.5A1.5 1.5 0 0 1 19 17h-8.5L6 20.5V17H5a1.5 1.5 0 0 1-1.5-1.5V6A1.5 1.5 0 0 1 5 4.5Z" />
+    <path d="m13.5 7.5-3 6.5" />
+  </Base>
 );
 
 /** Lápiz: editar lo ya enviado. */

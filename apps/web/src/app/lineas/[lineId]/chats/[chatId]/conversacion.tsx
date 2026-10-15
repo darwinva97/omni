@@ -5,7 +5,7 @@ import {
 } from "react";
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
+import { conNombres, diaDeSeparador, hora, trozosConMenciones } from "@/lib/formato";
 import { partirEnlaces } from "@/lib/enlaces";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
@@ -22,8 +22,8 @@ import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
-  IconoAdjuntar, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
-  IconoDocumento, IconoEditar, IconoImagen, IconoMicrofono, IconoSonido,
+  IconoAdjuntar, IconoAlerta, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
+  IconoDocumento, IconoEditar, IconoEstrella, IconoImagen, IconoMicrofono, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoReenviar, IconoResponder, IconoSticker,
   IconoVolver,
 } from "@/componentes/iconos";
@@ -36,9 +36,15 @@ import {
 } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 import { guardarBorrador, leerBorrador, type Borrador } from "@/lib/borradores";
+import {
+  consultaDeRespuesta, filtrarRespuestas, insertarRespuesta, useRespuestas, type Respuesta,
+} from "@/lib/respuestas";
 import { ControlesDeAtencion } from "@/componentes/atencion";
 import { useEquipo } from "@/lib/equipo";
 import type { Conversacion as Atencion } from "@/lib/api";
+import type { Nota } from "@/lib/api";
+import { intercalar } from "@/lib/notas";
+import { BotonNota, CompositorDeNota, NotaEnHilo } from "@/componentes/nota-interna";
 
 /** Quienes han escrito en el hilo cargado, una vez cada uno. */
 function quienesEscribieron(mensajes: readonly Mensaje[]): Participante[] {
@@ -92,7 +98,14 @@ function citaDeMensaje(m: Mensaje): CitaDe {
     fromMe: m.fromMe,
     senderName: m.senderName ?? null,
     kind: m.kind,
-    body: m.body,
+    /*
+     * La cita es texto plano: las menciones van ya con su nombre. El mensaje
+     * del hilo trae «@120413787029685» en el texto y a quién es aparte; sin
+     * esto la burbuja decía «@Luisin» y su cita, debajo, el número.
+     */
+    body: m.body && m.mentions?.length
+      ? conNombres(m.body, Object.fromEntries(m.mentions.map((x) => [x.token, x.name])))
+      : m.body,
     // Solo lo que es imagen se cita con imagen: la URL de un audio en una
     // `<img>` es una imagen rota.
     thumbUrl: m.kind === "image" || m.kind === "sticker" ? m.media?.url ?? null : null,
@@ -149,6 +162,7 @@ export function Conversacion({
   chat,
   info,
   iniciales,
+  irA = null,
   enviar,
   enviarMedio,
 }: {
@@ -156,6 +170,8 @@ export function Conversacion({
   chat: string;
   info: Chat | null;
   iniciales: Mensaje[];
+  /** Un mensaje al que ir nada más abrir: viene de buscar en todos los chats. */
+  irA?: { id: string; timestamp: string } | null;
   enviar: (texto: string, replyTo?: string, mentions?: string[]) => Promise<Mensaje | null>;
   enviarMedio: (
     campo: string, storageKey: string, pie: string, fileName: string,
@@ -251,6 +267,20 @@ export function Conversacion({
           || (cliente !== undefined && x.clientMessageId === cliente)
             ? { ...x, state: estado, providerMessageId: x.providerMessageId ?? key.id ?? null }
             : x));
+      return;
+    }
+
+    /*
+     * Un envío que se dio por perdido: la cola agotó sus intentos. Llega por
+     * el identificador que pusimos al enviar —puede que WhatsApp nunca le
+     * diera uno— y con el motivo, que es lo que se enseña bajo la burbuja.
+     */
+    if (evento === "message.failed") {
+      const cliente = data["clientMessageId"] as string | undefined;
+      if (!cliente) return;
+      const motivo = typeof data["reason"] === "string" ? data["reason"] : null;
+      setMensajes((prev) => prev.map((x) => (x.clientMessageId === cliente
+        ? { ...x, state: "failed", failureReason: motivo } : x)));
       return;
     }
 
@@ -441,6 +471,70 @@ export function Conversacion({
     });
   }), [chat, suscribir, info]);
 
+  /*
+   * Notas internas: lo que el equipo se dice sobre este chat. Se piden
+   * aparte de los mensajes —viven en otra tabla y nunca pasan por la red— y
+   * se intercalan por fecha. Atadas a SU chat, como la atención.
+   */
+  const [notasDe, setNotasDe] = useState<{ chat: string; lista: Nota[] } | null>(null);
+  const notas = notasDe?.chat === chat ? notasDe.lista : [];
+  useEffect(() => {
+    let vivo = true;
+    void fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/notes?limit=200`)
+      .then(async (r) => (r.ok ? ((await r.json()) as { data: Nota[] }).data : []))
+      .then((lista) => { if (vivo) setNotasDe({ chat, lista }); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [lineId, chat]);
+  useEffect(() => suscribir((evento, data) => {
+    if (evento !== "note.created" && evento !== "note.deleted") return;
+    const n = data as unknown as Nota;
+    if (n.chatId !== chat) return;
+    setNotasDe((previa) => {
+      const lista = previa?.chat === chat ? previa.lista : [];
+      const sin = lista.filter((x) => x.id !== n.id);
+      return { chat, lista: evento === "note.created" ? [n, ...sin] : sin };
+    });
+  }), [chat, suscribir]);
+  // Escribiendo una nota, o un mensaje. Al cambiar de chat se vuelve a
+  // mensaje: entrar en otro chat y escribir tiene que ser lo de siempre.
+  const [modoNotaEn, setModoNotaEn] = useState<string | null>(null);
+  const modoNota = modoNotaEn === chat;
+
+  const guardarNota = async (texto: string): Promise<string | null> => {
+    const r = await fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/notes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: texto }),
+    }).catch(() => null);
+    if (!r?.ok) {
+      const e = (await r?.json().catch(() => null)) as { detail?: string } | null;
+      return e?.detail ? `No se guardó la nota: ${e.detail}.` : "No se guardó la nota.";
+    }
+    const { data } = (await r.json()) as { data: Nota };
+    setNotasDe((previa) => {
+      const lista = previa?.chat === chat ? previa.lista : [];
+      return { chat, lista: [data, ...lista.filter((x) => x.id !== data.id)] };
+    });
+    if (ventanaRef.current) await volverAlPresente();
+    requestAnimationFrame(() => fondo.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
+    return null;
+  };
+
+  const borrarNota = async (n: Nota): Promise<void> => {
+    if (!confirm("¿Borrar tu nota? El resto del equipo dejará de verla.")) return;
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/notes/${encodeURIComponent(n.id)}`,
+      { method: "DELETE" },
+    ).catch(() => null);
+    if (!r?.ok) {
+      const e = (await r?.json().catch(() => null)) as { detail?: string } | null;
+      setProblema(e?.detail ? `No se borró la nota: ${e.detail}.` : "No se borró la nota.");
+      return;
+    }
+    setNotasDe((previa) => previa && { ...previa, lista: previa.lista.filter((x) => x.id !== n.id) });
+  };
+
   const yaColocado = useRef(false);
   useEffect(() => {
     // Si se acaba de cargar una ventana para ir a un resultado, el sitio es
@@ -584,6 +678,8 @@ export function Conversacion({
    */
   const [editando, setEditando] = useState<Mensaje | null>(null);
   const [reenviando, setReenviando] = useState<Mensaje | null>(null);
+  // Sube cada vez que se destaca o se quita algo: la ficha vuelve a pedir su lista.
+  const [versionDestacados, setVersionDestacados] = useState(0);
   const [senalado, setSenalado] = useState<string | null>(null);
   const campo = useRef<HTMLTextAreaElement>(null);
   /*
@@ -648,6 +744,24 @@ export function Conversacion({
     setMensajes(alrededor);
     setVentana(true);
   };
+
+  /*
+   * Abrir el chat EN un mensaje, desde la búsqueda de la lista. Es el mismo
+   * salto que el de buscar dentro del chat: si está entre los últimos cien,
+   * se sube a él; si no, se cargan los de alrededor.
+   */
+  useEffect(() => {
+    if (!irA) return;
+    if (iniciales.some((m) => m.id === irA.id)) { saltoPendiente.current = irA.id; return; }
+    // En la siguiente vuelta y no dentro del efecto: el salto carga mensajes
+    // y cambia el hilo, y eso no se hace a mitad de un repintado.
+    const t = setTimeout(() => void irAResultado({
+      id: irA.id, providerMessageId: null, timestamp: irA.timestamp,
+      fromMe: false, senderName: null, kind: "text", texto: "",
+    }), 0);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [irA?.id, iniciales]);
 
   const volverAlPresente = async (): Promise<void> => {
     const ultimos = await historial("limit=100");
@@ -748,9 +862,26 @@ export function Conversacion({
   const candidatos = candidatosDeMencion(participantes, agenda);
   const opcionesDeMencion = consulta ? filtrarParticipantes(candidatos, consulta.filtro) : [];
 
+  /*
+   * Lo que había en el campo cuando se cerró una lista con Esc.
+   *
+   * React avisa de `select` también al soltar una tecla, así que al soltar Esc
+   * se volvía a mirar el campo y la lista se abría otra vez, como si Esc no
+   * hiciera nada. Mientras el texto sea el mismo, se queda cerrada; en cuanto
+   * se escribe algo, vuelve a ofrecerse.
+   */
+  const cerradaCon = useRef<string | null>(null);
+  const cerradaAMano = (): boolean => {
+    const el = campo.current;
+    if (!el || cerradaCon.current === null) return false;
+    if (el.value === cerradaCon.current) return true;
+    cerradaCon.current = null;
+    return false;
+  };
+
   const revisarMencion = (): void => {
     const el = campo.current;
-    if (!el || candidatos.length === 0) { setConsulta(null); return; }
+    if (!el || candidatos.length === 0 || cerradaAMano()) { setConsulta(null); return; }
     const nueva = consultaDeMencion(el.value, el.selectionStart ?? el.value.length);
     setConsulta(nueva ? { chat, ...nueva } : null);
     if (nueva?.filtro !== consulta?.filtro) setResaltada(0);
@@ -767,6 +898,44 @@ export function Conversacion({
     // Solo lo del grupo es mención de verdad; lo demás se queda en texto.
     if (!p.fuera) elegidas.current.set(p.name, p.address);
     setConsulta(null);
+    apuntarBorrador();
+  };
+
+  /*
+   * Respuestas rápidas: «/» al principio del campo. El mismo combobox que el
+   * «@», con la misma resaltada: las dos listas no se abren a la vez, porque
+   * el atajo es la primera palabra y no lleva arroba. Ver lib/respuestas.ts.
+   */
+  const respuestas = useRespuestas();
+  const [barraDe, setBarra] = useState<{ chat: string; filtro: string } | null>(null);
+  const barra = barraDe?.chat === chat ? barraDe : null;
+  const opcionesDeRespuesta = barra ? filtrarRespuestas(respuestas ?? [], barra.filtro) : [];
+  // Con la barra puesta y ninguna creada, se dice dónde se crean en vez de no
+  // hacer nada: si no, nadie sabría que existen.
+  const sinRespuestas = barra !== null && barra.filtro === "" && respuestas?.length === 0;
+  const lista = opcionesDeRespuesta.length > 0 ? "respuestas"
+    : opcionesDeMencion.length > 0 ? "menciones" : null;
+
+  const revisarRespuesta = (): void => {
+    const el = campo.current;
+    if (!el) return;
+    if (cerradaAMano()) { setBarra(null); return; }
+    const nueva = consultaDeRespuesta(el.value, el.selectionStart ?? el.value.length);
+    setBarra(nueva ? { chat, ...nueva } : null);
+    if (nueva?.filtro !== barra?.filtro) setResaltada(0);
+  };
+
+  /** Pone el texto guardado en lugar del atajo, listo para retocar. */
+  const responderCon = (r: Respuesta): void => {
+    const el = campo.current;
+    if (!el) return;
+    const hecho = insertarRespuesta(el.value, el.selectionStart ?? el.value.length, r);
+    el.value = hecho.texto;
+    el.setSelectionRange(hecho.cursor, hecho.cursor);
+    ajustarAltura();
+    el.focus();
+    setBarra(null);
+    alEscribir(el.value);
     apuntarBorrador();
   };
 
@@ -941,6 +1110,30 @@ export function Conversacion({
     if (!r?.ok) marcar(m.mediaError ?? "no se pudo reintentar");
   };
 
+  /**
+   * Vuelve a mandar uno propio que no salió.
+   *
+   * Pasa a «en cola» al instante, y lo que venga después —enviado, entregado,
+   * u otro fallo— llega por el socket como cualquier acuse. La API lo reencola
+   * con el MISMO identificador de cliente: si el primero llegó a salir sin que
+   * nos enteráramos, no llega dos veces. Si dice que no, vuelve el fallo y se
+   * enseña su motivo.
+   */
+  const reintentarEnvio = async (m: Mensaje): Promise<void> => {
+    const marcar = (state: string, failureReason: string | null) => setMensajes((prev) =>
+      prev.map((x) => (x.id === m.id ? { ...x, state, failureReason } : x)));
+    setProblema(null);
+    marcar("queued", null);
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/messages/${encodeURIComponent(m.id)}/resend`,
+      { method: "POST" },
+    ).catch(() => null);
+    if (r?.ok) return;
+    marcar("failed", m.failureReason ?? null);
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    setProblema(`No se pudo reintentar: ${detalle?.detail ?? "no hay conexión con el servidor"}.`);
+  };
+
   /** Reacciona a un mensaje. Repetir el mismo emoji la retira, como WhatsApp. */
   const reaccionar = async (m: Mensaje, emoji: string): Promise<void> => {
     if (!m.providerMessageId) return;
@@ -987,6 +1180,29 @@ export function Conversacion({
   };
 
   /**
+   * Destaca o quita la estrella. Se pinta al instante, como una reacción; si
+   * la API dice que no, vuelve como estaba y se dice por qué.
+   *
+   * Se señala por el identificador de WhatsApp si lo hay y si no por el
+   * nuestro: lo recién llegado por el socket solo trae el primero, y lo
+   * recién enviado, el segundo. La API acepta los dos.
+   */
+  const destacar = async (m: Mensaje, si: boolean): Promise<void> => {
+    const marcar = (starred: boolean) => setMensajes((prev) =>
+      prev.map((x) => (x.id === m.id ? { ...x, starred } : x)));
+    marcar(si);
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId ?? m.id)}/star`,
+      { method: si ? "PUT" : "DELETE" },
+    ).catch(() => null);
+    if (r?.ok) { setVersionDestacados((v) => v + 1); return; }
+    marcar(!si);
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    const motivo = detalle?.detail ?? (r ? `el servidor respondió ${r.status}` : "no hay conexión con el servidor");
+    setProblema(`No se pudo ${si ? "destacar" : "quitar la estrella"}: ${motivo}.`);
+  };
+
+  /**
    * Las acciones de un mensaje.
    *
    * Solo aparecen las que de verdad se pueden hacer con ESE mensaje: borrar
@@ -996,6 +1212,13 @@ export function Conversacion({
    */
   const accionesMensaje = (m: Mensaje): OpcionMenu[] => {
     const opciones: OpcionMenu[] = [];
+
+    // Lo primero que se busca en uno que no salió es volver a mandarlo.
+    if (m.fromMe && m.state === "failed" && !m.deleted) {
+      opciones.push({
+        texto: "Reintentar el envío", Icono: IconoAlerta, onSelect: () => reintentarEnvio(m),
+      });
+    }
 
     /*
      * Primera, y solo con identificador del proveedor: WhatsApp cita por el
@@ -1040,6 +1263,12 @@ export function Conversacion({
     // no hay forma de señalarlo.
     if (m.providerMessageId && !m.deleted) {
       opciones.push({ texto: "Reenviar", Icono: IconoReenviar, onSelect: () => setReenviando(m) });
+    }
+    // Lo que todavía se está enviando no tiene fila a la que poner la estrella.
+    if (!m.deleted && !m.id.startsWith("pendiente-")) {
+      opciones.push(m.starred
+        ? { texto: "No destacar", Icono: IconoEstrellaLlena, onSelect: () => destacar(m, false) }
+        : { texto: "Destacar", Icono: IconoEstrella, onSelect: () => destacar(m, true) });
     }
     if (m.fromMe && m.providerMessageId) {
       opciones.push({
@@ -1120,7 +1349,9 @@ export function Conversacion({
           <span
             title={conectado ? "Recibiendo en vivo" : "Reconectando"}
             aria-live="polite"
-            className="flex items-center gap-1.5 text-xs text-(--color-tenue)"
+            // Fuera en el teléfono: con quién lo lleva y resolver, el nombre
+            // del chat no cabía.
+            className="hidden items-center gap-1.5 text-xs text-(--color-tenue) sm:flex"
           >
             <span
               aria-hidden
@@ -1163,9 +1394,22 @@ export function Conversacion({
         </header>
 
         <ol className="scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
-          {conPendientes.map((m, i) => {
-            const anterior = conPendientes[i - 1];
-            const nuevoDia = !anterior || !mismoDia(anterior.timestamp, m.timestamp);
+          {intercalar(conPendientes, notas, {
+            desdeElPrincipio: !ventana && iniciales.length < 100,
+            hastaElFinal: !ventana,
+          }).map((item) => {
+            if (item.tipo === "nota") {
+              return (
+                <NotaEnHilo
+                  key={`nota-${item.n.id}`}
+                  nota={item.n}
+                  nuevoDia={item.nuevoDia}
+                  mia={yo !== null && item.n.author.userId === yo.id}
+                  onBorrar={() => void borrarNota(item.n)}
+                />
+              );
+            }
+            const { m, anterior, nuevoDia } = item;
             /*
              * Una tanda es una ráfaga de la MISMA persona.
              *
@@ -1386,12 +1630,35 @@ export function Conversacion({
                           suelto ? "pr-1" : ""
                         }`}
                       >
+                        {m.starred && <Destacado />}
                         <time dateTime={m.timestamp}>{hora(m.timestamp)}</time>
                         {m.fromMe && <Acuse estado={m.state} />}
                       </span>
                     )}
                   </div>
                 </div>
+                )}
+
+                {/*
+                  No salió. Se dice debajo, en rojo y con palabras, y se puede
+                  reintentar con un clic: el acuse rojo solo, en once píxeles,
+                  se confunde con un reloj, y un mensaje que no llegó y parece
+                  enviado es lo peor que puede pasar en un panel así.
+                */}
+                {m.fromMe && m.state === "failed" && !m.deleted && !esAviso && (
+                  <p className="mt-0.5 mb-1 flex items-center justify-end gap-1.5 text-[11px] text-(--color-error)">
+                    <IconoAlerta className="size-3.5 shrink-0" />
+                    <span className="max-w-[min(26rem,60%)] truncate" title={m.failureReason ?? undefined}>
+                      No se envió{m.failureReason ? `: ${m.failureReason}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void reintentarEnvio(m)}
+                      className="shrink-0 rounded px-1 font-semibold hover:bg-(--color-error-tenue)"
+                    >
+                      Reintentar
+                    </button>
+                  </p>
                 )}
               </li>
             );
@@ -1427,7 +1694,7 @@ export function Conversacion({
           </p>
         )}
 
-        {actual && !editando && (
+        {actual && !editando && !modoNota && (
           <div className="border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
             {/*
               Las miniaturas, en fila. La elegida lleva el anillo y es la que
@@ -1514,7 +1781,7 @@ export function Conversacion({
           Va aquí y no dentro del formulario porque se ve ANTES de escribir: es
           lo que confirma que la respuesta va a ese mensaje y no al aire.
         */}
-        {respondiendo && !editando && (
+        {respondiendo && !editando && !modoNota && (
           <div className="flex items-center gap-2 border-t border-(--color-borde) bg-(--color-panel) px-3 pt-2 md:px-4">
             <span className="flex items-center gap-2 text-(--color-tenue)">
               <IconoResponder className="size-4" />
@@ -1561,8 +1828,20 @@ export function Conversacion({
           </div>
         )}
 
+        {/*
+          Escribiendo una nota, el formulario de los mensajes se OCULTA pero no
+          se desmonta: lo que hubiera a medio escribir para el cliente sigue
+          ahí al volver, y lo de la nota nunca pasa por él.
+        */}
+        {modoNota && (
+          <CompositorDeNota
+            onGuardar={guardarNota}
+            onSalir={() => { setModoNotaEn(null); requestAnimationFrame(() => campo.current?.focus()); }}
+          />
+        )}
         <form
           ref={formulario}
+          hidden={modoNota}
           /*
             Con `onSubmit` y no con `action`, a propósito.
 
@@ -1646,6 +1925,7 @@ export function Conversacion({
               formulario.current?.reset();
               ajustarAltura();
               setConsulta(null);
+              setBarra(null);
               startTransition(() => anadirPendiente(texto));
 
               // Lo que se ve dice «@Rodrigo»; lo que se manda, «@número» y a
@@ -1689,7 +1969,44 @@ export function Conversacion({
           }}
           className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
-          {opcionesDeMencion.length > 0 && (
+          {(lista === "respuestas" || sinRespuestas) && (
+            <ul
+              id="respuestas"
+              role="listbox"
+              aria-label="Respuestas rápidas"
+              className="absolute bottom-full left-3 z-30 mb-2 w-96 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-xl border border-(--color-borde) bg-(--color-panel) py-1 shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
+            >
+              {opcionesDeRespuesta.map((r, i) => (
+                <li
+                  key={r.id}
+                  id={`respuesta-${i}`}
+                  role="option"
+                  aria-selected={i === resaltada}
+                  onMouseDown={(e) => { e.preventDefault(); responderCon(r); }}
+                  onMouseEnter={() => setResaltada(i)}
+                  className={`cursor-pointer px-3 py-1.5 ${i === resaltada ? "bg-(--color-hundido)" : ""}`}
+                >
+                  <span className="block text-sm font-medium text-(--color-acento-fuerte)">/{r.shortcut}</span>
+                  <span className="block truncate text-xs text-(--color-tenue)">{r.text}</span>
+                </li>
+              ))}
+              {sinRespuestas && (
+                <li role="presentation" className="px-3 py-2 text-xs text-(--color-tenue)">
+                  Aún no hay respuestas rápidas: textos guardados que se insertan con «/atajo».
+                </li>
+              )}
+              <li role="presentation" className="mt-1 border-t border-(--color-borde-sutil) px-3 pt-1.5 pb-1">
+                <Link
+                  href="/respuestas"
+                  onMouseDown={(e) => e.preventDefault()}
+                  className="text-xs font-medium text-(--color-acento-fuerte) hover:underline"
+                >
+                  {sinRespuestas ? "Crear respuestas rápidas" : "Gestionar respuestas rápidas"}
+                </Link>
+              </li>
+            </ul>
+          )}
+          {lista === "menciones" && (
             <ul
               id="menciones"
               role="listbox"
@@ -1745,6 +2062,12 @@ export function Conversacion({
               e.target.value = "";
             }}
           />
+          <BotonNota
+            activo={false}
+            onClick={() => setModoNotaEn(chat)}
+            deshabilitado={adjuntos.length > 0 || editando !== null}
+            motivo="Termina antes lo que estás enviando o corrigiendo"
+          />
           <button
             type="button"
             onClick={() => selector.current?.click()}
@@ -1799,26 +2122,34 @@ export function Conversacion({
             rows={1}
             autoComplete="off"
             role="combobox"
-            aria-expanded={opcionesDeMencion.length > 0}
-            aria-controls="menciones"
+            aria-expanded={lista !== null}
+            aria-controls={lista ?? "menciones"}
             aria-autocomplete="list"
-            aria-activedescendant={opcionesDeMencion.length > 0 ? `mencion-${resaltada}` : undefined}
+            aria-activedescendant={lista === "respuestas" ? `respuesta-${resaltada}`
+              : lista === "menciones" ? `mencion-${resaltada}` : undefined}
             onInput={(e) => {
               ajustarAltura();
               // Corregir no es escribir: ni «escribiendo…», ni menciones —la
               // edición viaja como texto plano—, ni borrador.
               if (editando) return;
-              alEscribir(e.currentTarget.value); revisarMencion(); apuntarBorrador();
+              alEscribir(e.currentTarget.value); revisarMencion(); revisarRespuesta(); apuntarBorrador();
             }}
-            onSelect={() => { if (!editando) revisarMencion(); }}
-            onBlur={() => setTimeout(() => setConsulta(null), 150)}
+            onSelect={() => { if (!editando) { revisarMencion(); revisarRespuesta(); } }}
+            onBlur={() => setTimeout(() => { setConsulta(null); setBarra(null); }, 150)}
             onKeyDown={(e) => {
               if (editando && e.key === "Escape") {
                 e.preventDefault();
                 terminarEdicion();
                 return;
               }
-              if (opcionesDeMencion.length === 0) {
+              if (lista === null) {
+                // Con la barra puesta y ninguna respuesta creada, Esc quita el aviso.
+                if (sinRespuestas && e.key === "Escape") {
+                  e.preventDefault();
+                  cerradaCon.current = e.currentTarget.value;
+                  setBarra(null);
+                  return;
+                }
                 /*
                  * Enter envía y Shift+Enter hace salto de línea, como en
                  * WhatsApp de escritorio. En un teléfono, Enter es salto de
@@ -1835,18 +2166,22 @@ export function Conversacion({
                 formulario.current?.requestSubmit();
                 return;
               }
+              const n = lista === "respuestas" ? opcionesDeRespuesta.length : opcionesDeMencion.length;
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
-                const n = opcionesDeMencion.length;
                 setResaltada((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
               } else if (e.key === "Enter" || e.key === "Tab") {
-                // Con la lista abierta, Enter elige: mandar «@Ro» a medias
-                // nunca es lo que se quiere.
+                // Con la lista abierta, Enter elige: mandar «@Ro» o «/pre» a
+                // medias nunca es lo que se quiere.
                 e.preventDefault();
-                mencionar(opcionesDeMencion[Math.min(resaltada, opcionesDeMencion.length - 1)]!);
+                const i = Math.min(resaltada, n - 1);
+                if (lista === "respuestas") responderCon(opcionesDeRespuesta[i]!);
+                else mencionar(opcionesDeMencion[i]!);
               } else if (e.key === "Escape") {
                 e.preventDefault();
+                cerradaCon.current = e.currentTarget.value;
                 setConsulta(null);
+                setBarra(null);
               }
             }}
             placeholder={editando ? "Corrige el mensaje" : actual
@@ -1891,8 +2226,15 @@ export function Conversacion({
       )}
       {ficha && info && (
         <FichaContacto
+          lineId={lineId}
           info={info}
           mensajes={mensajes}
+          versionDestacados={versionDestacados}
+          onIrA={(r) => {
+            // En un teléfono la ficha tapa el hilo: se cierra para ver a dónde se fue.
+            if (window.matchMedia("(max-width: 767px)").matches) setFicha(false);
+            void irAResultado(r);
+          }}
           onCerrar={() => setFicha(false)}
         />
       )}
@@ -2051,12 +2393,27 @@ function Miniatura({ file }: { file: File }) {
   return <img ref={enlazar} alt="" className="size-12 rounded-md object-cover" />; // impeccable-disable-line broken-image -- src asignado por la ref al montar
 }
 
+/** En el menú de uno ya destacado: la estrella llena dice cómo está ahora. */
+function IconoEstrellaLlena(p: { className?: string }) {
+  return <IconoEstrella {...p} relleno />;
+}
+
+/** La estrella junto a la hora, como en WhatsApp: pequeña, del color de la hora. */
+function Destacado() {
+  return <IconoEstrella relleno titulo="Destacado" className="size-3 shrink-0" />;
+}
+
 function Firma({ mensaje }: { mensaje: Mensaje }) {
   return (
     <>
       {/* Hueco reservado para que la hora no se monte sobre la última palabra. */}
-      <span aria-hidden className={`inline-block select-none ${mensaje.editedAt ? "w-24" : "w-14"}`} />
+      <span
+        aria-hidden
+        className="inline-block select-none"
+        style={{ width: `${3.5 + (mensaje.editedAt ? 2.5 : 0) + (mensaje.starred ? 1 : 0)}rem` }}
+      />
       <span className="float-right ml-1.5 inline-flex translate-y-0.5 items-center gap-1 text-[11px] leading-none text-(--color-apagado)">
+        {mensaje.starred && <Destacado />}
         {/* Como en WhatsApp: «Editado» delante de la hora, y cuándo al pasar por encima. */}
         {mensaje.editedAt && (
           <span title={`Editado ${new Date(mensaje.editedAt).toLocaleString("es")}`}>Editado</span>

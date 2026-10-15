@@ -163,6 +163,22 @@ export const COMMANDS: readonly Command[] = [
     }),
   },
   {
+    name: "buscar",
+    summary: "Buscar en los mensajes de todos los chats de una línea",
+    operation: "GET /v1/lines/{lineId}/messages/search",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "texto", required: true, description: "Lo que se busca; da igual tildes y mayúsculas" },
+    ],
+    flags: [
+      { name: "limite", description: "Cuántos devolver" },
+      { name: "antes-de", description: "ISO-8601: sigue desde ahí (meta.nextBefore)" },
+    ],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/messages/search`, undefined, {
+      q: req(a, 1, "texto"), limit: flag(a, "limite"), before: flag(a, "antes-de"),
+    }),
+  },
+  {
     name: "mensajes",
     summary: "Historial de una conversación",
     operation: "GET /v1/lines/{lineId}/chats/{chatId}/messages",
@@ -299,6 +315,44 @@ export const COMMANDS: readonly Command[] = [
       { text: req(a, 3, "texto") }),
   },
   {
+    name: "mensaje:destacar",
+    summary: "Destacar un mensaje; la estrella es de esta clave, no del chat",
+    operation: "PUT /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/star",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador de Omni o del proveedor" },
+    ],
+    run: (c, a) => c.request("PUT",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/star`),
+  },
+  {
+    name: "mensaje:no-destacar",
+    summary: "Quitar un mensaje de los destacados",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/star",
+    // Toda operación DELETE pide `--yes`, aunque lo que borre sea una estrella:
+    // la regla es mecánica para que nadie tenga que decidir cuál «no cuenta».
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador de Omni o del proveedor" },
+    ],
+    run: (c, a) => c.request("DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/star`),
+  },
+  {
+    name: "destacados",
+    summary: "Los mensajes destacados de una conversación",
+    operation: "GET /v1/lines/{lineId}/chats/{chatId}/starred",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    run: (c, a) => c.request("GET",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/starred`),
+  },
+  {
     name: "mensaje:borrar",
     summary: "Borrar un mensaje para todos",
     operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}",
@@ -337,6 +391,16 @@ export const COMMANDS: readonly Command[] = [
     run: (c, a) => c.request("POST",
       `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/read`,
       { messageIds: req(a, 2, "mensajes").split(",").map((s) => s.trim()).filter(Boolean) }),
+  },
+  {
+    name: "sandbox:caida",
+    summary: "Fabricar que la línea del sandbox se cae, o que la desvinculan",
+    operation: "POST /v1/sandbox/lines/{lineId}/drop",
+    args: [{ name: "linea", required: true, description: "Identificador de la línea" }],
+    flags: [{ name: "desvinculada", description: "Como si la desvincularan desde el teléfono" }],
+    run: (c, a) => c.request("POST", `/v1/sandbox/lines/${req(a, 0, "linea")}/drop`, {
+      loggedOut: a.flags["desvinculada"] === true,
+    }),
   },
   {
     name: "sandbox:escribir",
@@ -514,6 +578,47 @@ export const COMMANDS: readonly Command[] = [
         action: req(a, 2, "accion"),
         participants: req(a, 3, "participantes").split(",").map((s) => s.trim()).filter(Boolean),
       }),
+  },
+  {
+    name: "respuestas",
+    summary: "Las respuestas rápidas de la organización",
+    operation: "GET /v1/quick-replies",
+    args: [],
+    run: (c) => c.request("GET", "/v1/quick-replies"),
+  },
+  {
+    name: "respuesta:crear",
+    summary: "Crear una respuesta rápida: «/atajo» y su texto",
+    operation: "POST /v1/quick-replies",
+    args: [
+      { name: "atajo", required: true, description: "Con o sin barra: «precios» o «/precios»" },
+      { name: "texto", required: true, description: "Lo que se inserta al elegirla" },
+    ],
+    run: (c, a) => c.request("POST", "/v1/quick-replies", {
+      shortcut: req(a, 0, "atajo"), text: req(a, 1, "texto"),
+    }),
+  },
+  {
+    name: "respuesta:editar",
+    summary: "Cambiar el atajo o el texto de una respuesta rápida",
+    operation: "PATCH /v1/quick-replies/{id}",
+    args: [{ name: "respuesta", required: true, description: "Identificador de la respuesta" }],
+    flags: [
+      { name: "atajo", description: "Atajo nuevo" },
+      { name: "texto", description: "Texto nuevo" },
+    ],
+    run: (c, a) => c.request("PATCH", `/v1/quick-replies/${enc(req(a, 0, "respuesta"))}`, {
+      ...(typeof a.flags["atajo"] === "string" ? { shortcut: a.flags["atajo"] } : {}),
+      ...(typeof a.flags["texto"] === "string" ? { text: a.flags["texto"] } : {}),
+    }),
+  },
+  {
+    name: "respuesta:borrar",
+    summary: "Borrar una respuesta rápida",
+    operation: "DELETE /v1/quick-replies/{id}",
+    destructive: true,
+    args: [{ name: "respuesta", required: true, description: "Identificador de la respuesta" }],
+    run: (c, a) => c.request("DELETE", `/v1/quick-replies/${enc(req(a, 0, "respuesta"))}`),
   },
   {
     name: "etiquetas",
@@ -1011,6 +1116,55 @@ export const COMMANDS: readonly Command[] = [
       ...(flag(a, "responsable") ? { assigneeId: flag(a, "responsable") } : {}),
       ...(flag(a, "estado") ? { status: flag(a, "estado") } : {}),
     }),
+  },
+  {
+    name: "notas",
+    summary: "Las notas internas de un chat: las ve el equipo, nunca el cliente",
+    operation: "GET /v1/lines/{lineId}/chats/{chatId}/notes",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    flags: [
+      { name: "limite", description: "Cuántas devolver" },
+      { name: "antes-de", description: "ISO-8601: devuelve las anteriores a esa fecha" },
+    ],
+    run: (c, a) => c.request(
+      "GET",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/notes`,
+      undefined,
+      { limit: flag(a, "limite"), before: flag(a, "antes-de") },
+    ),
+  },
+  {
+    name: "nota:crear",
+    summary: "Dejar una nota interna en un chat; no se envía al cliente",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/notes",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "texto", required: true, description: "Lo que dice la nota" },
+    ],
+    run: (c, a) => c.request(
+      "POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/notes`,
+      { body: req(a, 2, "texto") },
+    ),
+  },
+  {
+    name: "nota:borrar",
+    summary: "Borrar una nota interna escrita con esta misma clave",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/notes/{noteId}",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "nota", required: true, description: "Identificador de la nota" },
+    ],
+    run: (c, a) => c.request(
+      "DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/notes/${enc(req(a, 2, "nota"))}`,
+    ),
   },
   {
     name: "automatizaciones",

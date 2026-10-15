@@ -32,8 +32,31 @@ export interface Evaluacion {
   readonly motivo?: string;
 }
 
+/**
+ * La hora y el día de la semana EN una zona horaria.
+ *
+ * Una zona que no existe no hace saltar nada por error: devuelve `null` y la
+ * comparación falla cerrada, igual que una expresión regular inválida.
+ */
+function enZona(at: Date, zona: string): { hour: number; weekday: number } | null {
+  try {
+    const partes = new Intl.DateTimeFormat("en-US", {
+      timeZone: zona, hour: "numeric", hourCycle: "h23", weekday: "short",
+    }).formatToParts(at);
+    const hora = Number(partes.find((p) => p.type === "hour")?.value);
+    const dia = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+      .indexOf(partes.find((p) => p.type === "weekday")?.value ?? "");
+    return Number.isFinite(hora) && dia >= 0 ? { hour: hora, weekday: dia } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function evaluarCondicion(c: Condition, ctx: RuleContext): boolean {
-  const actual = valorDe(ctx, c.field);
+  const zona = c.timeZone && (c.field === "hour" || c.field === "weekday")
+    ? enZona(ctx.at, c.timeZone) : undefined;
+  if (zona === null) return false;
+  const actual = zona ? zona[c.field as "hour" | "weekday"] : valorDe(ctx, c.field);
   const lista = Array.isArray(actual) ? (actual as string[]) : null;
 
   const norm = (s: string): string => (c.caseSensitive ? s : s.toLowerCase());
