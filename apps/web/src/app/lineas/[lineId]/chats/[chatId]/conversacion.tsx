@@ -22,7 +22,7 @@ import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
-  IconoAdjuntar, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
+  IconoAdjuntar, IconoAlerta, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
   IconoDocumento, IconoEditar, IconoImagen, IconoMicrofono, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoReenviar, IconoResponder, IconoSticker,
   IconoVolver,
@@ -248,6 +248,20 @@ export function Conversacion({
           || (cliente !== undefined && x.clientMessageId === cliente)
             ? { ...x, state: estado, providerMessageId: x.providerMessageId ?? key.id ?? null }
             : x));
+      return;
+    }
+
+    /*
+     * Un envío que se dio por perdido: la cola agotó sus intentos. Llega por
+     * el identificador que pusimos al enviar —puede que WhatsApp nunca le
+     * diera uno— y con el motivo, que es lo que se enseña bajo la burbuja.
+     */
+    if (evento === "message.failed") {
+      const cliente = data["clientMessageId"] as string | undefined;
+      if (!cliente) return;
+      const motivo = typeof data["reason"] === "string" ? data["reason"] : null;
+      setMensajes((prev) => prev.map((x) => (x.clientMessageId === cliente
+        ? { ...x, state: "failed", failureReason: motivo } : x)));
       return;
     }
 
@@ -916,6 +930,30 @@ export function Conversacion({
     if (!r?.ok) marcar(m.mediaError ?? "no se pudo reintentar");
   };
 
+  /**
+   * Vuelve a mandar uno propio que no salió.
+   *
+   * Pasa a «en cola» al instante, y lo que venga después —enviado, entregado,
+   * u otro fallo— llega por el socket como cualquier acuse. La API lo reencola
+   * con el MISMO identificador de cliente: si el primero llegó a salir sin que
+   * nos enteráramos, no llega dos veces. Si dice que no, vuelve el fallo y se
+   * enseña su motivo.
+   */
+  const reintentarEnvio = async (m: Mensaje): Promise<void> => {
+    const marcar = (state: string, failureReason: string | null) => setMensajes((prev) =>
+      prev.map((x) => (x.id === m.id ? { ...x, state, failureReason } : x)));
+    setProblema(null);
+    marcar("queued", null);
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/messages/${encodeURIComponent(m.id)}/resend`,
+      { method: "POST" },
+    ).catch(() => null);
+    if (r?.ok) return;
+    marcar("failed", m.failureReason ?? null);
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    setProblema(`No se pudo reintentar: ${detalle?.detail ?? "no hay conexión con el servidor"}.`);
+  };
+
   /** Reacciona a un mensaje. Repetir el mismo emoji la retira, como WhatsApp. */
   const reaccionar = async (m: Mensaje, emoji: string): Promise<void> => {
     if (!m.providerMessageId) return;
@@ -971,6 +1009,13 @@ export function Conversacion({
    */
   const accionesMensaje = (m: Mensaje): OpcionMenu[] => {
     const opciones: OpcionMenu[] = [];
+
+    // Lo primero que se busca en uno que no salió es volver a mandarlo.
+    if (m.fromMe && m.state === "failed" && !m.deleted) {
+      opciones.push({
+        texto: "Reintentar el envío", Icono: IconoAlerta, onSelect: () => reintentarEnvio(m),
+      });
+    }
 
     /*
      * Primera, y solo con identificador del proveedor: WhatsApp cita por el
@@ -1356,6 +1401,28 @@ export function Conversacion({
                     )}
                   </div>
                 </div>
+                )}
+
+                {/*
+                  No salió. Se dice debajo, en rojo y con palabras, y se puede
+                  reintentar con un clic: el acuse rojo solo, en once píxeles,
+                  se confunde con un reloj, y un mensaje que no llegó y parece
+                  enviado es lo peor que puede pasar en un panel así.
+                */}
+                {m.fromMe && m.state === "failed" && !m.deleted && !esAviso && (
+                  <p className="mt-0.5 mb-1 flex items-center justify-end gap-1.5 text-[11px] text-(--color-error)">
+                    <IconoAlerta className="size-3.5 shrink-0" />
+                    <span className="max-w-[min(26rem,60%)] truncate" title={m.failureReason ?? undefined}>
+                      No se envió{m.failureReason ? `: ${m.failureReason}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void reintentarEnvio(m)}
+                      className="shrink-0 rounded px-1 font-semibold hover:bg-(--color-error-tenue)"
+                    >
+                      Reintentar
+                    </button>
+                  </p>
                 )}
               </li>
             );

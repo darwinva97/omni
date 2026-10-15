@@ -966,6 +966,11 @@ run("reintento de envíos", () => {
       UPDATE message SET state = 'failed', failure_reason = 'prueba'
       WHERE line_id = ${LINE} AND client_message_id = 'fallido-1'`;
 
+    // El panel dice por qué no salió: el motivo viaja con el mensaje.
+    const { data: hilo } = await j<{ data: { id: string; state: string; failureReason: string | null }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages?limit=10`));
+    expect(hilo.find((m) => m.id === "m-fallido-1")).toMatchObject({ state: "failed", failureReason: "prueba" });
+
     const res = await call(`/v1/lines/${LINE}/messages/m-fallido-1/resend`, { method: "POST" });
     expect(res.status).toBe(202);
     const { data } = await j<{ data: { clientMessageId: string } }>(res);

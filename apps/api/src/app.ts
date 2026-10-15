@@ -72,6 +72,14 @@ const MensajeSchema = z.object({
   }).nullable(),
   /** Por qué no hay fichero, cuando debería haberlo. */
   mediaError: z.string().nullable(),
+  /**
+   * Por qué no salió, cuando `state` es `failed`.
+   *
+   * Lo que dijo el transporte en el último intento. Sin él, un mensaje
+   * fallido solo dice «no» y quien lo escribió no sabe si reintentar sirve
+   * de algo (una línea desconectada) o no (un número que no existe).
+   */
+  failureReason: z.string().nullable().default(null),
   /** Reacciones, agrupadas por emoji. `mia` dice si una es nuestra. */
   reacciones: z.array(z.object({
     emoji: z.string(), cuantas: z.number(), mia: z.boolean(),
@@ -970,6 +978,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
               }
             : null,
           mediaError: null,
+          failureReason: null,
           reacciones: [],
           deleted: false,
           editedAt: null,
@@ -1298,6 +1307,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
          * y nadie sabe si esperar o no.
          */
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
+        failureReason: r.state === "failed" ? r.failureReason : null,
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
         deleted: r.deletedAt !== null,
         editedAt: r.editedAt?.toISOString() ?? null,

@@ -683,14 +683,31 @@ export class EngineRuntime {
   }
 
   async #markFailed(job: OutboundJob, reason: string): Promise<void> {
-    await this.#deps.db
+    const [fila] = await this.#deps.db
       .update(messageTable)
       .set({ state: "failed", failureReason: reason })
-      .where(and(eq(messageTable.lineId, job.lineId), eq(messageTable.clientMessageId, job.clientMessageId)));
-    await this.#deps.dispatcher.dispatch({
+      .where(and(eq(messageTable.lineId, job.lineId), eq(messageTable.clientMessageId, job.clientMessageId)))
+      .returning({ chatId: messageTable.chatId });
+    /*
+     * Al bus también, no solo a los webhooks.
+     *
+     * Antes solo se enteraba quien tuviera un webhook: el panel seguía
+     * enseñando el reloj de «en cola» de un mensaje que ya no iba a salir, y
+     * quien lo escribió lo daba por enviado. La conversación va en `key`,
+     * como en el resto de eventos de mensaje, para que una credencial
+     * acotada a ese chat también lo vea; es la de la fila, no la que se pidió:
+     * «51988777666» se guardó como su chat de verdad, con su dominio.
+     */
+    const evento: EventEnvelope = {
       id: this.#newId(), event: "message.failed", orgId: job.orgId, lineId: job.lineId,
-      timestamp: this.#now(), data: { clientMessageId: job.clientMessageId, reason },
-    });
+      timestamp: this.#now(),
+      data: {
+        clientMessageId: job.clientMessageId, reason,
+        key: { remoteJid: fila?.chatId ?? job.input.to, fromMe: true },
+      },
+    };
+    await this.#deps.bus.publish(`org:${job.orgId}`, evento);
+    await this.#deps.dispatcher.dispatch(evento);
   }
 
   /**

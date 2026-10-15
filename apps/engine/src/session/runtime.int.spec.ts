@@ -33,6 +33,7 @@ interface Harness {
   runtime: EngineRuntime;
   driver: SandboxDriver;
   queue: MemoryJobQueue;
+  bus: MemoryBus;
   deliveries: { body: string; headers: Record<string, string> }[];
   records: DeliveryRecord[];
   stop: () => Promise<void>;
@@ -70,8 +71,9 @@ async function harness(endpoints: WebhookEndpoint[] = []): Promise<Harness> {
   });
 
   const driver = new SandboxDriver();
+  const bus = new MemoryBus();
   const runtime = new EngineRuntime({
-    db: h.db, queue, kv: new MemoryKv(), bus: new MemoryBus(),
+    db: h.db, queue, kv: new MemoryKv(), bus,
     box: new SecretBox(MASTER), dispatcher, storage: await testStorage(),
   });
   runtime.registerDriver(driver);
@@ -79,7 +81,7 @@ async function harness(endpoints: WebhookEndpoint[] = []): Promise<Harness> {
   const whWorker = dispatcher.startWorker();
 
   return {
-    runtime, driver, queue, deliveries, records,
+    runtime, driver, queue, bus, deliveries, records,
     stop: async () => { await runtime.stop(); await whWorker.stop(); await queue.close(); },
   };
 }
@@ -441,6 +443,35 @@ run("runtime del motor, de punta a punta", () => {
       .where(eq(messageTable.lineId, LINE));
     expect(["queued", "failed"]).toContain(rows[0]!.s);
   });
+
+  it("un envío que se da por perdido se avisa EN VIVO, con su motivo y su chat", async () => {
+    /*
+     * Antes solo salía como webhook: el panel no se enteraba y seguía
+     * enseñando el reloj de «en cola» de un mensaje que ya no iba a salir.
+     */
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    const original = H.driver.send.bind(H.driver);
+    H.driver.send = async () => { throw new Error("el teléfono no responde"); };
+    const vistos: EventEnvelope[] = [];
+    const baja = await H.bus.subscribe<EventEnvelope>(`org:${ORG}`, (e) => { vistos.push(e); });
+    try {
+      await H.runtime.send(LINE, { to: "51988777666", text: "no saldrá", clientMessageId: "perdido-1" });
+      const fallo = await until(
+        async () => vistos.find((e) => e.event === "message.failed") ?? null,
+        "el aviso de fallo", 15000,
+      );
+      expect(fallo.data).toMatchObject({
+        clientMessageId: "perdido-1",
+        reason: "el teléfono no responde",
+        key: { remoteJid: "51988777666@s.whatsapp.net", fromMe: true },
+      });
+      expect(await estadoDe("perdido-1")).toBe("failed");
+    } finally {
+      H.driver.send = original;
+      await baja();
+    }
+  }, 20000);
 
   it("pedir una capacidad que el transporte no tiene da 422 antes de encolar", async () => {
     await H.runtime.connect(LINE);

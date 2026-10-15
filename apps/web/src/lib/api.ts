@@ -126,6 +126,8 @@ export interface Mensaje {
   media?: Medio | null;
   /** Por qué no hay fichero, cuando debería haberlo. */
   mediaError?: string | null;
+  /** Por qué no salió, cuando `state` es `failed`: lo que dijo el transporte. */
+  failureReason?: string | null;
   /** Reacciones agrupadas por emoji. */
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
   /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */
