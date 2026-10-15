@@ -1237,6 +1237,54 @@ export class EngineRuntime {
     await marcar(guardado.key);
   }
 
+  /**
+   * Vuelve a intentar bajar el fichero de un mensaje que se quedó sin él.
+   *
+   * Antes, un medio que fallaba se quedaba así para siempre: el trabajo se
+   * agotaba y no había forma de pedirlo otra vez, aunque la causa ya se
+   * hubiera arreglado. El nodo original está guardado, así que no hace falta
+   * nada más que volver a encolarlo. Lleva otra clave de idempotencia que el
+   * intento original: con la misma, la cola lo daría por hecho.
+   *
+   * Devuelve `false` si no hay nada que reintentar: ya tiene fichero, o no es
+   * un mensaje con fichero.
+   */
+  async reintentarMedio(lineId: string, messageId: string): Promise<boolean> {
+    const line = await this.#line(lineId);
+    const [fila] = await this.#deps.db
+      .select({
+        id: messageTable.id, providerMessageId: messageTable.providerMessageId,
+        timestamp: messageTable.timestamp, kind: messageTable.kind,
+        mediaKey: messageTable.mediaKey, raw: messageTable.raw,
+      })
+      .from(messageTable)
+      .where(and(eq(messageTable.lineId, lineId), eq(messageTable.id, messageId)))
+      .limit(1);
+    if (!fila) throw new OmniError("not_found", `el mensaje "${messageId}" no existe en esta línea`);
+    if (fila.mediaKey || !MEDIA_KINDS.has(fila.kind) || !fila.providerMessageId || !fila.raw) {
+      return false;
+    }
+
+    await this.#deps.db
+      .update(messageTable).set({ failureReason: null })
+      .where(and(eq(messageTable.lineId, lineId), eq(messageTable.id, messageId)));
+    await this.#deps.queue.enqueue<InboundMediaJob>(
+      INBOUND_MEDIA_QUEUE,
+      {
+        lineId, orgId: line.orgId, messageId: fila.id,
+        providerMessageId: fila.providerMessageId,
+        timestamp: fila.timestamp.getTime(), raw: fila.raw,
+      },
+      {
+        partitionKey: `line:${lineId}`,
+        idempotencyKey: `media:${lineId}:${fila.providerMessageId}:reintento:${this.#now()}`,
+        maxAttempts: 4,
+        backoffMs: 5000,
+      },
+    );
+    return true;
+  }
+
   /** Trae el fichero de un mensaje entrante y lo guarda en el almacén. */
   async #descargarMedio(job: InboundMediaJob): Promise<void> {
     const line = await this.#line(job.lineId);

@@ -957,24 +957,64 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const tipo = messageKind(m);
     if (!["image", "video", "audio", "document", "sticker"].includes(tipo)) return null;
 
-    /*
-     * `reuploadRequest` es lo que salva los medios viejos: si el servidor ya
-     * no tiene el fichero, Baileys pide al remitente que lo vuelva a subir.
-     * Sin eso, cualquier medio de hace unos días se descarga con un 404.
-     */
-    const bytes = await downloadMediaMessage(m, "buffer", {}, {
-      // Baileys escribe por aquí; sin un registro mudo saca ruido por consola
-      // en cada medio que llega.
-      logger: REGISTRO_MUDO,
-      reuploadRequest: socket.updateMediaMessage,
-    });
+    const nodo = nodoDeMedio(m);
 
-    const contenido = m.message;
+    /*
+     * Un canal no cifra sus ficheros: no hay `mediaKey`, y Baileys se niega a
+     * descargar sin ella («Cannot derive from empty media key»). Se piden tal
+     * cual al servidor de medios. Eran las 35 fotos del canal que salían como
+     * «No se pudo descargar».
+     */
+    let bytes: Uint8Array;
+    if (nodo && !nodo.mediaKey && nodo.directPath) {
+      const res = await fetch(`https://${HOST_DE_MEDIOS}${nodo.directPath}`);
+      if (!res.ok) throw new Error(`el servidor de medios respondió ${res.status}`);
+      bytes = new Uint8Array(await res.arrayBuffer());
+    } else {
+      /*
+       * El servidor de donde bajar el fichero.
+       *
+       * Baileys lo saca del campo `url`, y WhatsApp a veces manda ahí un
+       * servidor de relleno sin ruta —«https://a.whatsapp.net», que ni
+       * siquiera existe— en vez de la URL de verdad. Todos los stickers que
+       * llegaban así fallaban con «fetch failed», los cuatro reintentos
+       * contra el mismo sitio. Solo se usa el servidor de `url` cuando es una
+       * URL completa; si no, el de siempre, con la ruta de `directPath`.
+       */
+      const host = hostDeMedio(nodo?.url);
+      const bajar = (h: string) => downloadMediaMessage(m, "buffer", { host: h }, {
+        // Baileys escribe por aquí; sin un registro mudo saca ruido por consola
+        // en cada medio que llega.
+        logger: REGISTRO_MUDO,
+        /*
+         * `reuploadRequest` es lo que salva los medios viejos: si el servidor
+         * ya no tiene el fichero, Baileys pide al remitente que lo vuelva a
+         * subir. Sin eso, cualquier medio de hace unos días da 404.
+         */
+        reuploadRequest: socket.updateMediaMessage,
+      });
+      try {
+        bytes = new Uint8Array(await bajar(host));
+      } catch (e) {
+        /*
+         * Y si falla la RED —no una respuesta del servidor— con un servidor
+         * que no es el de siempre, se intenta una vez con el de siempre. Es
+         * la red de seguridad para el próximo servidor raro que mande
+         * WhatsApp: un 404 sí es una respuesta y no se repite.
+         */
+        const respondio = typeof (e as { status?: unknown })?.status === "number"
+          || typeof (e as { output?: { statusCode?: unknown } })?.output?.statusCode === "number";
+        if (respondio || host === HOST_DE_MEDIOS) throw e;
+        bytes = new Uint8Array(await bajar(HOST_DE_MEDIOS));
+      }
+    }
+
+    const contenido = normalizeMessageContent(m.message) ?? m.message;
     const info =
       contenido.imageMessage ?? contenido.videoMessage ?? contenido.audioMessage ??
       contenido.documentMessage ?? contenido.stickerMessage;
     return {
-      bytes: new Uint8Array(bytes),
+      bytes,
       mimeType: info?.mimetype ?? "application/octet-stream",
       ...(contenido.documentMessage?.fileName
         ? { fileName: contenido.documentMessage.fileName }
@@ -1485,6 +1525,41 @@ export function extractMentions(m: WAMessage): string[] {
   return Array.isArray(lista)
     ? [...new Set(lista.filter((x): x is string => typeof x === "string" && x.includes("@")))]
     : [];
+}
+
+/** El servidor de medios de WhatsApp, el mismo que usa Baileys por defecto. */
+export const HOST_DE_MEDIOS = "mmg.whatsapp.net";
+
+/**
+ * De qué servidor bajar un fichero, a partir de su campo `url`.
+ *
+ * Solo se fía de una URL COMPLETA —servidor y ruta— de WhatsApp. Un servidor
+ * sin ruta («https://a.whatsapp.net») es un relleno que no sirve ficheros: se
+ * vio en 106 stickers, todos sin descargar. Ante la duda, el de siempre.
+ */
+export function hostDeMedio(url: string | null | undefined): string {
+  if (!url) return HOST_DE_MEDIOS;
+  try {
+    const u = new URL(url);
+    const completa = u.pathname.length > 1;
+    const deWhatsApp = u.hostname === "whatsapp.net" || u.hostname.endsWith(".whatsapp.net");
+    return completa && deWhatsApp && u.protocol === "https:" ? u.host : HOST_DE_MEDIOS;
+  } catch {
+    return HOST_DE_MEDIOS;
+  }
+}
+
+/** El nodo del fichero de un mensaje: imagen, vídeo, audio, documento o sticker. */
+function nodoDeMedio(m: WAMessage): {
+  url?: string | null; directPath?: string | null; mediaKey?: unknown;
+} | null {
+  const c = normalizeMessageContent(m.message ?? undefined) as Record<string, unknown> | undefined;
+  if (!c) return null;
+  for (const campo of ["imageMessage", "videoMessage", "audioMessage", "documentMessage", "stickerMessage", "ptvMessage"]) {
+    const n = c[campo];
+    if (n && typeof n === "object") return n as { url?: string; directPath?: string; mediaKey?: unknown };
+  }
+  return null;
 }
 
 /**

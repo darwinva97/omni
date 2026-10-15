@@ -355,6 +355,18 @@ export const COMMANDS: readonly Command[] = [
     }),
   },
   {
+    name: "medio:reintentar",
+    summary: "Volver a intentar bajar el fichero de un mensaje",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/media/retry",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador del mensaje en Omni" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/media/retry`),
+  },
+  {
     name: "presencia:seguir",
     summary: "Estar en línea 90 segundos y ver quién escribe",
     operation: "POST /v1/lines/{lineId}/presence/watch",

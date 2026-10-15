@@ -244,6 +244,37 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
   app.openapi(
     createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/media/retry",
+      tags: ["mensajes"], summary: "Volver a intentar bajar el fichero de un mensaje",
+      description:
+        "Para un mensaje que llegó con foto, vídeo, audio, documento o sticker y se " +
+        "quedó sin el fichero. Se encola otra descarga y, al terminar, llega " +
+        "`message.updated` con el fichero. `queued: false` si no había nada que " +
+        "reintentar: ya lo tiene, o no lleva fichero. `messageId` es el `id` de Omni.",
+      request: { params: lineChat.extend({ messageId: z.string() }) },
+      responses: {
+        202: json(z.object({ data: z.object({ queued: z.boolean() }) }), "encolado"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const { lineId, chatId, messageId } = c.req.valid("param");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("media.retry"), { lineId, chat });
+      const [fila] = await container.dbh.db.select({ chatId: messageTable.chatId })
+        .from(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.id, messageId))).limit(1);
+      // Una clave acotada a un chat no reintenta mensajes de otro por su id.
+      if (!fila || fila.chatId !== chat.value) {
+        throw new OmniError("not_found", "ese mensaje no está en esta conversación");
+      }
+      const queued = await container.runtime.reintentarMedio(lineId, messageId);
+      return c.json({ data: { queued } }, 202);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "post", path: "/v1/lines/{lineId}/presence/watch",
       tags: ["chats"], summary: "Estar en línea un rato y ver quién escribe",
       description:

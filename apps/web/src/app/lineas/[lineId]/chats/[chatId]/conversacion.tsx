@@ -666,6 +666,22 @@ export function Conversacion({
     setConsulta(null);
   };
 
+  /**
+   * Vuelve a pedir un fichero que no se pudo bajar. Pasa a «Descargando…» al
+   * instante y el fichero llega solo por el socket (`message.updated`); si el
+   * servidor dice que no, vuelve el error.
+   */
+  const reintentarMedio = async (m: Mensaje): Promise<void> => {
+    const marcar = (mediaError: string | null) => setMensajes((prev) =>
+      prev.map((x) => (x.id === m.id ? { ...x, mediaError } : x)));
+    marcar(null);
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.id)}/media/retry`,
+      { method: "POST" },
+    ).catch(() => null);
+    if (!r?.ok) marcar(m.mediaError ?? "no se pudo reintentar");
+  };
+
   /** Reacciona a un mensaje. Repetir el mismo emoji la retira, como WhatsApp. */
   const reaccionar = async (m: Mensaje, emoji: string): Promise<void> => {
     if (!m.providerMessageId) return;
@@ -992,7 +1008,10 @@ export function Conversacion({
                       <Encuesta datos={m.poll} />
                     ) : MEDIOS.has(m.kind) ? (
                       <div className="space-y-1">
-                        <Medio kind={m.kind} medio={m.media} error={m.mediaError} />
+                        <Medio
+                          kind={m.kind} medio={m.media} error={m.mediaError}
+                          onReintentar={() => void reintentarMedio(m)}
+                        />
                         {/* El pie, cuando lo trae: en WhatsApp una foto puede
                             venir con texto y perderlo es perder medio mensaje. */}
                         {m.body && (

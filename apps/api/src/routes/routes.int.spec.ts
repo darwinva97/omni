@@ -926,6 +926,55 @@ run("reintento de envíos", () => {
 });
 
 run("medios entrantes e identidad", () => {
+  async function esperarFila<T>(dame: () => Promise<T | null>): Promise<T> {
+    const limite = Date.now() + 8000;
+    for (;;) {
+      const v = await dame();
+      if (v !== null) return v;
+      if (Date.now() > limite) throw new Error("no llegó a tiempo");
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+
+  it("un fichero que no se pudo bajar se puede reintentar, y llega", async () => {
+    /*
+     * Antes un fallo era para siempre: el trabajo se agotaba y no había forma
+     * de pedirlo otra vez, ni después de arreglar la causa. Se simula el
+     * fallo borrando el fichero y dejando el motivo, como queda en la base.
+     */
+    const chat = "51900222444@s.whatsapp.net";
+    await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51900222444", text: "foto", kind: "image" }),
+    });
+    const id = await esperarFila(async () => {
+      const [f] = await dbh.sql`SELECT id FROM message
+        WHERE line_id = ${LINE} AND chat_id = ${chat} AND media_key IS NOT NULL`;
+      return (f?.["id"] as string | undefined) ?? null;
+    });
+    await dbh.sql`UPDATE message SET media_key = NULL,
+      failure_reason = 'no se pudo traer el medio: fetch failed' WHERE id = ${id}`;
+
+    const res = await call(
+      `/v1/lines/${LINE}/chats/${enc(chat)}/messages/${enc(id)}/media/retry`, { method: "POST" });
+    expect(res.status).toBe(202);
+    expect((await j<{ data: { queued: boolean } }>(res)).data.queued).toBe(true);
+
+    const fila = await esperarFila(async () => {
+      const [f] = await dbh.sql`SELECT media_key, failure_reason FROM message WHERE id = ${id}`;
+      return f?.["media_key"] ? f : null;
+    });
+    expect(fila["failure_reason"]).toBeNull();
+
+    // Con el fichero ya puesto no hay nada que reintentar.
+    const otra = await call(
+      `/v1/lines/${LINE}/chats/${enc(chat)}/messages/${enc(id)}/media/retry`, { method: "POST" });
+    expect((await j<{ data: { queued: boolean } }>(otra)).data.queued).toBe(false);
+    // Y por otra conversación no se llega a él.
+    expect((await call(
+      `/v1/lines/${LINE}/chats/${enc("51900000001@s.whatsapp.net")}/messages/${enc(id)}/media/retry`,
+      { method: "POST" })).status).toBe(404);
+  });
+
   it("una foto que llega se descarga, se guarda y se puede descargar", async () => {
     /*
      * WhatsApp no manda el fichero: manda una referencia cifrada. Sin

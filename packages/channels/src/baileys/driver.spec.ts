@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
-  citadoDe, detallesDeMedio, extractMentions, extractPollVote, extractReply, extractText,
+  citadoDe, detallesDeMedio, extractMentions, hostDeMedio, HOST_DE_MEDIOS, extractPollVote, extractReply, extractText,
   messageKind, toNewsletterMetadata,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
@@ -898,5 +898,27 @@ describe("lo que hace falta para citar un fichero", () => {
       },
     });
     expect(detallesDeMedio(citado).seconds).toBe(15);
+  });
+});
+
+describe("de qué servidor bajar un fichero", () => {
+  it("un servidor de relleno sin ruta NO se usa: es lo que dejaba 106 stickers sin bajar", () => {
+    expect(hostDeMedio("https://a.whatsapp.net")).toBe(HOST_DE_MEDIOS);
+    expect(hostDeMedio("https://a.whatsapp.net/")).toBe(HOST_DE_MEDIOS);
+  });
+
+  it("una URL completa de WhatsApp sí, con su servidor", () => {
+    expect(hostDeMedio("https://mmg.whatsapp.net/v/t62.15575-24/1_n.enc?ccb=11-4"))
+      .toBe("mmg.whatsapp.net");
+    expect(hostDeMedio("https://media-lim1-1.cdn.whatsapp.net/v/t62/1_n.enc"))
+      .toBe("media-lim1-1.cdn.whatsapp.net");
+  });
+
+  it("nada que no sea de WhatsApp, ni sin https, ni basura", () => {
+    expect(hostDeMedio("https://evil.example/v/t62/1_n.enc")).toBe(HOST_DE_MEDIOS);
+    expect(hostDeMedio("https://whatsapp.net.evil.example/v/1")).toBe(HOST_DE_MEDIOS);
+    expect(hostDeMedio("http://mmg.whatsapp.net/v/1")).toBe(HOST_DE_MEDIOS);
+    expect(hostDeMedio("no es una url")).toBe(HOST_DE_MEDIOS);
+    expect(hostDeMedio(null)).toBe(HOST_DE_MEDIOS);
   });
 });
