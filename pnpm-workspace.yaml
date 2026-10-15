@@ -3,12 +3,16 @@ packages:
   - "apps/*"
   - "sdks/ts"
 
+# Ningún script de instalación hace falta, y en CI pnpm no instala si hay
+# alguno sin decidir. puppeteer descargaría su propio Chrome: el canal web usa
+# el Chromium del sistema (CHROMIUM_PATH). esbuild, unrs-resolver y baileys
+# traen ya el binario o no lo necesitan; protobufjs solo avisa de versiones.
 allowBuilds:
-  baileys: set this to true or false
-  esbuild: set this to true or false
-  protobufjs: set this to true or false
-  puppeteer: set this to true or false
-  unrs-resolver: set this to true or false
+  baileys: false
+  esbuild: false
+  protobufjs: false
+  puppeteer: false
+  unrs-resolver: false
 
 ignoredBuiltDependencies:
   - esbuild
