@@ -36,6 +36,15 @@ describe("qué puede ver una conexión", () => {
     }))).toBe(false);
   });
 
+  it("un cambio de conversación se filtra por su chat", () => {
+    const b = billete({ allowedChats: ["51999000111@s.whatsapp.net"] });
+    const conversacion = (chatId: string) => evento({
+      event: "conversation.updated", data: { id: "conv-1", chatId, status: "resolved" },
+    });
+    expect(visibleFor(b, conversacion("51999000111@s.whatsapp.net"))).toBe(true);
+    expect(visibleFor(b, conversacion("51900000000@s.whatsapp.net"))).toBe(false);
+  });
+
   it("un evento sin chat identificable NO se entrega a una credencial acotada", () => {
     // El estado de la sesión no pertenece a ningún chat. En la duda, no se
     // enseña: es el mismo criterio que en el guard REST.

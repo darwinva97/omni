@@ -1,9 +1,12 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, RuleInput, RulePatch, parseAddress } from "@omni/shared";
 import { authorize, route as routeOf } from "@omni/core";
-import { automationRuleTable, automationRunTable, conversationTable } from "@omni/db";
+import {
+  automationRuleTable, automationRunTable, conversationTable, lineTable, orgMemberTable,
+} from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
+import { presentarConversacion } from "../crm/conversaciones.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
 
@@ -14,7 +17,7 @@ import { errors, json, body } from "./shared.js";
  * conversaciones reales en cuanto se pulsa "crear" asusta con razón: encender
  * es una decisión aparte.
  */
-const ConversationSchema = z.object({
+export const ConversationSchema = z.object({
   id: z.string(), lineId: z.string(), chatId: z.string(),
   status: z.string(), priority: z.string(),
   assigneeId: z.string().nullable(), subject: z.string().nullable(),
@@ -28,15 +31,7 @@ const RuleSchema = z.object({
   priority: z.number(), enabled: z.boolean(), lineId: z.string().nullable(),
 }).openapi("AutomationRule");
 
-const presentarConv = (c: typeof conversationTable.$inferSelect) => ({
-  id: c.id, lineId: c.lineId, chatId: c.chatId,
-  status: c.status, priority: c.priority,
-  assigneeId: c.assigneeId, subject: c.subject,
-  openedAt: c.openedAt.toISOString(),
-  lastMessageAt: c.lastMessageAt?.toISOString() ?? null,
-  firstReplyAt: c.firstReplyAt?.toISOString() ?? null,
-  resolvedAt: c.resolvedAt?.toISOString() ?? null,
-});
+const presentarConv = presentarConversacion;
 
 const presentarRegla = (r: typeof automationRuleTable.$inferSelect) => ({
   id: r.id, name: r.name, trigger: r.trigger,
@@ -112,26 +107,97 @@ export function registerCrmRoutes(app: OpenAPIHono<ApiEnv>, container: Container
         lineId: conv.lineId, chat: parseAddress(conv.chatId),
       });
 
-      const actualizada = await db.update(conversationTable)
-        .set({
-          ...(patch.status ? { status: patch.status } : {}),
-          ...(patch.priority ? { priority: patch.priority } : {}),
-          ...(patch.assigneeId !== undefined ? { assigneeId: patch.assigneeId } : {}),
-          ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
-          ...(patch.snoozedUntil !== undefined
-            ? { snoozedUntil: patch.snoozedUntil ? new Date(patch.snoozedUntil) : null }
-            : {}),
-          // Resolverla deja constancia de cuándo; reabrirla la borra, porque
-          // una fecha de resolución en una conversación abierta es una mentira.
-          ...(patch.status === "resolved" ? { resolvedAt: new Date() } : {}),
-          ...(patch.status && patch.status !== "resolved" ? { resolvedAt: null } : {}),
-          updatedAt: new Date(),
-        })
-        .where(eq(conversationTable.id, conversationId))
-        .returning();
-      return c.json({ data: presentarConv(actualizada[0]!) }, 200);
+      if (patch.assigneeId) await exigirMiembro(patch.assigneeId, principal.orgId);
+
+      /*
+       * Reabrir una vieja cuando el cliente ya abrió otra chocaría con el
+       * índice de «una abierta por chat» y salía un 500. Se dice qué pasa: la
+       * que hay que atender es la nueva.
+       */
+      if (conv.status === "resolved" && patch.status && patch.status !== "resolved") {
+        const viva = await container.conversaciones.viva(conv.lineId, conv.chatId);
+        if (viva && viva.id !== conv.id) {
+          throw new OmniError("conflict", "ese chat ya tiene otra conversación abierta", {
+            openConversationId: viva.id,
+          });
+        }
+      }
+
+      const actualizada = await container.conversaciones.cambiar(conversationId, {
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.priority ? { priority: patch.priority } : {}),
+        ...(patch.assigneeId !== undefined ? { assigneeId: patch.assigneeId } : {}),
+        ...(patch.subject !== undefined ? { subject: patch.subject } : {}),
+        ...(patch.snoozedUntil !== undefined
+          ? { snoozedUntil: patch.snoozedUntil ? new Date(patch.snoozedUntil) : null }
+          : {}),
+      });
+      return c.json({ data: presentarConv(actualizada!) }, 200);
     },
   );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/conversations", tags: ["conversaciones"],
+      summary: "Abrir la conversación de un chat, o devolver la que ya está abierta",
+      description:
+        "Para atender un chat que todavía no tiene conversación —uno anterior a que " +
+        "existieran, o uno al que aún no ha escrito nadie— sin esperar a su próximo " +
+        "mensaje. Si ya hay una abierta, se devuelve esa: nunca hay dos. `assigneeId` " +
+        "y `status`, si vienen, se aplican a la que resulte.",
+      request: {
+        ...body(z.object({
+          lineId: z.string(),
+          chatId: z.string(),
+          assigneeId: z.string().nullable().optional(),
+          status: z.enum(["open", "pending", "snoozed", "resolved"]).optional(),
+        })),
+      },
+      responses: { 200: json(z.object({ data: ConversationSchema }), "ok"), ...errors },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const input = c.req.valid("json");
+      const chat = parseAddress(input.chatId);
+      await authorize(principal, routeOf("conversation.update"), { lineId: input.lineId, chat });
+
+      // La línea tiene que ser de esta organización: si no, se abriría un
+      // expediente ajeno con solo conocer su identificador.
+      const linea = await db.select({ id: lineTable.id }).from(lineTable)
+        .where(and(eq(lineTable.id, input.lineId), eq(lineTable.orgId, principal.orgId)))
+        .limit(1);
+      if (!linea[0]) throw new OmniError("not_found", "esa línea no existe");
+      if (input.assigneeId) await exigirMiembro(input.assigneeId, principal.orgId);
+
+      const { conv } = await container.conversaciones.abrirOEncontrar(
+        principal.orgId, input.lineId, chat.value, new Date(),
+      );
+      const cambio = {
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
+      };
+      const final = Object.keys(cambio).length > 0
+        ? await container.conversaciones.cambiar(conv.id, cambio)
+        : conv;
+      return c.json({ data: presentarConv(final!) }, 200);
+    },
+  );
+
+  /**
+   * Solo se asigna a alguien del equipo.
+   *
+   * La columna apunta a cualquier cuenta, y sin esto una conversación podía
+   * quedar en manos de alguien de otra organización: invisible para todos,
+   * porque nadie del equipo la vería en «Míos».
+   */
+  async function exigirMiembro(userId: string, orgId: string): Promise<void> {
+    const filas = await db.select({ userId: orgMemberTable.userId }).from(orgMemberTable)
+      .where(and(eq(orgMemberTable.userId, userId), eq(orgMemberTable.orgId, orgId)))
+      .limit(1);
+    if (!filas[0]) {
+      throw new OmniError("validation_failed", "esa persona no es del equipo", { assigneeId: userId });
+    }
+  }
 
   // ------------------------------------------------------------ reglas
 

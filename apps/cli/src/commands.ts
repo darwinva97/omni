@@ -994,6 +994,25 @@ export const COMMANDS: readonly Command[] = [
     }),
   },
   {
+    name: "conversacion:abrir",
+    summary: "Abrir la conversación de un chat, o ver la que ya está abierta",
+    operation: "POST /v1/conversations",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    flags: [
+      { name: "responsable", description: "Identificador de la persona" },
+      { name: "estado", description: "open, pending, snoozed o resolved" },
+    ],
+    run: (c, a) => c.request("POST", "/v1/conversations", {
+      lineId: req(a, 0, "linea"),
+      chatId: req(a, 1, "chat"),
+      ...(flag(a, "responsable") ? { assigneeId: flag(a, "responsable") } : {}),
+      ...(flag(a, "estado") ? { status: flag(a, "estado") } : {}),
+    }),
+  },
+  {
     name: "automatizaciones",
     summary: "Reglas de la organización, en el orden en que se ejecutan",
     operation: "GET /v1/automations",

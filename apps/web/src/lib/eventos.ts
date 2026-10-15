@@ -50,7 +50,8 @@ export function useEventos(lineId: string): {
             type: "subscribe",
             // `presence.*`: quién escribe o graba. Sin él, el «escribiendo…»
             // llegaba al motor y no salía de ahí.
-            events: ["message.*", "chat.*", "session.*", "presence.*"],
+            // `conversation.*`: quién lleva cada chat y si está resuelto.
+            events: ["message.*", "chat.*", "session.*", "presence.*", "conversation.*"],
             lines: [lineId],
           }));
         };

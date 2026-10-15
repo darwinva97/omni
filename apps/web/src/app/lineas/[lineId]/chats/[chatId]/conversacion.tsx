@@ -36,6 +36,9 @@ import {
 } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 import { guardarBorrador, leerBorrador, type Borrador } from "@/lib/borradores";
+import { ControlesDeAtencion } from "@/componentes/atencion";
+import { useEquipo } from "@/lib/equipo";
+import type { Conversacion as Atencion } from "@/lib/api";
 
 /** Quienes han escrito en el hilo cargado, una vez cada uno. */
 function quienesEscribieron(mensajes: readonly Mensaje[]): Participante[] {
@@ -415,6 +418,28 @@ export function Conversacion({
       }];
     });
   }), [chat, suscribir]);
+
+  /*
+   * Quién lleva este chat y en qué estado. Se sigue en vivo: si otra persona
+   * se lo asigna o lo resuelve desde su pestaña, aquí se ve al momento.
+   */
+  const { yo, miembros } = useEquipo();
+  // Atada a SU chat, como los participantes: al cambiar de conversación, la
+  // del anterior deja de valer sin tener que borrarla a mano.
+  const [atencionDe, setAtencionDe] = useState<{ chat: string; conv: Atencion | null } | null>(null);
+  const atencion = atencionDe?.chat === chat ? atencionDe.conv : info?.conversation ?? null;
+  const setAtencion = useCallback(
+    (conv: Atencion | null) => setAtencionDe({ chat, conv }), [chat]);
+  useEffect(() => suscribir((evento, data) => {
+    if (evento !== "conversation.updated") return;
+    const c = data as unknown as Atencion;
+    if (c.chatId !== chat) return;
+    setAtencionDe((previa) => {
+      const actual = previa?.chat === chat ? previa.conv : info?.conversation ?? null;
+      // La resuelta de antes no tapa la que se acaba de abrir.
+      return { chat, conv: actual && actual.id !== c.id && actual.openedAt > c.openedAt ? actual : c };
+    });
+  }), [chat, suscribir, info]);
 
   const yaColocado = useRef(false);
   useEffect(() => {
@@ -1080,6 +1105,17 @@ export function Conversacion({
               {vivo?.texto ?? detalleFijo}
             </span>
           </button>
+
+          {/* Un grupo también se atiende: quién lo lleva y si está resuelto. */}
+          <ControlesDeAtencion
+            lineId={lineId}
+            chat={chat}
+            conv={atencion}
+            miembros={miembros}
+            yo={yo?.id ?? null}
+            onCambio={setAtencion}
+            onError={setProblema}
+          />
 
           <span
             title={conectado ? "Recibiendo en vivo" : "Reconectando"}

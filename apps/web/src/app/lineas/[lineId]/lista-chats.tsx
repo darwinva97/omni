@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Chat, Linea, Lista } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
 import { conNombres, cuando, resumen } from "@/lib/formato";
@@ -23,6 +23,14 @@ import { Silenciar } from "@/componentes/silenciar";
 import {
   avisar, prepararSonido, silenciado, usePreferencias, useTituloConPendientes,
 } from "@/lib/notificaciones";
+import type { Conversacion } from "@/lib/api";
+import { useEquipo } from "@/lib/equipo";
+import {
+  cambiarAtencion, conConversacion, enFiltro, nombreDeResponsable,
+  type CambioDeAtencion, type FiltroDeAtencion,
+} from "@/lib/atencion";
+import { Responsable } from "@/componentes/atencion";
+import { IconoReabrir, IconoResuelta } from "@/componentes/iconos";
 
 /**
  * La columna de conversaciones.
@@ -89,6 +97,12 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   }, [linea.id, abierto]);
 
   const menu = useMenu();
+  /*
+   * Quién lleva cada chat. El equipo se pide una vez y los cambios llegan por
+   * el socket, sea quien sea quien los haga: una persona o una regla.
+   */
+  const { yo, miembros } = useEquipo();
+  const yoId = yo?.id ?? null;
   const [sobre, setSobre] = useState<Chat | null>(null);
   const [silenciando, setSilenciando] = useState<Chat | null>(null);
   const [ajustes, setAjustes] = useState(false);
@@ -101,7 +115,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
    * propia. Filtran en el navegador sobre lo ya cargado: cambiar de pestaña
    * es instantáneo y no corta el socket.
    */
-  type Pestana = "todos" | "no-leidos" | "grupos" | `lista:${string}`;
+  type Pestana = "todos" | "no-leidos" | "grupos" | FiltroDeAtencion | `lista:${string}`;
   const [pestana, setPestana] = useState<Pestana>("todos");
   const [verArchivados, setVerArchivados] = useState(false);
   const [listas, setListas] = useState<Lista[]>([]);
@@ -202,8 +216,20 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
       return r.ok;
     };
     const dir = encodeURIComponent(c.address);
+    const viva = c.conversation && c.conversation.status !== "resolved" ? c.conversation : null;
+    const mio = yo !== null && viva?.assigneeId === yo.id;
 
-    return [
+    const opciones: (OpcionMenu | null)[] = [
+      // Lo de atender, primero: es lo que más se hace desde aquí sin abrir
+      // la conversación —quedársela, o darla por terminada—.
+      ...(yo ? [mio
+        ? { texto: "Dejar de llevarla", Icono: IconoCerrar, onSelect: () => atender(c, { assigneeId: null }) }
+        : { texto: "Asignarme", onSelect: () => atender(c, { assigneeId: yo.id }) }] : []),
+      viva
+        ? { texto: "Resolver", Icono: IconoResuelta, onSelect: () => atender(c, { status: "resolved" }) }
+        : c.conversation
+          ? { texto: "Reabrir", Icono: IconoReabrir, onSelect: () => atender(c, { status: "open" }) }
+          : null,
       silenciado(c.mutedUntil)
         ? {
             texto: "Reactivar",
@@ -296,6 +322,29 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         },
       },
     ];
+    return opciones.filter((o): o is OpcionMenu => o !== null);
+  };
+
+  useEffect(() => suscribir((evento, data) => {
+    if (evento !== "conversation.updated") return;
+    setChats((prev) => conConversacion(prev, data as unknown as Conversacion));
+  }), [suscribir]);
+
+  /** Asignar o resolver desde el menú: se ve ya, y se deshace si falla. */
+  const atender = async (c: Chat, cambio: CambioDeAtencion): Promise<void> => {
+    const antes = c.conversation ?? null;
+    if (antes) {
+      setChats((prev) => prev.map((x) => x.address !== c.address ? x : {
+        ...x, conversation: { ...antes, ...cambio },
+      }));
+    }
+    const r = await cambiarAtencion(linea.id, c.address, antes, cambio);
+    if ("error" in r) {
+      setChats((prev) => prev.map((x) => (x.address === c.address ? { ...x, conversation: antes } : x)));
+      alert(r.error);
+      return;
+    }
+    setChats((prev) => prev.map((x) => (x.address === c.address ? { ...x, conversation: r.conv } : x)));
   };
 
   useEffect(() => suscribir(async (evento, data) => {
@@ -436,12 +485,15 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     const base = conversaciones.filter((c) => Boolean(c.archived) === verArchivados);
     if (pestana === "no-leidos") return base.filter((c) => c.unreadCount > 0);
     if (pestana === "grupos") return base.filter((c) => c.kind === "group");
+    if (pestana === "mios" || pestana === "sin-asignar" || pestana === "resueltos") {
+      return base.filter((c) => enFiltro(c, pestana, yoId));
+    }
     if (pestana.startsWith("lista:")) {
       const id = pestana.slice("lista:".length);
       return base.filter((c) => c.labelIds?.includes(id));
     }
     return base;
-  }, [conversaciones, busqueda, verArchivados, pestana]);
+  }, [conversaciones, busqueda, verArchivados, pestana, yoId]);
 
   /** Guarda las listas de una conversación y las refleja sin recargar. */
   const fijarListas = async (c: Chat, ids: string[]): Promise<void> => {
@@ -499,10 +551,18 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     if (pestana === `lista:${l.id}`) setPestana("todos");
   };
 
+  /*
+   * Las de WhatsApp y, entre ellas, las de atender: «Míos» justo detrás de
+   * «No leídos», que es lo segundo que se mira al llegar, y «Resueltos» al
+   * final, que es donde se busca lo ya cerrado.
+   */
   const PESTANAS_FIJAS = [
     { id: "todos", texto: "Todos" },
     { id: "no-leidos", texto: "No leídos" },
+    { id: "mios", texto: "Míos" },
+    { id: "sin-asignar", texto: "Sin asignar" },
     { id: "grupos", texto: "Grupos" },
+    { id: "resueltos", texto: "Resueltos" },
   ] as const;
 
   return (
@@ -711,6 +771,12 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                   ? "Todo leído."
                   : pestana === "grupos"
                     ? "No hay grupos."
+                  : pestana === "mios"
+                    ? "No llevas ninguna conversación abierta. Asígnatela desde su cabecera o su menú."
+                  : pestana === "sin-asignar"
+                    ? "Todas las conversaciones abiertas tienen a alguien."
+                  : pestana === "resueltos"
+                    ? "Nada resuelto todavía."
                     : pestana.startsWith("lista:")
                       ? "Esta lista está vacía. Añade conversaciones desde su menú: clic derecho o los tres puntos."
                       : "Sin conversaciones todavía."}
@@ -788,6 +854,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
                             </span>
                           );
                         })()}
+                        <MarcaDeAtencion chat={c} miembros={miembros} yo={yoId} />
                         {c.unreadCount > 0 && (
                           <span
                             className={`flex min-w-5 shrink-0 justify-center rounded-full px-1.5 text-[11px] leading-5 font-semibold group-hover/fila:hidden ${
@@ -906,6 +973,36 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   );
 }
 
+/**
+ * Quién lleva el chat, en la fila: sus iniciales, o un visto si está resuelta.
+ *
+ * Sin responsable no se pinta nada: es lo normal en un chat que acaba de
+ * llegar, y una marca de «nadie» en cada fila sería ruido en vez de aviso.
+ */
+function MarcaDeAtencion({
+  chat, miembros, yo,
+}: {
+  chat: Chat;
+  miembros: ReturnType<typeof useEquipo>["miembros"];
+  yo: string | null;
+}) {
+  const c = chat.conversation;
+  if (!c) return null;
+  if (c.status === "resolved") {
+    return (
+      <IconoResuelta titulo="Resuelta" className="size-4 shrink-0 text-(--color-apagado)" />
+    );
+  }
+  if (!c.assigneeId) return null;
+  const quien = nombreDeResponsable(c.assigneeId, miembros, yo) ?? "";
+  const nombre = miembros.find((m) => m.userId === c.assigneeId)?.name ?? quien;
+  return (
+    <span title={quien === "Tú" ? "La llevas tú" : `La lleva ${quien}`} className="shrink-0">
+      <Responsable id={c.assigneeId} nombre={nombre} mio={c.assigneeId === yo} />
+    </span>
+  );
+}
+
 /** Una pestaña de filtro. Con color, es una lista propia. */
 function Pastilla({
   activa, onClick, onContextMenu, color, children,
@@ -916,10 +1013,18 @@ function Pastilla({
   color?: string | undefined;
   children: React.ReactNode;
 }) {
+  const boton = useRef<HTMLButtonElement>(null);
+  // Solo al ELEGIRLA: en cada repintado movería la tira mientras se desplaza.
+  useEffect(() => {
+    if (activa) boton.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activa]);
   return (
     <button
       type="button"
       role="tab"
+      // La elegida se trae a la vista: con siete pestañas en 22rem, «Resueltos»
+      // queda fuera, y una pestaña activa que no se ve no dice dónde se está.
+      ref={boton}
       aria-selected={activa}
       onClick={onClick}
       onContextMenu={onContextMenu}
