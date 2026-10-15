@@ -1532,6 +1532,67 @@ run("organización y limpieza", () => {
     expect(de("FOTO-3")?.senderAvatarUrl).toBeNull();
   });
 
+  it("una edición cifrada cambia el texto del original y no sale como mensaje", async () => {
+    /*
+     * Brenda editó un mensaje en un grupo y salía «Mensaje no compatible»
+     * debajo del original, que seguía con el texto viejo. Se cifra aquí con la
+     * misma receta que usa WhatsApp —comprobada contra 50 ediciones reales—,
+     * con el protobuf escrito a mano: Message{12: ProtocolMessage{2: 14,
+     * 14: Message{1: texto}}}.
+     */
+    const { createCipheriv, hkdfSync } = await import("node:crypto");
+    const grupo = "120363000000000444@g.us";
+    const autora = "172877433311483@lid";
+    const id = "EDIT-ORIG-1";
+    const secreto = Buffer.alloc(32, 7);
+
+    await container.runtime.publish("message.received", LINE, {
+      key: { id, remoteJid: grupo, participant: autora }, kind: "text",
+      text: "Buen día equipo", timestamp: Date.now(),
+      raw: { message: {
+        conversation: "Buen día equipo",
+        messageContextInfo: { messageSecret: secreto.toString("base64") },
+      } },
+    });
+
+    const campo = (n: number, b: Buffer) => Buffer.concat([Buffer.from([(n << 3) | 2, b.length]), b]);
+    const nuevo = "Buen día equipo, estoy en el piso 15";
+    const editado = campo(1, Buffer.from(nuevo));
+    const pm = Buffer.concat([Buffer.from([(2 << 3) | 0, 14]), campo(14, editado)]);
+    const plano = campo(12, pm);
+    const info = Buffer.concat([Buffer.from(id), Buffer.from(autora), Buffer.from(autora),
+      Buffer.from("Message Edit")]);
+    const clave = Buffer.from(hkdfSync("sha256", secreto, Buffer.alloc(0), info, 32));
+    const iv = Buffer.alloc(12, 3);
+    const c = createCipheriv("aes-256-gcm", clave, iv);
+    const cuerpo = Buffer.concat([c.update(plano), c.final(), c.getAuthTag()]);
+
+    const vivos: Record<string, unknown>[] = [];
+    container.runtime.onEvent((e) => {
+      if (e.event === "message.updated") vivos.push(e.data as Record<string, unknown>);
+    });
+    await container.runtime.publish("message.updated", LINE, {
+      key: { id, remoteJid: grupo, participant: autora, fromMe: false },
+      author: autora, timestamp: Date.now(),
+      cifrado: { encPayload: cuerpo.toString("base64"), encIv: iv.toString("base64"), tipo: "MESSAGE_EDIT" },
+    });
+
+    const m = await esperarValor(async () => {
+      const { data } = await j<{ data: { providerMessageId: string | null; body: string | null;
+        editedAt: string | null; kind: string }[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/messages?limit=10`));
+      const o = data.find((x) => x.providerMessageId === id);
+      return o?.editedAt ? { o, data } : null;
+    }, "la edición se aplicó");
+    expect(m.o.body).toBe(nuevo);
+    expect(m.data.filter((x) => x.kind === "unknown")).toHaveLength(0);
+    expect(m.data).toHaveLength(1);
+    // Lo que sale en vivo ya trae el texto, y nada cifrado.
+    const vivo = vivos.find((v) => (v["key"] as { id?: string })?.id === id);
+    expect(vivo?.["text"]).toBe(nuevo);
+    expect(vivo?.["cifrado"]).toBeUndefined();
+  });
+
   it("los votos de una encuesta se cuentan, y no aparecen como mensajes", async () => {
     /*
      * El camino completo y con cifrado REAL, que es la única forma de probar

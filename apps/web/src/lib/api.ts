@@ -130,6 +130,8 @@ export interface Mensaje {
   reacciones?: { emoji: string; cuantas: number; mia: boolean }[];
   /** Retirado por quien lo escribió. El cuerpo llega, pero no se enseña. */
   deleted?: boolean;
+  /** Si se editó, cuándo. El cuerpo ya es el texto nuevo. */
+  editedAt?: string | null;
   /**
    * A quién menciona, ya resuelto por el servidor.
    *

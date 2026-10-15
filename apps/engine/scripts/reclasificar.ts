@@ -9,7 +9,7 @@
 import { createDatabase } from "@omni/db";
 import {
   messageKind, extractText, esVacio, extractReply, extractPollVote, encuestaDe,
-  descifrarVoto, extractMentions,
+  descifrarVoto, extractMentions, descifrarEdicion, extractSecretEdit,
 } from "@omni/channels";
 
 const { sql, close } = createDatabase(process.argv[2]!);
@@ -178,6 +178,59 @@ for (const f of sinMenciones) {
   menciones++;
 }
 
+/*
+ * Quinta pasada: las ediciones cifradas que se guardaron como mensaje.
+ *
+ * Salían como «Mensaje no compatible» debajo del original, que seguía con el
+ * texto viejo. Se abren con el secreto del original y se le aplica el texto
+ * nuevo; la fila de la edición se borra DESPUÉS de guardar.
+ *
+ * Las que apuntan a un mensaje que no está aquí no se pueden abrir —el secreto
+ * vive en ese original— ni tienen a qué aplicarse: son ediciones de algo que
+ * esta línea nunca guardó. Esas también se van: no hay nada legible que perder.
+ */
+const ediciones = await sql`
+  SELECT id, line_id, timestamp, raw FROM message
+  WHERE kind = 'unknown' AND raw->'raw'->'message' ? 'secretEncryptedMessage'`;
+let editadas = 0, edicionesHuerfanas = 0, edicionesIlegibles = 0;
+for (const f of ediciones) {
+  const e = extractSecretEdit((f.raw as { raw?: unknown }).raw as never);
+  if (!e) { edicionesIlegibles++; continue; }
+  const [orig] = await sql`
+    SELECT id, timestamp, raw->'raw'->'message'->'messageContextInfo'->>'messageSecret' AS secreto
+    FROM message WHERE line_id = ${f.line_id} AND provider_message_id = ${e.key.id} LIMIT 1`;
+  if (!orig?.secreto) {
+    await sql`DELETE FROM message WHERE id = ${f.id} AND timestamp = ${f.timestamp}`;
+    edicionesHuerfanas++;
+    continue;
+  }
+  try {
+    let abierta: ReturnType<typeof descifrarEdicion> | null = null;
+    let ultimo: unknown = null;
+    for (const author of [e.author, ...e.alternativas]) {
+      try {
+        abierta = descifrarEdicion(e.cifrado, {
+          messageId: e.key.id, author, secret: orig.secreto as string,
+        });
+        break;
+      } catch (err) { ultimo = err; }
+    }
+    if (!abierta) throw ultimo;
+    if (abierta.text === null) { edicionesIlegibles++; continue; }
+    await sql`
+      UPDATE message SET body = ${abierta.text},
+        edited_at = ${new Date(abierta.editedAt ?? e.timestamp).toISOString()}::timestamptz
+      WHERE id = ${orig.id} AND timestamp = ${orig.timestamp}`;
+  } catch (err) {
+    // Se dice POR QUÉ: un fallo mudo aquí costó media hora de suposiciones.
+    if (edicionesIlegibles === 0) console.error("edición no aplicada:", err);
+    edicionesIlegibles++;
+    continue;
+  }
+  await sql`DELETE FROM message WHERE id = ${f.id} AND timestamp = ${f.timestamp}`;
+  editadas++;
+}
+
 type Proto = { key?: { id?: string }; type?: number | string };
 
 console.log({
@@ -189,5 +242,6 @@ console.log({
   // vez de desaparecer. Lo que no se sabe leer no se tira.
   ilegiblesConservados: ilegibles,
   menciones, revisadosParaMencion: sinMenciones.length,
+  editadas, edicionesHuerfanas, edicionesIlegiblesConservadas: edicionesIlegibles,
 });
 await close();

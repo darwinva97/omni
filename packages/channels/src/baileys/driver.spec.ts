@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
   BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
-  citadoDe, detallesDeMedio, extractMentions, hostDeMedio, HOST_DE_MEDIOS, extractPollVote, extractReply, extractText,
+  citadoDe, descifrarEdicion, detallesDeMedio, extractMentions, extractSecretEdit, hostDeMedio, HOST_DE_MEDIOS, extractPollVote, extractReply, extractText,
   messageKind, toNewsletterMetadata,
 } from "./driver.js";
 import { createFakeSocket, type FakeSocketControl } from "./fake-socket.js";
@@ -920,5 +920,90 @@ describe("de qué servidor bajar un fichero", () => {
     expect(hostDeMedio("http://mmg.whatsapp.net/v/1")).toBe(HOST_DE_MEDIOS);
     expect(hostDeMedio("no es una url")).toBe(HOST_DE_MEDIOS);
     expect(hostDeMedio(null)).toBe(HOST_DE_MEDIOS);
+  });
+});
+
+describe("ediciones cifradas", () => {
+  /*
+   * Una edición REAL, sacada de un grupo, con el secreto de su mensaje
+   * original. La receta se dedujo de 50 ediciones reales: si cambiara, esta
+   * prueba es la que lo diría —el GCM no abre con una clave casi buena—.
+   */
+  const REAL = {"id": "3EB01DDC7B8BD21BAACE51", "author": "13061666689054@lid", "secret": "lGoYh9lNLOd82l33ZR+b2CCCHrbrMqqePxigZIgBTPQ=", "encPayload": "KlRxAT2oYUrX1GWa7iyw/Akw46K2T5jNttsqu7FxbH1DGS8qHGfMv9aM1J2n1MHxYHd1dCbI1YAhZ/UMbrpCnNdIK29HERjvAG3hfegllrXjegm76N5SpUm/ViiRiwauZgEbgiH+n/9btHyhQV8+jbN9uphCD5p3wpnITmS3Ice1TtsO8MLc3aKzD3pw71EHPNB+UqbnRYCZLDsL490b9Z12Yn9DBJaCNvo=", "encIv": "ZkRYE4iWgYoXkLhh"};
+
+  it("abre la edición y devuelve el texto nuevo", () => {
+    const r = descifrarEdicion(
+      { encPayload: REAL.encPayload, encIv: REAL.encIv },
+      { messageId: REAL.id, author: REAL.author, secret: REAL.secret },
+    );
+    expect(r.text).toBe("ya tuvimos un vecino regidor q al mes presumia su camioneta");
+    // La fecha de la edición, como número de verdad: venía como `Long` de
+    // protobuf y salía NaN, que hacía fallar el guardado de toda edición real.
+    expect(Number.isFinite(r.editedAt)).toBe(true);
+    expect(r.editedAt).toBeGreaterThan(1_700_000_000_000);
+  });
+
+  it("con otra dirección no abre: lanza, no inventa", () => {
+    expect(() => descifrarEdicion(
+      { encPayload: REAL.encPayload, encIv: REAL.encIv },
+      { messageId: REAL.id, author: "51900000000@s.whatsapp.net", secret: REAL.secret },
+    )).toThrow();
+  });
+
+  it("una edición no es un mensaje: sale como cambio del original", () => {
+    const e = extractSecretEdit({
+      key: { id: "EDIT1", remoteJid: "120@g.us", participant: REAL.author, fromMe: false },
+      messageTimestamp: 1700000000,
+      message: {
+        messageContextInfo: {},
+        secretEncryptedMessage: {
+          targetMessageKey: { id: REAL.id, fromMe: true, remoteJid: "120@g.us" },
+          encPayload: REAL.encPayload, encIv: REAL.encIv, secretEncType: "MESSAGE_EDIT",
+        },
+      },
+    } as never);
+    expect(e?.key).toMatchObject({ id: REAL.id, remoteJid: "120@g.us" });
+    expect(e?.author).toBe(REAL.author);
+    expect(e?.cifrado.tipo).toBe("MESSAGE_EDIT");
+  });
+
+  it("la dirección del sobre TAL CUAL va primero, aunque traiga el teléfono", () => {
+    // Con el teléfono primero —lo que hace `getKeyAuthor`— 23 de 50 ediciones
+    // reales no abrían.
+    const e = extractSecretEdit({
+      key: { id: "E", remoteJid: "120@g.us", participant: "43276124028961@lid",
+        participantAlt: "51926611850@s.whatsapp.net", fromMe: false },
+      message: { secretEncryptedMessage: {
+        targetMessageKey: { id: "O" }, encPayload: "AA==", encIv: "AA==", secretEncType: 2,
+      } },
+    } as never);
+    expect(e?.author).toBe("43276124028961@lid");
+    expect(e?.alternativas).toContain("51926611850@s.whatsapp.net");
+  });
+
+  it("lo editado desde el propio teléfono: nuestro participante, sin dispositivo", () => {
+    const e = extractSecretEdit({
+      key: { id: "E", remoteJid: "120@g.us", participant: "137237811437725@lid", fromMe: true },
+      message: { secretEncryptedMessage: {
+        targetMessageKey: { id: "O", fromMe: true }, encPayload: "AA==", encIv: "AA==",
+        secretEncType: "MESSAGE_EDIT",
+      } },
+    } as never, "51936854713:25@s.whatsapp.net");
+    expect(e?.author).toBe("137237811437725@lid");
+    expect(e?.alternativas).toContain("51936854713@s.whatsapp.net");
+  });
+
+  it("un mensaje normal no es una edición", () => {
+    expect(extractSecretEdit({ key: { id: "X", remoteJid: "a@lid" }, message: { conversation: "hola" } } as never))
+      .toBeNull();
+  });
+
+  it("fijar un mensaje y compartir el historial son avisos con su texto", () => {
+    const k = (message: unknown) => messageKind({ message } as never);
+    expect(k({ pinInChatMessage: { type: "PIN_FOR_ALL" } })).toBe("notice");
+    expect(extractText({ pinInChatMessage: { type: "PIN_FOR_ALL" } })).toBe("fijó un mensaje");
+    expect(extractText({ pinInChatMessage: { type: 2 } })).toBe("dejó de fijar un mensaje");
+    expect(k({ messageHistoryNotice: {} })).toBe("notice");
+    expect(esVacio({ message: { messageContextInfo: {}, messageHistoryBundle: {} } } as never)).toBe(true);
   });
 });

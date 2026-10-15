@@ -22,6 +22,7 @@ export function mismoRemitente(a: DeTanda, b: DeTanda, esGrupo: boolean): boolea
 
 /** Lo que este transporte no supo leer: va centrado, fuera de toda tanda. */
 export function esAvisoDe(m: DeTanda): boolean {
+  if (m.kind === "notice") return true;
   return (m.kind === "system" || m.kind === "unknown") && !m.body && !m.deleted;
 }
 

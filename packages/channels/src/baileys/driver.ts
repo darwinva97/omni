@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createDecipheriv, createHash, hkdfSync } from "node:crypto";
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
   type Contact as Contacto,
   Browsers, decryptPollVote, DisconnectReason, downloadMediaMessage,
-  fetchLatestBaileysVersion, getContentType, getKeyAuthor, normalizeMessageContent,
+  fetchLatestBaileysVersion, getContentType, getKeyAuthor, normalizeMessageContent, proto,
   type WAMessage, type WASocket,
 } from "baileys";
 import {
@@ -525,8 +525,25 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * falta para abrirlo, y lo abre quien sí puede.
      */
     const estado = line.status;
-    const voto = extractPollVote(
-      m, estado.state === "connected" ? estado.self.value : undefined);
+    const propia = estado.state === "connected" ? estado.self.value : undefined;
+
+    /*
+     * Una edición cifrada NO es un mensaje.
+     *
+     * En los grupos y en los chats con direccionamiento por LID, WhatsApp
+     * manda las ediciones cifradas con el secreto del mensaje original. Se
+     * guardaban como mensaje propio y salía «Mensaje no compatible» debajo
+     * del original, que seguía con el texto viejo. Aquí no se abre —la clave
+     * está en el original, que vive en la base— y se entrega como cambio del
+     * mensaje al que apunta.
+     */
+    const edicion = extractSecretEdit(m, propia);
+    if (edicion) {
+      await this.emit("message.updated", line.orgId, lineId, edicion);
+      return;
+    }
+
+    const voto = extractPollVote(m, propia);
     if (voto) {
       await this.emit("poll.vote", line.orgId, lineId, voto);
       return;
@@ -1305,6 +1322,14 @@ export function extractText(message: object | null | undefined): string | null {
   const m = crudo as Record<string, unknown>;
   if (typeof m["conversation"] === "string") return m["conversation"];
 
+  // Los avisos, con el texto que pone WhatsApp. Sin nombre: lo pone el panel.
+  const fijado = m["pinInChatMessage"] as { type?: number | string } | undefined;
+  if (fijado) {
+    return fijado.type === 2 || fijado.type === "UNPIN_FOR_ALL"
+      ? "dejó de fijar un mensaje" : "fijó un mensaje";
+  }
+  if (m["messageHistoryNotice"]) return "compartió los mensajes recientes del grupo";
+
   for (const campo of CAMPOS_CON_TEXTO) {
     const nodo = m[campo] as { text?: string; caption?: string } | undefined;
     const valor = nodo?.text ?? nodo?.caption;
@@ -1374,6 +1399,12 @@ const SIN_CONTENIDO = new Set([
    * dos veces lo mismo, y encima como ilegible.
    */
   "albumMessage", "call",
+  /*
+   * El paquete con el historial que se comparte al entrar en un grupo. Es un
+   * fichero de mensajes, no algo que leer; el aviso que lo acompaña
+   * (`messageHistoryNotice`) es el que se enseña.
+   */
+  "messageHistoryBundle",
 ]);
 
 /** `true` si el sobre no lleva nada que una persona pueda leer. */
@@ -1440,6 +1471,101 @@ export function extractPollVote(m: WAMessage, propia?: string): {
     },
     at: Number(nodo.senderTimestampMs ?? Date.now()),
   };
+}
+
+/**
+ * Una edición cifrada, si el sobre es eso.
+ *
+ * `targetMessageKey` es el mensaje editado, visto DESDE quien edita: su
+ * `remoteJid` puede ser nuestra propia dirección en un chat de dos. Por eso la
+ * clave del mensaje se rehace con el chat del sobre, que es el nuestro.
+ *
+ * `author` es quien edita, que es también quien escribió el original: solo se
+ * puede editar lo propio. Comprobado contra 50 ediciones reales: la clave se
+ * deriva con esa dirección tal cual viene en el sobre —el participante en un
+ * grupo, el chat en uno de dos—.
+ */
+export function extractSecretEdit(m: WAMessage, propia?: string): {
+  key: { id: string; remoteJid: string; participant?: string; fromMe: boolean };
+  author: string;
+  /** Otras formas de la misma dirección, por si la primera no abre. */
+  alternativas: string[];
+  cifrado: { encPayload: string; encIv: string; tipo: string };
+  timestamp: number;
+} | null {
+  const msg = contenido(m);
+  const nodo = msg?.["secretEncryptedMessage"] as {
+    targetMessageKey?: { id?: string };
+    encPayload?: Uint8Array | string; encIv?: Uint8Array | string;
+    secretEncType?: number | string;
+  } | undefined;
+  const id = nodo?.targetMessageKey?.id;
+  if (!id || !nodo?.encPayload || !nodo.encIv || !m.key.remoteJid) return null;
+  /*
+   * La dirección del autor TAL COMO VIENE en el sobre: el participante en un
+   * grupo, el chat en uno de dos. No la de `getKeyAuthor`, que prefiere el
+   * teléfono cuando lo hay: con esa, 23 de 50 ediciones reales no abrían. Lo
+   * propio va con nuestra dirección. Las demás formas quedan de reserva.
+   */
+  const k = m.key as { participant?: string | null; participantAlt?: string | null;
+    remoteJid?: string | null; remoteJidAlt?: string | null; fromMe?: boolean | null };
+  // Lo propio: en un grupo el sobre trae nuestro participante —a menudo el
+  // LID—, que es con lo que se cifró; la dirección de la línea, de reserva.
+  const tal = m.key.fromMe ? (k.participant || propia) : (k.participant || k.remoteJid);
+  const sinDispositivo = (j: string) => j.replace(/:\d+@/, "@");
+  const formas = [tal, k.participantAlt, k.remoteJidAlt, propia, getKeyAuthor(m.key as never, propia)]
+    .filter((x): x is string => Boolean(x) && x !== "me" && !String(x).endsWith("@g.us"))
+    .map(sinDispositivo);
+  const [author, ...resto] = [...new Set(formas)];
+  if (!author) return null;
+  // El tipo, tal como viene: número o nombre según de dónde salga el nodo.
+  const tipo = nodo.secretEncType === 2 || nodo.secretEncType === "MESSAGE_EDIT"
+    ? "MESSAGE_EDIT" : String(nodo.secretEncType ?? "");
+  return {
+    key: {
+      id, remoteJid: m.key.remoteJid, fromMe: Boolean(m.key.fromMe),
+      ...(m.key.participant ? { participant: m.key.participant } : {}),
+    },
+    author,
+    alternativas: resto,
+    cifrado: { encPayload: enBase64(nodo.encPayload)!, encIv: enBase64(nodo.encIv)!, tipo },
+    timestamp: Number(m.messageTimestamp ?? 0) * 1000,
+  };
+}
+
+/**
+ * Abre una edición cifrada y devuelve el texto nuevo.
+ *
+ * El esquema es el de los votos —HKDF-SHA256 con el `messageSecret` del
+ * original y AES-256-GCM— con «Message Edit» como caso de uso y SIN dato
+ * adicional. Baileys no lo trae; la receta se sacó probando contra ediciones
+ * reales, y el GCM solo abre con la clave exacta, así que no hay acierto a
+ * medias. Lanza si la clave no abre.
+ */
+export function descifrarEdicion(
+  cifrado: { encPayload: string; encIv: string },
+  ctx: { messageId: string; author: string; secret: string },
+): { text: string | null; editedAt: number | null } {
+  const info = Buffer.concat([
+    Buffer.from(ctx.messageId), Buffer.from(ctx.author), Buffer.from(ctx.author),
+    Buffer.from("Message Edit"),
+  ]);
+  const clave = Buffer.from(hkdfSync(
+    "sha256", Buffer.from(ctx.secret, "base64"), Buffer.alloc(0), info, 32));
+  const cuerpo = Buffer.from(cifrado.encPayload, "base64");
+  const d = createDecipheriv("aes-256-gcm", clave, Buffer.from(cifrado.encIv, "base64"));
+  d.setAuthTag(cuerpo.subarray(-16));
+  const plano = Buffer.concat([d.update(cuerpo.subarray(0, -16)), d.final()]);
+  const msg = proto.Message.decode(plano);
+  const pm = msg.protocolMessage;
+  const editado = pm?.editedMessage ?? msg;
+  /*
+   * `timestampMs` es un entero de 64 bits de protobuf (`Long`), y `Number()`
+   * de un `Long` da NaN: la fecha salía inválida y el guardado fallaba entero.
+   * Por su texto se convierte bien.
+   */
+  const ms = pm?.timestampMs != null ? Number(String(pm.timestampMs)) : null;
+  return { text: extractText(editado as object), editedAt: ms !== null && Number.isFinite(ms) ? ms : null };
 }
 
 /**
@@ -1651,6 +1777,8 @@ export function messageKind(m: WAMessage): MessageKind {
   if (msg["pollCreationMessage"] || msg["pollCreationMessageV3"]) return "poll";
   if (msg["reactionMessage"]) return "reaction";
   if (msg["protocolMessage"]) return "system";
+  // Fijar un mensaje y compartir el historial con quien entra: avisos.
+  if (msg["pinInChatMessage"] || msg["messageHistoryNotice"]) return "notice";
   // Plantillas e interactivos: lo que manda una empresa. Son mensajes de
   // verdad, con texto y botones, y se trataban como ilegibles.
   if (msg["templateMessage"] || msg["interactiveMessage"]) return "template";

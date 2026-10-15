@@ -132,6 +132,12 @@ export const messageKinds = [
   "text", "image", "video", "audio", "document",
   "sticker", "contact", "location", "poll", "buttons", "list", "template",
   "reaction", "system", "unknown",
+  /*
+   * Un aviso dentro del hilo que no es de nadie en concreto: «fijó un
+   * mensaje», «compartió el historial». Se guarda con su texto y se pinta
+   * centrado, como el separador de día.
+   */
+  "notice",
 ] as const;
 export const MessageKind = z.enum(messageKinds);
 export type MessageKind = z.infer<typeof MessageKind>;

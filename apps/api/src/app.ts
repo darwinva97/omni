@@ -84,6 +84,8 @@ const MensajeSchema = z.object({
    * El panel enseña el aviso, no el texto.
    */
   deleted: z.boolean().default(false),
+  /** Cuándo se editó por última vez, si se editó. El cuerpo ya es el nuevo. */
+  editedAt: z.string().nullable().default(null),
   /**
    * A quién menciona, ya resuelto.
    *
@@ -970,6 +972,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           mediaError: null,
           reacciones: [],
           deleted: false,
+          editedAt: null,
           senderAvatarUrl: null,
           // Un estado no responde a nada ni es una encuesta: no hay hilo.
           replyTo: null,
@@ -1297,6 +1300,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         mediaError: r.mediaKey ? null : (MEDIA_KINDS_API.has(r.kind) ? r.failureReason : null),
         reacciones: r.providerMessageId ? porMensaje.get(r.providerMessageId) ?? [] : [],
         deleted: r.deletedAt !== null,
+        editedAt: r.editedAt?.toISOString() ?? null,
         replyTo: await citaDe(container, r.replyToId, r.raw as CrudoConCita | null,
           originales, nombres, chat.value, nombresDeTokens),
         poll: r.providerMessageId ? encuestas.get(r.providerMessageId) ?? null : null,

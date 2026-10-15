@@ -225,6 +225,14 @@ export function Conversacion({
     // El fichero llega DESPUÉS del mensaje —la descarga va en una cola—, así
     // que el hueco pintado se rellena aquí sin recargar.
     if (evento === "message.updated") {
+      // Una edición: el motor ya la abrió y trae el texto nuevo.
+      if (typeof data["text"] === "string" && data["editedAt"]) {
+        const texto = data["text"] as string;
+        const editedAt = data["editedAt"] as string;
+        setMensajes((prev) => prev.map((x) =>
+          x.providerMessageId === key.id ? { ...x, body: texto, editedAt } : x));
+        return;
+      }
       const medio = data["media"] as TipoMedio | undefined;
       if (!medio) return;
       setMensajes((prev) =>
@@ -910,13 +918,22 @@ export function Conversacion({
 
                 {esAviso ? (
                   <div className="flex justify-center py-1.5">
-                    <span
-                      title="Llegó un mensaje de un tipo que WhatsApp no deja leer a este transporte. Queda guardado tal cual vino."
-                      className="rounded-full bg-(--color-panel)/70 px-3 py-1 text-[11px] text-(--color-apagado)"
-                    >
-                      Mensaje no compatible
-                      <time className="ml-1.5" dateTime={m.timestamp}>{hora(m.timestamp)}</time>
-                    </span>
+                    {m.kind === "notice" ? (
+                      // «Brenda fijó un mensaje»: quién y qué, centrado, como
+                      // lo enseña WhatsApp.
+                      <span className="rounded-full bg-(--color-panel)/70 px-3 py-1 text-[11px] text-(--color-tenue)">
+                        {m.fromMe ? "Tú" : m.senderName ?? info?.displayName ?? "Alguien"} {m.body}
+                        <time className="ml-1.5 text-(--color-apagado)" dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                      </span>
+                    ) : (
+                      <span
+                        title="Llegó un mensaje de un tipo que WhatsApp no deja leer a este transporte. Queda guardado tal cual vino."
+                        className="rounded-full bg-(--color-panel)/70 px-3 py-1 text-[11px] text-(--color-apagado)"
+                      >
+                        Mensaje no compatible
+                        <time className="ml-1.5" dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                      </span>
+                    )}
                   </div>
                 ) : (
                 <div
@@ -1679,8 +1696,12 @@ function Firma({ mensaje }: { mensaje: Mensaje }) {
   return (
     <>
       {/* Hueco reservado para que la hora no se monte sobre la última palabra. */}
-      <span aria-hidden className="inline-block w-14 select-none" />
+      <span aria-hidden className={`inline-block select-none ${mensaje.editedAt ? "w-24" : "w-14"}`} />
       <span className="float-right ml-1.5 inline-flex translate-y-0.5 items-center gap-1 text-[11px] leading-none text-(--color-apagado)">
+        {/* Como en WhatsApp: «Editado» delante de la hora, y cuándo al pasar por encima. */}
+        {mensaje.editedAt && (
+          <span title={`Editado ${new Date(mensaje.editedAt).toLocaleString("es")}`}>Editado</span>
+        )}
         <time dateTime={mensaje.timestamp}>{hora(mensaje.timestamp)}</time>
         {mensaje.fromMe && <Acuse estado={mensaje.state} />}
       </span>

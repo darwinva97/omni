@@ -5,7 +5,7 @@ import {
   type SendMessageInput,
 } from "@omni/shared";
 import type { ChannelDriver, LineStatus, OutboundCommand } from "@omni/channels";
-import { assertCapability, descifrarVoto, encuestaDe } from "@omni/channels";
+import { assertCapability, descifrarEdicion, descifrarVoto, encuestaDe, extractText } from "@omni/channels";
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
@@ -91,7 +91,13 @@ export interface InboundMediaJob {
 const MEDIA_KINDS = new Set(["image", "video", "audio", "document", "sticker"]);
 
 /** Un `protocolMessage` de WhatsApp: a qué mensaje apunta y qué pide. */
-type Protocolo = { key?: { id?: string }; type?: number | string };
+type Protocolo = {
+  key?: { id?: string }; type?: number | string;
+  editedMessage?: object; timestampMs?: number | string;
+};
+
+/** `Message.ProtocolMessage.Type.MESSAGE_EDIT`: «este mensaje dice ahora otra cosa». */
+const MESSAGE_EDIT = 14;
 
 /** `Message.ProtocolMessage.Type.REVOKE`: «elimina aquel mensaje». */
 const REVOKE = 0;
@@ -709,8 +715,19 @@ export class EngineRuntime {
    * Camino único de ingesta: persistir, publicar en el bus y despachar
    * webhooks. Nunca se hace una petición de red aquí dentro.
    */
-  async #ingest(envelope: EventEnvelope): Promise<void> {
+  async #ingest(entrada: EventEnvelope): Promise<void> {
+    let envelope = entrada;
     try {
+      /*
+       * Una edición se aplica ANTES de publicar, y lo que se publica ya lleva
+       * el texto nuevo: si llega cifrada, ningún consumidor —el panel, un
+       * webhook— podría abrirla, porque la clave está en el mensaje original.
+       */
+      if (envelope.event === "message.updated") {
+        const aplicada = await this.#aplicarEdicion(envelope);
+        if (aplicada === null) return;
+        envelope = aplicada;
+      }
       // El mapeo LID↔teléfono se aprende ANTES de persistir: si el mensaje se
       // guarda primero y aquí falla algo, el chat queda con un LID que ya no
       // se puede atar a nadie, porque el servidor solo lo dice esta vez.
@@ -1754,8 +1771,93 @@ export class EngineRuntime {
     if (!protocolo) return;
     // Baileys entrega el enum tal cual lo trae el protobuf: a veces el número,
     // a veces el nombre. Se aceptan los dos en vez de apostar por uno.
+    if (protocolo.type === MESSAGE_EDIT || protocolo.type === "MESSAGE_EDIT") {
+      // La edición sin cifrar: el texto nuevo viene a la vista.
+      if (!protocolo.key?.id || !protocolo.editedMessage) return;
+      await this.#guardarEdicion(
+        envelope.lineId, protocolo.key.id, extractText(protocolo.editedMessage),
+        Number(protocolo.timestampMs ?? envelope.timestamp),
+      );
+      return;
+    }
     if (protocolo.type !== REVOKE && protocolo.type !== "REVOKE") return;
     await this.#marcarRetirado(envelope.lineId, protocolo.key?.id, envelope.timestamp);
+  }
+
+  /**
+   * Aplica una edición que llega como `message.updated`.
+   *
+   * Tres casos: lo que publica el propio motor al bajar un fichero (no es
+   * una edición; pasa tal cual), una edición con el texto a la vista, y una
+   * cifrada, que se abre con el `messageSecret` del original.
+   *
+   * Devuelve el evento a publicar —con `text` y sin lo cifrado— o `null` si
+   * no hay nada que publicar: una edición de un mensaje que no está aquí no
+   * le sirve a nadie, y la cifrada ni siquiera se puede leer.
+   */
+  async #aplicarEdicion(envelope: EventEnvelope): Promise<EventEnvelope | null> {
+    const d = envelope.data as {
+      key?: { id?: string; remoteJid?: string };
+      text?: string | null; media?: unknown;
+      author?: string; alternativas?: string[]; timestamp?: number;
+      cifrado?: { encPayload: string; encIv: string; tipo: string };
+    };
+    if (d.media !== undefined || !d.key?.id) return envelope;
+    if (d.text === undefined && !d.cifrado) return envelope;
+
+    let texto = d.text ?? null;
+    let cuando = d.timestamp ?? envelope.timestamp;
+    if (d.cifrado) {
+      if (d.cifrado.tipo !== "MESSAGE_EDIT" || !d.author) return null;
+      const [original] = await this.#deps.db
+        .select({ raw: messageTable.raw }).from(messageTable)
+        .where(and(
+          eq(messageTable.lineId, envelope.lineId),
+          eq(messageTable.providerMessageId, d.key.id),
+        ))
+        .limit(1);
+      const secreto = (original?.raw as {
+        raw?: { message?: { messageContextInfo?: { messageSecret?: string } } };
+      } | null)?.raw?.message?.messageContextInfo?.messageSecret;
+      if (!secreto) return null;
+      // La dirección tal cual primero, y luego sus otras formas: la clave se
+      // deriva de ella y WhatsApp no dice cuál usó.
+      let abierta: ReturnType<typeof descifrarEdicion> | null = null;
+      for (const author of [d.author, ...(d.alternativas ?? [])]) {
+        try {
+          abierta = descifrarEdicion(d.cifrado, { messageId: d.key.id, author, secret: secreto });
+          break;
+        } catch { /* la siguiente forma */ }
+      }
+      if (!abierta) return null;
+      texto = abierta.text;
+      cuando = abierta.editedAt ?? cuando;
+    }
+
+    const hecho = await this.#guardarEdicion(envelope.lineId, d.key.id, texto, cuando);
+    if (!hecho) return null;
+    const { cifrado: _fuera, ...resto } = d;
+    return {
+      ...envelope,
+      data: { ...resto, text: texto, editedAt: new Date(cuando).toISOString() },
+    };
+  }
+
+  /** El texto nuevo y cuándo, en el mensaje original. `false` si no está aquí. */
+  async #guardarEdicion(
+    lineId: string, providerMessageId: string, texto: string | null, cuando: number,
+  ): Promise<boolean> {
+    if (texto === null) return false;
+    const fecha = Number.isFinite(cuando) ? new Date(cuando) : new Date(this.#now());
+    const filas = await this.#deps.db
+      .update(messageTable)
+      .set({ body: texto, editedAt: fecha })
+      .where(and(
+        eq(messageTable.lineId, lineId),
+        eq(messageTable.providerMessageId, providerMessageId),
+      ))
+      .returning({ id: messageTable.id });
+    return filas.length > 0;
   }
 
   /**
