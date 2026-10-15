@@ -524,6 +524,7 @@ import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
 import { ConversationSchema, registerCrmRoutes } from "./routes/crm.js";
 import { presentarConversacion } from "./crm/conversaciones.js";
+import { registerNoteRoutes } from "./routes/notas.js";
 import { registerCommerceRoutes } from "./routes/commerce.js";
 import { HOST_VERSION } from "./container.js";
 import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
@@ -1456,6 +1457,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
   registerNewsletterRoutes(app, container);
   registerCrmRoutes(app, container);
+  registerNoteRoutes(app, container);
   registerCommerceRoutes(app, container);
   registerMediaRoutes(app, container);
   registerMcp(app, container);

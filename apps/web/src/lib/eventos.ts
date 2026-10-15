@@ -51,7 +51,10 @@ export function useEventos(lineId: string): {
             // `presence.*`: quién escribe o graba. Sin él, el «escribiendo…»
             // llegaba al motor y no salía de ahí.
             // `conversation.*`: quién lleva cada chat y si está resuelto.
-            events: ["message.*", "chat.*", "session.*", "presence.*", "conversation.*"],
+            // `note.*`: la nota interna que deja un compañero en el chat abierto.
+            events: [
+              "message.*", "chat.*", "session.*", "presence.*", "conversation.*", "note.*",
+            ],
             lines: [lineId],
           }));
         };

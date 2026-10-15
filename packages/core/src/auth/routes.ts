@@ -130,6 +130,18 @@ export const ROUTES = {
   "automation.manage": { id: "automation.manage", permission: "org.manage", scope: "org" },
 
   /*
+   * --- notas internas
+   *
+   * Leerlas es de quien lee el chat; escribirlas y borrarlas, de quien lo
+   * atiende. Ninguna es para una clave acotada a chats: esas claves son de
+   * integraciones que hablan CON el cliente, y lo que el equipo dice de él
+   * no es asunto suyo.
+   */
+  "note.list": { id: "note.list", permission: "message.read", scope: "chat" },
+  "note.create": { id: "note.create", permission: "chat.manage", scope: "chat" },
+  "note.delete": { id: "note.delete", permission: "chat.manage", scope: "chat" },
+
+  /*
    * --- comunidades y catálogo
    *
    * Ninguna es segura para una clave acotada a chats: una comunidad abarca

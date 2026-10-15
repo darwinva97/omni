@@ -43,6 +43,13 @@ export const eventNames = [
    * nuevo sin tener que adivinar qué campo cambió ni pedirlo aparte.
    */
   "conversation.updated",
+  /*
+   * Notas internas: lo que el equipo se dice sobre un chat. Nunca salen por
+   * el canal; el evento es para que la nota de un compañero aparezca en el
+   * chat que tienes abierto.
+   */
+  "note.created",
+  "note.deleted",
   // grupos
   "group.created",
   "group.updated",

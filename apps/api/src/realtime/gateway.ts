@@ -15,6 +15,9 @@ export function visibleFor(t: TicketPayload, e: EventEnvelope): boolean {
   if (t.allowedLines.length > 0 && !t.allowedLines.includes(e.lineId)) return false;
 
   if (t.allowedChats.length > 0) {
+    // Las notas internas son lo que el equipo dice DEL cliente: una clave
+    // acotada a chats no las lee por HTTP, y por aquí tampoco.
+    if (e.event.startsWith("note.")) return false;
     const chats = chatsDe(e);
     // Un evento sin chat identificable —el estado de la sesión, por ejemplo— NO
     // se entrega a una credencial acotada a chats: en la duda, no se enseña.

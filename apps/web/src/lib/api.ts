@@ -202,3 +202,12 @@ export interface Cita {
 export interface Yo {
   id: string; email: string; name: string; orgId: string | null; role: string | null;
 }
+
+/** Una nota interna: la ve el equipo dentro del chat, nunca el cliente. */
+export interface Nota {
+  id: string;
+  chatId: string;
+  body: string;
+  createdAt: string;
+  author: { kind: "user" | "api-key"; userId: string | null; name: string | null };
+}

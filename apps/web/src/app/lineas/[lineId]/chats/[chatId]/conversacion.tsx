@@ -5,7 +5,7 @@ import {
 } from "react";
 import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { conNombres, diaDeSeparador, hora, mismoDia, trozosConMenciones } from "@/lib/formato";
+import { conNombres, diaDeSeparador, hora, trozosConMenciones } from "@/lib/formato";
 import { partirEnlaces } from "@/lib/enlaces";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
@@ -39,6 +39,9 @@ import { guardarBorrador, leerBorrador, type Borrador } from "@/lib/borradores";
 import { ControlesDeAtencion } from "@/componentes/atencion";
 import { useEquipo } from "@/lib/equipo";
 import type { Conversacion as Atencion } from "@/lib/api";
+import type { Nota } from "@/lib/api";
+import { intercalar } from "@/lib/notas";
+import { BotonNota, CompositorDeNota, NotaEnHilo } from "@/componentes/nota-interna";
 
 /** Quienes han escrito en el hilo cargado, una vez cada uno. */
 function quienesEscribieron(mensajes: readonly Mensaje[]): Participante[] {
@@ -461,6 +464,70 @@ export function Conversacion({
       return { chat, conv: actual && actual.id !== c.id && actual.openedAt > c.openedAt ? actual : c };
     });
   }), [chat, suscribir, info]);
+
+  /*
+   * Notas internas: lo que el equipo se dice sobre este chat. Se piden
+   * aparte de los mensajes —viven en otra tabla y nunca pasan por la red— y
+   * se intercalan por fecha. Atadas a SU chat, como la atención.
+   */
+  const [notasDe, setNotasDe] = useState<{ chat: string; lista: Nota[] } | null>(null);
+  const notas = notasDe?.chat === chat ? notasDe.lista : [];
+  useEffect(() => {
+    let vivo = true;
+    void fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/notes?limit=200`)
+      .then(async (r) => (r.ok ? ((await r.json()) as { data: Nota[] }).data : []))
+      .then((lista) => { if (vivo) setNotasDe({ chat, lista }); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [lineId, chat]);
+  useEffect(() => suscribir((evento, data) => {
+    if (evento !== "note.created" && evento !== "note.deleted") return;
+    const n = data as unknown as Nota;
+    if (n.chatId !== chat) return;
+    setNotasDe((previa) => {
+      const lista = previa?.chat === chat ? previa.lista : [];
+      const sin = lista.filter((x) => x.id !== n.id);
+      return { chat, lista: evento === "note.created" ? [n, ...sin] : sin };
+    });
+  }), [chat, suscribir]);
+  // Escribiendo una nota, o un mensaje. Al cambiar de chat se vuelve a
+  // mensaje: entrar en otro chat y escribir tiene que ser lo de siempre.
+  const [modoNotaEn, setModoNotaEn] = useState<string | null>(null);
+  const modoNota = modoNotaEn === chat;
+
+  const guardarNota = async (texto: string): Promise<string | null> => {
+    const r = await fetch(`/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/notes`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: texto }),
+    }).catch(() => null);
+    if (!r?.ok) {
+      const e = (await r?.json().catch(() => null)) as { detail?: string } | null;
+      return e?.detail ? `No se guardó la nota: ${e.detail}.` : "No se guardó la nota.";
+    }
+    const { data } = (await r.json()) as { data: Nota };
+    setNotasDe((previa) => {
+      const lista = previa?.chat === chat ? previa.lista : [];
+      return { chat, lista: [data, ...lista.filter((x) => x.id !== data.id)] };
+    });
+    if (ventanaRef.current) await volverAlPresente();
+    requestAnimationFrame(() => fondo.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
+    return null;
+  };
+
+  const borrarNota = async (n: Nota): Promise<void> => {
+    if (!confirm("¿Borrar tu nota? El resto del equipo dejará de verla.")) return;
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/notes/${encodeURIComponent(n.id)}`,
+      { method: "DELETE" },
+    ).catch(() => null);
+    if (!r?.ok) {
+      const e = (await r?.json().catch(() => null)) as { detail?: string } | null;
+      setProblema(e?.detail ? `No se borró la nota: ${e.detail}.` : "No se borró la nota.");
+      return;
+    }
+    setNotasDe((previa) => previa && { ...previa, lista: previa.lista.filter((x) => x.id !== n.id) });
+  };
 
   const yaColocado = useRef(false);
   useEffect(() => {
@@ -1172,7 +1239,9 @@ export function Conversacion({
           <span
             title={conectado ? "Recibiendo en vivo" : "Reconectando"}
             aria-live="polite"
-            className="flex items-center gap-1.5 text-xs text-(--color-tenue)"
+            // Fuera en el teléfono: con quién lo lleva y resolver, el nombre
+            // del chat no cabía.
+            className="hidden items-center gap-1.5 text-xs text-(--color-tenue) sm:flex"
           >
             <span
               aria-hidden
@@ -1215,9 +1284,22 @@ export function Conversacion({
         </header>
 
         <ol className="scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
-          {conPendientes.map((m, i) => {
-            const anterior = conPendientes[i - 1];
-            const nuevoDia = !anterior || !mismoDia(anterior.timestamp, m.timestamp);
+          {intercalar(conPendientes, notas, {
+            desdeElPrincipio: !ventana && iniciales.length < 100,
+            hastaElFinal: !ventana,
+          }).map((item) => {
+            if (item.tipo === "nota") {
+              return (
+                <NotaEnHilo
+                  key={`nota-${item.n.id}`}
+                  nota={item.n}
+                  nuevoDia={item.nuevoDia}
+                  mia={yo !== null && item.n.author.userId === yo.id}
+                  onBorrar={() => void borrarNota(item.n)}
+                />
+              );
+            }
+            const { m, anterior, nuevoDia } = item;
             /*
              * Una tanda es una ráfaga de la MISMA persona.
              *
@@ -1501,7 +1583,7 @@ export function Conversacion({
           </p>
         )}
 
-        {actual && !editando && (
+        {actual && !editando && !modoNota && (
           <div className="border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
             {/*
               Las miniaturas, en fila. La elegida lleva el anillo y es la que
@@ -1588,7 +1670,7 @@ export function Conversacion({
           Va aquí y no dentro del formulario porque se ve ANTES de escribir: es
           lo que confirma que la respuesta va a ese mensaje y no al aire.
         */}
-        {respondiendo && !editando && (
+        {respondiendo && !editando && !modoNota && (
           <div className="flex items-center gap-2 border-t border-(--color-borde) bg-(--color-panel) px-3 pt-2 md:px-4">
             <span className="flex items-center gap-2 text-(--color-tenue)">
               <IconoResponder className="size-4" />
@@ -1635,8 +1717,20 @@ export function Conversacion({
           </div>
         )}
 
+        {/*
+          Escribiendo una nota, el formulario de los mensajes se OCULTA pero no
+          se desmonta: lo que hubiera a medio escribir para el cliente sigue
+          ahí al volver, y lo de la nota nunca pasa por él.
+        */}
+        {modoNota && (
+          <CompositorDeNota
+            onGuardar={guardarNota}
+            onSalir={() => { setModoNotaEn(null); requestAnimationFrame(() => campo.current?.focus()); }}
+          />
+        )}
         <form
           ref={formulario}
+          hidden={modoNota}
           /*
             Con `onSubmit` y no con `action`, a propósito.
 
@@ -1818,6 +1912,12 @@ export function Conversacion({
               // disparar el cambio.
               e.target.value = "";
             }}
+          />
+          <BotonNota
+            activo={false}
+            onClick={() => setModoNotaEn(chat)}
+            deshabilitado={adjuntos.length > 0 || editando !== null}
+            motivo="Termina antes lo que estás enviando o corrigiendo"
           />
           <button
             type="button"

@@ -130,6 +130,18 @@ export const IconoDesplegar = (p: Props) => (
   <Base {...p}><path d="m7 10 5 5 5-5" /></Base>
 );
 
+/** Una nota con la esquina doblada: nota interna. */
+export const IconoNota = (p: Props) => (
+  <Base {...p}>
+    <path d="M5 4.5h14v9.5l-5 5.5H5z" /><path d="M14 19.5V14h5" /><path d="M8.5 9h7M8.5 12h4" />
+  </Base>
+);
+
+/** Candado: lo que no sale de aquí. */
+export const IconoCandado = (p: Props) => (
+  <Base {...p}><rect x="5.5" y="10.5" width="13" height="9.5" rx="2" /><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" /></Base>
+);
+
 export const IconoLineas = (p: Props) => (
   <Base {...p}>
     <rect x="3" y="3" width="7.5" height="7.5" rx="2" />

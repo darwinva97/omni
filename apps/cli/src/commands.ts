@@ -1013,6 +1013,55 @@ export const COMMANDS: readonly Command[] = [
     }),
   },
   {
+    name: "notas",
+    summary: "Las notas internas de un chat: las ve el equipo, nunca el cliente",
+    operation: "GET /v1/lines/{lineId}/chats/{chatId}/notes",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+    ],
+    flags: [
+      { name: "limite", description: "Cuántas devolver" },
+      { name: "antes-de", description: "ISO-8601: devuelve las anteriores a esa fecha" },
+    ],
+    run: (c, a) => c.request(
+      "GET",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/notes`,
+      undefined,
+      { limit: flag(a, "limite"), before: flag(a, "antes-de") },
+    ),
+  },
+  {
+    name: "nota:crear",
+    summary: "Dejar una nota interna en un chat; no se envía al cliente",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/notes",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "texto", required: true, description: "Lo que dice la nota" },
+    ],
+    run: (c, a) => c.request(
+      "POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/notes`,
+      { body: req(a, 2, "texto") },
+    ),
+  },
+  {
+    name: "nota:borrar",
+    summary: "Borrar una nota interna escrita con esta misma clave",
+    operation: "DELETE /v1/lines/{lineId}/chats/{chatId}/notes/{noteId}",
+    destructive: true,
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "nota", required: true, description: "Identificador de la nota" },
+    ],
+    run: (c, a) => c.request(
+      "DELETE",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/notes/${enc(req(a, 2, "nota"))}`,
+    ),
+  },
+  {
     name: "automatizaciones",
     summary: "Reglas de la organización, en el orden en que se ejecutan",
     operation: "GET /v1/automations",
