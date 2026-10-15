@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
-  IconoBitacora, IconoEntregas, IconoGrupo, IconoLineas, IconoLlave, IconoRespuestas, IconoSalir,
+  IconoBitacora, IconoEntregas, IconoGrupo, IconoLineas, IconoLlave, IconoRayo, IconoRespuestas,
+  IconoSalir,
 } from "./iconos";
 
 /**
@@ -20,6 +21,7 @@ const DESTINOS = [
   { href: "/", texto: "Líneas", Icono: IconoLineas },
   { href: "/equipo", texto: "Equipo", Icono: IconoGrupo },
   { href: "/respuestas", texto: "Respuestas rápidas", Icono: IconoRespuestas },
+  { href: "/automatizaciones", texto: "Automatizaciones", Icono: IconoRayo },
   { href: "/claves", texto: "Claves", Icono: IconoLlave },
   { href: "/entregas", texto: "Entregas", Icono: IconoEntregas },
   { href: "/auditoria", texto: "Bitácora", Icono: IconoBitacora },

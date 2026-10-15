@@ -52,6 +52,14 @@ export const Condition = z.object({
   value: z.union([z.string(), z.number(), z.array(z.string())]).optional(),
   /** Por defecto las comparaciones de texto NO distinguen mayúsculas. */
   caseSensitive: z.boolean().default(false),
+  /**
+   * Zona horaria para `hour` y `weekday`, como «America/Lima».
+   *
+   * Sin ella valen la hora y el día del SERVIDOR, que puede estar en otro
+   * continente: «de 9 a 18» escrito desde Lima se cumplía en horario de
+   * Berlín. El panel pone la de quien escribe la regla.
+   */
+  timeZone: z.string().min(1).max(64).optional(),
 });
 export type Condition = z.infer<typeof Condition>;
 

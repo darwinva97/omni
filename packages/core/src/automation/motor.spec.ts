@@ -93,6 +93,18 @@ describe("condiciones", () => {
     expect(evaluarCondicion(cond({ field: "hour", op: "gte", value: 9 }), ctx)).toBe(true);
     expect(evaluarCondicion(cond({ field: "hour", op: "lte", value: 13 }), ctx)).toBe(false);
   });
+
+  it("con zona horaria, la hora y el día son los de esa zona y no los del servidor", () => {
+    // Las 3:30 del miércoles en UTC son las 22:30 del MARTES en Lima.
+    const ctx = { ...CTX, at: new Date("2026-03-11T03:30:00Z") };
+    const lima = { timeZone: "America/Lima" };
+    expect(evaluarCondicion(cond({ field: "hour", op: "gte", value: 22, ...lima }), ctx)).toBe(true);
+    expect(evaluarCondicion(cond({ field: "hour", op: "lte", value: 18, ...lima }), ctx)).toBe(false);
+    expect(evaluarCondicion(cond({ field: "weekday", op: "in", value: ["2"], ...lima }), ctx)).toBe(true);
+    // Una zona inventada no hace saltar la regla.
+    expect(evaluarCondicion(cond({ field: "hour", op: "gte", value: 0, timeZone: "Marte/Olimpo" }), ctx))
+      .toBe(false);
+  });
 });
 
 describe("selección de reglas", () => {
