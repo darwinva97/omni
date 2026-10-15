@@ -1,6 +1,6 @@
 # Despliegue
 
-Omni corre en esta máquina como **tres servicios de usuario de systemd**, no
+Omni corre en esta máquina como **servicios de usuario de systemd**, no
 como procesos sueltos: así sobreviven a un reinicio sin que nadie los arranque
 a mano. El `linger` del usuario `maka` ya está activo, que es lo que permite
 que corran sin sesión abierta.
@@ -10,6 +10,7 @@ que corran sin sesión abierta.
 | `omni-pg` | Clúster de Postgres propio, aparte del del sistema | 5440 |
 | `omni-api` | API y motor de canales | 4010 |
 | `omni-web` | Panel | 4011 |
+| `omni-cd.timer` | Despliegue continuo (ver abajo) | — |
 
 ```bash
 systemctl --user status omni-api
@@ -22,6 +23,51 @@ instante si no puede conectar, así que "arrancada" no basta, tiene que estar
 **arriba**. Comprobado parando las dos y arrancando solo la API.
 
 ## Para desplegar un cambio
+
+Se despliega solo: **push a `main` y, con CI en verde, sale a producción en
+un par de minutos.** No hace falta entrar en la máquina.
+
+```
+push a main ─▶ CI en GitHub ─▶ verde ─▶ omni-cd (cada minuto, aquí) ─▶ despliegue.sh
+                                 └▶ rojo ─▶ no sale nada
+```
+
+Lo hace `omni-cd.timer`, que cada minuto lanza `scripts/cd.sh` en
+`~/projects/omni`:
+
+- Tira de GitHub; GitHub no entra aquí. No hay SSH abierto ni llave de esta
+  máquina guardada en GitHub.
+- Solo sale lo que está en `main` **con CI en verde**. Mientras CI corre,
+  espera; si sale en rojo, lo anota y no despliega.
+- Si el cambio solo toca cosas que no corren aquí (SDK, documentación, CI),
+  avanza el repositorio sin reiniciar nada: reiniciar la API tira las sesiones
+  de WhatsApp.
+- Si el despliegue falla, **vuelve al commit anterior** y lo despliega de
+  nuevo. El commit fallido se descarta y no se reintenta cada minuto: se
+  reintenta con el siguiente push, o borrando `.data/cd-descartado`.
+- Cada despliegue queda en GitHub, en *Deployments → production*, con su
+  estado.
+- Si alguien ha editado a mano en `~/projects/omni`, no pisa nada: para y lo
+  dice.
+
+```bash
+tail -f .data/cd.log                       # qué ha desplegado y qué no
+systemctl --user list-timers omni-cd       # cuándo mira la próxima vez
+systemctl --user stop omni-cd.timer        # pausar el despliegue automático
+```
+
+Instalarlo en una máquina nueva (o tras cambiar las unidades):
+
+```bash
+cp despliegue/omni-cd.service despliegue/omni-cd.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now omni-cd.timer
+```
+
+`gh` tiene que tener sesión iniciada para el usuario: con ella lee el estado
+de CI y apunta los despliegues.
+
+A mano, si hace falta (con el temporizador parado o en un commit que ya está):
 
 ```bash
 ./scripts/despliegue.sh

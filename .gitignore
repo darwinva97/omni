@@ -11,3 +11,4 @@ coverage/
 .data/
 apps/web/.next/
 packages/plugins/dist/
+__pycache__/

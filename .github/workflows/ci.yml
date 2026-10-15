@@ -1,12 +1,27 @@
 name: CI
 
+# Lo que esté en main con este flujo en verde se despliega solo: lo recoge el
+# temporizador omni-cd de la máquina (ver despliegue/README.md). Un rojo aquí
+# es un despliegue que no ocurre.
 on:
   push: { branches: [main] }
   pull_request:
+  workflow_dispatch:
+
+# Un push nuevo a una PR deja sin sentido la ejecución anterior. En main no se
+# cancela nada: cada commit tiene su resultado y el despliegue lo lee.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  node:
+    name: Tipos, build y pruebas
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17
@@ -23,11 +38,14 @@ jobs:
       OMNI_TEST_DATABASE_URL: postgres://omni:omni@127.0.0.1:5432/omni_test
       DATABASE_URL: postgres://omni:omni@127.0.0.1:5432/omni_test
       OMNI_MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      OMNI_FFMPEG: /usr/bin/ffmpeg
 
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      # La versión de pnpm sale de `packageManager` en package.json. Sin ese
+      # campo este paso fallaba y CI no llegó a ejecutar ni una prueba.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -42,28 +60,41 @@ jobs:
       - name: Contrato
         run: pnpm test:contract
 
+      # Las notas de voz y los stickers pasan por ffmpeg de verdad.
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+
       # Incluye el recorrido completo de WhatsApp contra el sandbox: enlazar,
       # recibir un mensaje fabricado, verificar la firma del webhook y
       # responder. Sin teléfono, desatendido, en cada push.
       - name: Integración
         run: pnpm test:int
 
+  sdk-python:
+    name: SDK de Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
       # El SDK de Python no tiene dependencias, así que no hay nada que instalar.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-
-      - name: SDK de Python
-        working-directory: sdks/python
+      - working-directory: sdks/python
         run: python -m unittest discover -s tests -v
 
+  sdk-go:
+    name: SDK de Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
       # El SDK de Go solo usa net/http, así que no hay dependencias que traer.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.27"
-
-      - name: SDK de Go
-        working-directory: sdks/go
+          go-version-file: sdks/go/go.mod
+          cache: false
+      - working-directory: sdks/go
         run: |
           gofmt -l . | tee /tmp/sin-formatear
           test ! -s /tmp/sin-formatear
