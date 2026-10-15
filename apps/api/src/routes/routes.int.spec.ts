@@ -153,6 +153,22 @@ run("rutas de mensajes y chats", () => {
     expect((await j<{ detail: string }>(res)).detail).toContain("propios");
   });
 
+  it("reenvía a otro chat de la línea, y el reenviado aparece allí", async () => {
+    const { data } = await j<{ data: { id: string } }>(await call(`/v1/sandbox/lines/${LINE}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51988777666", text: "pásaselo a Bruno" }),
+    }));
+    await new Promise((r) => setTimeout(r, 300));
+    const otro = "51977666555@s.whatsapp.net";
+    const res = await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages/${data.id}/forward`, {
+      method: "POST", body: JSON.stringify({ to: otro }),
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 400));
+    const { data: hilo } = await j<{ data: { body: string; fromMe: boolean }[] }>(
+      await call(`/v1/lines/${LINE}/chats/${enc(otro)}/messages?limit=5`));
+    expect(hilo.some((m) => m.fromMe && m.body === "pásaselo a Bruno")).toBe(true);
+  });
+
   it("reacciona y marca como leído", async () => {
     expect((await call(`/v1/lines/${LINE}/chats/${enc(CHAT)}/messages/${providerId}/reaction`, {
       method: "POST", body: JSON.stringify({ emoji: "👍" }),
@@ -655,6 +671,12 @@ run("lo escrito desde el teléfono", () => {
       SELECT count(*)::int AS n FROM message
       WHERE line_id = ${LINE} AND chat_id = ${CHAT_TEL} AND body = 'desde el panel'`;
     expect(filas[0]?.["n"]).toBe(1);
+
+    // El eco deja el original guardado: es lo que Baileys necesita para
+    // reenviar un mensaje propio.
+    const [conRaw] = await dbh.sql`
+      SELECT raw FROM message WHERE line_id = ${LINE} AND client_message_id = 'eco-1'`;
+    expect(conRaw?.["raw"]).toMatchObject({ key: { id: "SBX-eco-1" } });
   });
 });
 

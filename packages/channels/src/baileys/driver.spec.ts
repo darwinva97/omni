@@ -1007,3 +1007,34 @@ describe("ediciones cifradas", () => {
     expect(esVacio({ message: { messageContextInfo: {}, messageHistoryBundle: {} } } as never)).toBe(true);
   });
 });
+
+describe("reenviar", () => {
+  it("abre el sobre guardado y reenvía el mensaje de Baileys que va dentro", async () => {
+    const { driver, fake } = await conectado();
+    // Así está en `message.raw`: el sobre del evento, con el mensaje dentro.
+    const original = {
+      key: { remoteJid: "51988777666@s.whatsapp.net", fromMe: false, id: "ORIG1" },
+      message: { conversation: "el catálogo" },
+    };
+    await driver.forwardMessage(
+      LINE,
+      {
+        chat: parseAddress("51988777666@s.whatsapp.net"), providerMessageId: "ORIG1",
+        raw: { key: original.key, kind: "text", text: "el catálogo", raw: original },
+      },
+      parseAddress("51977666555@s.whatsapp.net"),
+    );
+    const ultimo = fake.sent.at(-1)!;
+    expect(ultimo.jid).toBe("51977666555@s.whatsapp.net");
+    expect((ultimo.content as { forward: unknown }).forward).toEqual(original);
+  });
+
+  it("sin el original lo dice, y nombra quién sí sabe reenviarlo", async () => {
+    const { driver } = await conectado();
+    await expect(driver.forwardMessage(
+      LINE,
+      { chat: parseAddress("51988777666@s.whatsapp.net"), providerMessageId: "MIO1" },
+      parseAddress("51977666555@s.whatsapp.net"),
+    )).rejects.toThrow(/whatsapp\.web/);
+  });
+});
