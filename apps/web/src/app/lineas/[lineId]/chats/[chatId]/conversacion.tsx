@@ -22,8 +22,8 @@ import { abreTanda, esAvisoDe } from "@/lib/tandas";
 import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
-  IconoAdjuntar, IconoBloquear, IconoCamara, IconoCerrar, IconoCopiar, IconoDescargar, IconoDocumento,
-  IconoImagen, IconoMicrofono, IconoSonido,
+  IconoAdjuntar, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
+  IconoDocumento, IconoEditar, IconoImagen, IconoMicrofono, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
 } from "@/componentes/iconos";
 import Link from "next/link";
@@ -94,6 +94,30 @@ function citaDeMensaje(m: Mensaje): CitaDe {
     fileName: m.media?.fileName ?? null,
     disponible: true,
   };
+}
+
+/**
+ * Cuánto se puede editar un mensaje propio: lo que deja WhatsApp.
+ *
+ * Pasado ese tiempo la edición no falla allí, se IGNORA, y la API la rechaza
+ * con el motivo (ver `VENTANA_DE_EDICION_MS` en la API). Aquí solo sirve para
+ * no ofrecer «Editar» donde no va a llegar.
+ */
+const VENTANA_DE_EDICION_MS = 15 * 60_000;
+
+/**
+ * Si un mensaje se puede editar desde aquí.
+ *
+ * Solo texto propio que ya tiene identificador de WhatsApp —se edita por él—
+ * y sin menciones: la edición viaja como texto plano, y una mención editada
+ * llegaría como «@120238196658384». Los pies de foto tampoco: Baileys manda
+ * la edición como un mensaje de texto, y WhatsApp espera el pie dentro de la
+ * foto; ofrecerlo sería prometer algo que no sabemos si llega.
+ */
+function editable(m: Mensaje): boolean {
+  return m.fromMe && m.kind === "text" && Boolean(m.body) && Boolean(m.providerMessageId)
+    && !m.deleted && !(m.mentions?.length)
+    && marcaDeTiempo() - Date.parse(m.timestamp) < VENTANA_DE_EDICION_MS;
 }
 
 /** Los tipos que se pintan como fichero y no como texto. */
@@ -526,6 +550,12 @@ export function Conversacion({
   const [stickers, setStickers] = useState(false);
   const [reaccionando, setReaccionando] = useState<string | null>(null);
   const [respondiendo, setRespondiendo] = useState<Mensaje | null>(null);
+  /*
+   * El mensaje propio que se está corrigiendo. Mientras dura, el campo de
+   * abajo es SU texto y no un mensaje nuevo, como en WhatsApp Desktop: Enter
+   * guarda y Esc deja las cosas como estaban.
+   */
+  const [editando, setEditando] = useState<Mensaje | null>(null);
   const [senalado, setSenalado] = useState<string | null>(null);
   const campo = useRef<HTMLTextAreaElement>(null);
   /*
@@ -743,7 +773,7 @@ export function Conversacion({
    * cambiar: el estado de React no la tendría hasta el próximo pintado.
    */
   const apuntarBorrador = (cita: Mensaje | null = respondiendo): void => {
-    if (adjuntos.length > 0) return;
+    if (adjuntos.length > 0 || editando) return;
     pendiente.current = {
       lineId, chat,
       b: {
@@ -762,6 +792,79 @@ export function Conversacion({
     reloj.current = null;
     pendiente.current = null;
     guardarBorrador(lineId, chat, null);
+  };
+
+  /** Cambia lo escrito sin teclear: con su altura, el foco y el cursor al final. */
+  const ponerEnCampo = (texto: string): void => {
+    const el = campo.current;
+    if (!el) return;
+    el.value = texto;
+    ajustarAltura();
+    el.focus();
+    el.setSelectionRange(texto.length, texto.length);
+  };
+
+  /**
+   * Pasa el campo a corregir un mensaje propio.
+   *
+   * Lo que hubiera escrito no se pierde: el borrador se guarda tal cual, o el
+   * pie se guarda en su adjunto, y vuelve al terminar.
+   */
+  const empezarEdicion = (m: Mensaje): void => {
+    if (adjuntos.length > 0) setAdjuntos(guardarPie(adjuntos));
+    else { apuntarBorrador(); escribirBorrador(); }
+    pararDeEscribir();
+    setConsulta(null);
+    setProblema(null);
+    setEditando(m);
+  };
+
+  /** Sale de la edición y devuelve al campo lo que había antes. */
+  const terminarEdicion = (): void => {
+    setEditando(null);
+    if (adjuntos.length > 0) {
+      ponerEnCampo(actual?.pie ?? "");
+    } else {
+      const b = leerBorrador(lineId, chat);
+      elegidas.current = new Map(b?.menciones ?? []);
+      ponerEnCampo(b?.texto ?? "");
+    }
+  };
+
+  /**
+   * Guarda la corrección.
+   *
+   * La burbuja cambia al instante, como una reacción: esperar al servidor
+   * para ver el texto que se acaba de escribir se siente roto. Si la API dice
+   * que no —pasó el plazo, el transporte no sabe editar—, vuelve el texto de
+   * antes y se ENSEÑA el motivo que da: una edición que no llega y no avisa
+   * deja a quien la hizo creyendo que el otro ve lo corregido.
+   */
+  const guardarEdicion = async (m: Mensaje): Promise<void> => {
+    const texto = campo.current?.value.trim() ?? "";
+    if (!texto) {
+      setProblema("Un mensaje no puede quedarse vacío. Para quitarlo, bórralo para todos.");
+      return;
+    }
+    terminarEdicion();
+    if (texto === m.body) return;
+
+    const marcar = (body: string | null, editedAt: string | null | undefined): void =>
+      setMensajes((prev) => prev.map((x) => (x.id === m.id ? { ...x, body, editedAt } : x)));
+    marcar(texto, new Date().toISOString());
+
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId!)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: texto }),
+      },
+    ).catch(() => null);
+    if (r?.ok) return;
+    marcar(m.body, m.editedAt);
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    setProblema(`No se pudo editar: ${detalle?.detail ?? "no hay conexión con el servidor"}.`);
   };
 
   /*
@@ -785,6 +888,14 @@ export function Conversacion({
       escribirBorrador();
     };
   }, [lineId, chat]);
+
+  // El texto entra al campo cuando la franja ya está puesta: es el campo de
+  // la edición, no el de antes.
+  useEffect(() => {
+    if (editando) ponerEnCampo(editando.body ?? "");
+    // Solo al EMPEZAR a editar otro mensaje; lo demás lo lleva quien teclea.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editando?.id]);
 
   /**
    * Vuelve a pedir un fichero que no se pudo bajar. Pasa a «Descargando…» al
@@ -862,6 +973,9 @@ export function Conversacion({
         Icono: IconoCopiar,
         onSelect: () => navigator.clipboard.writeText(m.body!),
       });
+    }
+    if (editable(m)) {
+      opciones.push({ texto: "Editar", Icono: IconoEditar, onSelect: () => empezarEdicion(m) });
     }
     if (m.media) {
       opciones.push({
@@ -1251,7 +1365,7 @@ export function Conversacion({
           </p>
         )}
 
-        {actual && (
+        {actual && !editando && (
           <div className="border-t border-(--color-borde) bg-(--color-panel) px-4 py-2.5">
             {/*
               Las miniaturas, en fila. La elegida lleva el anillo y es la que
@@ -1338,7 +1452,7 @@ export function Conversacion({
           Va aquí y no dentro del formulario porque se ve ANTES de escribir: es
           lo que confirma que la respuesta va a ese mensaje y no al aire.
         */}
-        {respondiendo && (
+        {respondiendo && !editando && (
           <div className="flex items-center gap-2 border-t border-(--color-borde) bg-(--color-panel) px-3 pt-2 md:px-4">
             <span className="flex items-center gap-2 text-(--color-tenue)">
               <IconoResponder className="size-4" />
@@ -1350,6 +1464,34 @@ export function Conversacion({
               type="button"
               onClick={() => { setRespondiendo(null); apuntarBorrador(null); }}
               aria-label="No responder a ese mensaje"
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+            >
+              <IconoCerrar className="size-4" />
+            </button>
+          </div>
+        )}
+
+        {/*
+          Qué se está corrigiendo, en el sitio de la cita: es lo que dice que
+          Enter va a CAMBIAR ese mensaje y no a mandar otro.
+        */}
+        {editando && (
+          <div className="flex items-center gap-2 border-t border-(--color-borde) bg-(--color-panel) px-3 pt-2 md:px-4">
+            <span className="text-(--color-tenue)">
+              <IconoEditar className="size-4" />
+            </span>
+            <div className="flex min-w-0 flex-1 items-stretch gap-2 overflow-hidden rounded-md bg-(--color-cita-propia)">
+              <span aria-hidden className="w-1 shrink-0 bg-(--color-acento-fuerte)" />
+              <span className="min-w-0 flex-1 py-1 pr-1">
+                <span className="block text-xs font-semibold text-(--color-acento-fuerte)">Editando mensaje</span>
+                <span className="block truncate text-xs text-(--color-tenue)">{editando.body}</span>
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={terminarEdicion}
+              aria-label="Cancelar la edición"
+              title="Cancelar (Esc)"
               className="flex size-8 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
             >
               <IconoCerrar className="size-4" />
@@ -1373,6 +1515,8 @@ export function Conversacion({
           */
           onSubmit={(e) => {
             e.preventDefault();
+            // Corrigiendo, Enter guarda la corrección: no manda nada nuevo.
+            if (editando) { void guardarEdicion(editando); return; }
             const formData = new FormData(e.currentTarget);
             startTransition(async () => {
               const texto = String(formData.get("texto") ?? "").trim();
@@ -1542,7 +1686,7 @@ export function Conversacion({
           <button
             type="button"
             onClick={() => selector.current?.click()}
-            disabled={subiendo}
+            disabled={subiendo || editando !== null}
             aria-label="Adjuntar un fichero"
             className="flex size-9 shrink-0 items-center justify-center rounded-lg text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-texto) disabled:opacity-40 md:size-10"
           >
@@ -1552,7 +1696,7 @@ export function Conversacion({
           <button
             type="button"
             onClick={() => setStickers((v) => !v)}
-            disabled={subiendo}
+            disabled={subiendo || editando !== null}
             aria-label="Stickers"
             aria-expanded={stickers}
             className={`flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 md:size-10 ${
@@ -1566,7 +1710,7 @@ export function Conversacion({
 
           <Grabadora
             tipo="audio"
-            deshabilitado={subiendo || adjuntos.length > 0}
+            deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
             onError={setProblema}
             onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
             onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
@@ -1580,7 +1724,7 @@ export function Conversacion({
           <span className="hidden md:contents">
             <Grabadora
               tipo="video"
-              deshabilitado={subiendo || adjuntos.length > 0}
+              deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
               onError={setProblema}
               onGrabado={async (file) => { await mandarFichero(file, "video", ""); }}
               onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
@@ -1598,11 +1742,20 @@ export function Conversacion({
             aria-autocomplete="list"
             aria-activedescendant={opcionesDeMencion.length > 0 ? `mencion-${resaltada}` : undefined}
             onInput={(e) => {
-              alEscribir(e.currentTarget.value); revisarMencion(); ajustarAltura(); apuntarBorrador();
+              ajustarAltura();
+              // Corregir no es escribir: ni «escribiendo…», ni menciones —la
+              // edición viaja como texto plano—, ni borrador.
+              if (editando) return;
+              alEscribir(e.currentTarget.value); revisarMencion(); apuntarBorrador();
             }}
-            onSelect={revisarMencion}
+            onSelect={() => { if (!editando) revisarMencion(); }}
             onBlur={() => setTimeout(() => setConsulta(null), 150)}
             onKeyDown={(e) => {
+              if (editando && e.key === "Escape") {
+                e.preventDefault();
+                terminarEdicion();
+                return;
+              }
               if (opcionesDeMencion.length === 0) {
                 /*
                  * Enter envía y Shift+Enter hace salto de línea, como en
@@ -1634,7 +1787,7 @@ export function Conversacion({
                 setConsulta(null);
               }
             }}
-            placeholder={actual
+            placeholder={editando ? "Corrige el mensaje" : actual
               ? adjuntos.length > 1 ? "Pie de este (opcional)…" : "Añade un pie (opcional)…"
               : "Escribe un mensaje"}
             className="scroll-discreto max-h-48 min-w-0 flex-1 resize-none rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm leading-5 md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
@@ -1642,10 +1795,11 @@ export function Conversacion({
 
           <button
             disabled={subiendo}
-            aria-label="Enviar"
+            aria-label={editando ? "Guardar la edición" : "Enviar"}
+            title={editando ? "Guardar (Enter)" : undefined}
             className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-(--color-acento) md:size-10 text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
           >
-            <IconoEnviar className="size-5" />
+            {editando ? <IconoCheck className="size-5" /> : <IconoEnviar className="size-5" />}
           </button>
         </form>
       </div>

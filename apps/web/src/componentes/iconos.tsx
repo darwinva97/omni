@@ -248,6 +248,13 @@ export const IconoReenviar = (p: Props) => (
   <Base {...p}><path d="M13 5.5 20 12l-7 6.5V15c-6 0-8 2.5-9 4.5.5-7 4.5-9 9-9z" /></Base>
 );
 
+/** Lápiz: editar lo ya enviado. */
+export const IconoEditar = (p: Props) => (
+  <Base {...p}>
+    <path d="M14.5 5.5 18.5 9.5M4 20l1-4.5L15.8 4.7a1.9 1.9 0 0 1 2.7 0l.8.8a1.9 1.9 0 0 1 0 2.7L8.5 19z" />
+  </Base>
+);
+
 export const IconoPapelera = (p: Props) => (
   <Base {...p}>
     <path d="M4 6.5h16M9 6.5V4h6v2.5M6.5 6.5 7.5 21h9l1-14.5" /><path d="M10.5 10.5v6M13.5 10.5v6" />
