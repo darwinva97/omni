@@ -1246,94 +1246,110 @@ export function Conversacion({
 
         <form
           ref={formulario}
-          action={async (formData) => {
-            const texto = String(formData.get("texto") ?? "").trim();
-            pararDeEscribir();
-            // Lo que se manda va al final del hilo de verdad, no al de una
-            // ventana de hace meses.
-            if (ventanaRef.current) await volverAlPresente();
+          /*
+            Con `onSubmit` y no con `action`, a propósito.
 
-            // Con adjunto, lo escrito es el PIE y no otro mensaje: dos
-            // mensajes separados no es lo que se pidió al escribir junto.
-            /*
-             * La cita se toma y se suelta ANTES de enviar.
-             *
-             * Si se dejara puesta hasta que el servidor conteste, lo siguiente
-             * que se escriba —y se escribe rápido— saldría citando también.
-             */
-            const citado = respondiendo;
-            setRespondiendo(null);
-            const citaLocal = citado ? citaDeMensaje(citado) : null;
+            Una `action` de formulario hace que React vacíe el formulario
+            cuando la acción TERMINA, es decir, cuando el servidor contesta. Lo
+            que se haya empezado a escribir mientras tanto —el segundo mensaje,
+            que se escribe rápido— se borraba entonces de golpe. Aquí el campo
+            se vacía a mano en el momento de enviar, y nada más.
 
-            if (adjuntos.length > 0) {
+            La transición sigue envolviendo el envío entero: es lo que mantiene
+            el mensaje «enviando» en la lista hasta que llega la respuesta.
+          */
+          onSubmit={(e) => {
+            e.preventDefault();
+            const formData = new FormData(e.currentTarget);
+            startTransition(async () => {
+              const texto = String(formData.get("texto") ?? "").trim();
+              pararDeEscribir();
+              // Lo que se manda va al final del hilo de verdad, no al de una
+              // ventana de hace meses.
+              if (ventanaRef.current) await volverAlPresente();
+
+              // Con adjunto, lo escrito es el PIE y no otro mensaje: dos
+              // mensajes separados no es lo que se pidió al escribir junto.
               /*
-               * Todos, en orden, uno por mensaje. La cita solo en el primero:
-               * en WhatsApp responder con varias fotos cita una vez.
+               * La cita se toma y se suelta ANTES de enviar.
                *
-               * Si uno falla se PARA ahí. Lo que no salió se queda en la tira
-               * para reintentar, y no se repite el mismo error treinta veces.
+               * Si se dejara puesta hasta que el servidor conteste, lo siguiente
+               * que se escriba —y se escribe rápido— saldría citando también.
                */
-              let pendientes = guardarPie(adjuntos).map((a) => ({ ...a, pie: a.pie.trim() }));
+              const citado = respondiendo;
+              setRespondiendo(null);
+              const citaLocal = citado ? citaDeMensaje(citado) : null;
+
+              if (adjuntos.length > 0) {
+                /*
+                 * Todos, en orden, uno por mensaje. La cita solo en el primero:
+                 * en WhatsApp responder con varias fotos cita una vez.
+                 *
+                 * Si uno falla se PARA ahí. Lo que no salió se queda en la tira
+                 * para reintentar, y no se repite el mismo error treinta veces.
+                 */
+                let pendientes = guardarPie(adjuntos).map((a) => ({ ...a, pie: a.pie.trim() }));
+                formulario.current?.reset();
+                ajustarAltura();
+                const total = pendientes.length;
+                for (const [i, a] of [...pendientes].entries()) {
+                  setProgreso({ hecho: i, total });
+                  const pie = prepararMenciones(a.pie, elegidas.current);
+                  const ok = await mandarFichero(
+                    a.file, a.campo, pie.texto,
+                    {
+                      // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
+                      // llama «GIF»; sin la marca llega como un vídeo normal.
+                      ...(a.gif && a.campo === "video" ? { gifPlayback: true } : {}),
+                      ...(pie.mentions.length > 0 ? { mentions: pie.mentions } : {}),
+                    },
+                    i === 0 ? citado?.providerMessageId ?? undefined : undefined,
+                    i === 0 ? citaLocal : null,
+                  );
+                  if (!ok) break;
+                  pendientes = pendientes.filter((x) => x.id !== a.id);
+                  setAdjuntos(pendientes);
+                }
+                setProgreso(null);
+                if (pendientes.length === 0) elegidas.current = new Map();
+                setElegido(pendientes[0]?.id ?? null);
+                if (campo.current) campo.current.value = pendientes[0]?.pie ?? "";
+                ajustarAltura();
+                if (selector.current) selector.current.value = "";
+                return;
+              }
+
+              if (!texto) return;
               formulario.current?.reset();
               ajustarAltura();
-              const total = pendientes.length;
-              for (const [i, a] of [...pendientes].entries()) {
-                setProgreso({ hecho: i, total });
-                const pie = prepararMenciones(a.pie, elegidas.current);
-                const ok = await mandarFichero(
-                  a.file, a.campo, pie.texto,
-                  {
-                    // Un GIF sale como vídeo en bucle, que es lo que WhatsApp
-                    // llama «GIF»; sin la marca llega como un vídeo normal.
-                    ...(a.gif && a.campo === "video" ? { gifPlayback: true } : {}),
-                    ...(pie.mentions.length > 0 ? { mentions: pie.mentions } : {}),
-                  },
-                  i === 0 ? citado?.providerMessageId ?? undefined : undefined,
-                  i === 0 ? citaLocal : null,
-                );
-                if (!ok) break;
-                pendientes = pendientes.filter((x) => x.id !== a.id);
-                setAdjuntos(pendientes);
+              setConsulta(null);
+              startTransition(() => anadirPendiente(texto));
+
+              // Lo que se ve dice «@Rodrigo»; lo que se manda, «@número» y a
+              // quién. Ver lib/menciones.ts.
+              const conMenciones = prepararMenciones(texto, elegidas.current);
+              elegidas.current = new Map();
+              const enviado = await enviar(
+                conMenciones.texto, citado?.providerMessageId ?? undefined,
+                conMenciones.mentions.length > 0 ? conMenciones.mentions : undefined,
+              );
+              if (enviado) {
+                /*
+                 * La cita se pinta con lo que YA tenemos aquí.
+                 *
+                 * El servidor la devolvería resuelta en la siguiente carga, pero
+                 * esperar a eso dejaría la respuesta sin cita unos segundos,
+                 * justo la que se acaba de mandar.
+                 */
+                const conCita = {
+                  ...enviado,
+                  ...(citaLocal ? { replyTo: citaLocal } : {}),
+                  ...(conMenciones.menciones.length > 0 ? { mentions: conMenciones.menciones } : {}),
+                };
+                setMensajes((prev) =>
+                  prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
               }
-              setProgreso(null);
-              if (pendientes.length === 0) elegidas.current = new Map();
-              setElegido(pendientes[0]?.id ?? null);
-              if (campo.current) campo.current.value = pendientes[0]?.pie ?? "";
-              ajustarAltura();
-              if (selector.current) selector.current.value = "";
-              return;
-            }
-
-            if (!texto) return;
-            formulario.current?.reset();
-            ajustarAltura();
-            setConsulta(null);
-            startTransition(() => anadirPendiente(texto));
-
-            // Lo que se ve dice «@Rodrigo»; lo que se manda, «@número» y a
-            // quién. Ver lib/menciones.ts.
-            const conMenciones = prepararMenciones(texto, elegidas.current);
-            elegidas.current = new Map();
-            const enviado = await enviar(
-              conMenciones.texto, citado?.providerMessageId ?? undefined,
-              conMenciones.mentions.length > 0 ? conMenciones.mentions : undefined,
-            );
-            if (enviado) {
-              /*
-               * La cita se pinta con lo que YA tenemos aquí.
-               *
-               * El servidor la devolvería resuelta en la siguiente carga, pero
-               * esperar a eso dejaría la respuesta sin cita unos segundos,
-               * justo la que se acaba de mandar.
-               */
-              const conCita = {
-                ...enviado,
-                ...(citaLocal ? { replyTo: citaLocal } : {}),
-                ...(conMenciones.menciones.length > 0 ? { mentions: conMenciones.menciones } : {}),
-              };
-              setMensajes((prev) =>
-                prev.some((x) => x.id === conCita.id) ? prev : [...prev, conCita]);
-            }
+            });
           }}
           /*
             Pegar un fichero lo adjunta, como en WhatsApp: una captura con
