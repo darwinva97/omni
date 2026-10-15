@@ -53,3 +53,36 @@ run("bus de Postgres (LISTEN/NOTIFY)", () => {
     await own.end({ timeout: 5 });
   });
 });
+
+run("cola de Postgres con la base cerrándose", () => {
+  it("un trabajo que falla mientras se cierra la conexión no deja un rechazo suelto", async () => {
+    /*
+     * Lo que tumbaba CI de vez en cuando —y en producción tumbaría el
+     * proceso—: el trabajo falla, `#run` intenta apuntar el fallo y la
+     * conexión ya se está cerrando. Ese UPDATE rechazaba sin que nadie lo
+     * esperara.
+     */
+    const own = testSql();
+    const cola = new PostgresJobQueue(own);
+    const sueltos: unknown[] = [];
+    const anotar = (e: unknown): void => { sueltos.push(e); };
+    process.on("unhandledRejection", anotar);
+    try {
+      let empezo!: () => void;
+      const enMarcha = new Promise<void>((r) => { empezo = r; });
+      await cola.enqueue("q_cierre", { n: 1 });
+      cola.process("q_cierre", async () => {
+        empezo();
+        // Falla DESPUÉS de que la conexión empiece a cerrarse.
+        await new Promise((r) => setTimeout(r, 100));
+        throw new Error("falla a propósito");
+      });
+      await enMarcha;
+      await own.end({ timeout: 1 });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(sueltos).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", anotar);
+    }
+  });
+});
