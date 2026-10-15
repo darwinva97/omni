@@ -140,6 +140,17 @@ export const ROUTES = {
   "automation.manage": { id: "automation.manage", permission: "org.manage", scope: "org" },
 
   /*
+   * --- respuestas rápidas
+   *
+   * Verlas es de cualquiera que pueda leer: son textos de la organización.
+   * Cambiarlas es de quien gestiona, como las reglas: lo que dicen sale a los
+   * clientes en nombre de todo el equipo. Como todo lo de ámbito de
+   * organización, una clave limitada a líneas no llega.
+   */
+  "quickreply.list": { id: "quickreply.list", permission: "message.read", scope: "org" },
+  "quickreply.manage": { id: "quickreply.manage", permission: "automation.manage", scope: "org" },
+
+  /*
    * --- notas internas
    *
    * Leerlas es de quien lee el chat; escribirlas y borrarlas, de quien lo

@@ -112,3 +112,24 @@ export const internalNoteTable = pgTable(
   },
   (t) => [index("internal_note_chat_idx").on(t.lineId, t.chatId, t.createdAt)],
 );
+
+/**
+ * Una respuesta rápida: un texto de la organización con su atajo.
+ *
+ * En el panel, «/precios» al principio del campo lo ofrece y se puede retocar
+ * antes de enviar. El atajo va sin la barra y en minúsculas, único por
+ * organización. Ver drizzle/0009_respuestas_rapidas.sql.
+ */
+export const quickReplyTable = pgTable(
+  "quick_reply",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull().references(() => orgTable.id, { onDelete: "cascade" }),
+    shortcut: text("shortcut").notNull(),
+    text: text("text").notNull(),
+    createdBy: text("created_by").references(() => userTable.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("quick_reply_org_shortcut_idx").on(t.orgId, t.shortcut)],
+);

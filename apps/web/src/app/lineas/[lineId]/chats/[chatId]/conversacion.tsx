@@ -36,6 +36,9 @@ import {
 } from "@/lib/adjuntar";
 import { tamano } from "@/lib/formato";
 import { guardarBorrador, leerBorrador, type Borrador } from "@/lib/borradores";
+import {
+  consultaDeRespuesta, filtrarRespuestas, insertarRespuesta, useRespuestas, type Respuesta,
+} from "@/lib/respuestas";
 import { ControlesDeAtencion } from "@/componentes/atencion";
 import { useEquipo } from "@/lib/equipo";
 import type { Conversacion as Atencion } from "@/lib/api";
@@ -859,9 +862,26 @@ export function Conversacion({
   const candidatos = candidatosDeMencion(participantes, agenda);
   const opcionesDeMencion = consulta ? filtrarParticipantes(candidatos, consulta.filtro) : [];
 
+  /*
+   * Lo que había en el campo cuando se cerró una lista con Esc.
+   *
+   * React avisa de `select` también al soltar una tecla, así que al soltar Esc
+   * se volvía a mirar el campo y la lista se abría otra vez, como si Esc no
+   * hiciera nada. Mientras el texto sea el mismo, se queda cerrada; en cuanto
+   * se escribe algo, vuelve a ofrecerse.
+   */
+  const cerradaCon = useRef<string | null>(null);
+  const cerradaAMano = (): boolean => {
+    const el = campo.current;
+    if (!el || cerradaCon.current === null) return false;
+    if (el.value === cerradaCon.current) return true;
+    cerradaCon.current = null;
+    return false;
+  };
+
   const revisarMencion = (): void => {
     const el = campo.current;
-    if (!el || candidatos.length === 0) { setConsulta(null); return; }
+    if (!el || candidatos.length === 0 || cerradaAMano()) { setConsulta(null); return; }
     const nueva = consultaDeMencion(el.value, el.selectionStart ?? el.value.length);
     setConsulta(nueva ? { chat, ...nueva } : null);
     if (nueva?.filtro !== consulta?.filtro) setResaltada(0);
@@ -878,6 +898,44 @@ export function Conversacion({
     // Solo lo del grupo es mención de verdad; lo demás se queda en texto.
     if (!p.fuera) elegidas.current.set(p.name, p.address);
     setConsulta(null);
+    apuntarBorrador();
+  };
+
+  /*
+   * Respuestas rápidas: «/» al principio del campo. El mismo combobox que el
+   * «@», con la misma resaltada: las dos listas no se abren a la vez, porque
+   * el atajo es la primera palabra y no lleva arroba. Ver lib/respuestas.ts.
+   */
+  const respuestas = useRespuestas();
+  const [barraDe, setBarra] = useState<{ chat: string; filtro: string } | null>(null);
+  const barra = barraDe?.chat === chat ? barraDe : null;
+  const opcionesDeRespuesta = barra ? filtrarRespuestas(respuestas ?? [], barra.filtro) : [];
+  // Con la barra puesta y ninguna creada, se dice dónde se crean en vez de no
+  // hacer nada: si no, nadie sabría que existen.
+  const sinRespuestas = barra !== null && barra.filtro === "" && respuestas?.length === 0;
+  const lista = opcionesDeRespuesta.length > 0 ? "respuestas"
+    : opcionesDeMencion.length > 0 ? "menciones" : null;
+
+  const revisarRespuesta = (): void => {
+    const el = campo.current;
+    if (!el) return;
+    if (cerradaAMano()) { setBarra(null); return; }
+    const nueva = consultaDeRespuesta(el.value, el.selectionStart ?? el.value.length);
+    setBarra(nueva ? { chat, ...nueva } : null);
+    if (nueva?.filtro !== barra?.filtro) setResaltada(0);
+  };
+
+  /** Pone el texto guardado en lugar del atajo, listo para retocar. */
+  const responderCon = (r: Respuesta): void => {
+    const el = campo.current;
+    if (!el) return;
+    const hecho = insertarRespuesta(el.value, el.selectionStart ?? el.value.length, r);
+    el.value = hecho.texto;
+    el.setSelectionRange(hecho.cursor, hecho.cursor);
+    ajustarAltura();
+    el.focus();
+    setBarra(null);
+    alEscribir(el.value);
     apuntarBorrador();
   };
 
@@ -1867,6 +1925,7 @@ export function Conversacion({
               formulario.current?.reset();
               ajustarAltura();
               setConsulta(null);
+              setBarra(null);
               startTransition(() => anadirPendiente(texto));
 
               // Lo que se ve dice «@Rodrigo»; lo que se manda, «@número» y a
@@ -1910,7 +1969,44 @@ export function Conversacion({
           }}
           className="relative flex items-end gap-1.5 border-t border-(--color-borde) bg-(--color-panel) px-3 py-2.5"
         >
-          {opcionesDeMencion.length > 0 && (
+          {(lista === "respuestas" || sinRespuestas) && (
+            <ul
+              id="respuestas"
+              role="listbox"
+              aria-label="Respuestas rápidas"
+              className="absolute bottom-full left-3 z-30 mb-2 w-96 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-xl border border-(--color-borde) bg-(--color-panel) py-1 shadow-[0_8px_28px_rgba(0,0,0,0.18)]"
+            >
+              {opcionesDeRespuesta.map((r, i) => (
+                <li
+                  key={r.id}
+                  id={`respuesta-${i}`}
+                  role="option"
+                  aria-selected={i === resaltada}
+                  onMouseDown={(e) => { e.preventDefault(); responderCon(r); }}
+                  onMouseEnter={() => setResaltada(i)}
+                  className={`cursor-pointer px-3 py-1.5 ${i === resaltada ? "bg-(--color-hundido)" : ""}`}
+                >
+                  <span className="block text-sm font-medium text-(--color-acento-fuerte)">/{r.shortcut}</span>
+                  <span className="block truncate text-xs text-(--color-tenue)">{r.text}</span>
+                </li>
+              ))}
+              {sinRespuestas && (
+                <li role="presentation" className="px-3 py-2 text-xs text-(--color-tenue)">
+                  Aún no hay respuestas rápidas: textos guardados que se insertan con «/atajo».
+                </li>
+              )}
+              <li role="presentation" className="mt-1 border-t border-(--color-borde-sutil) px-3 pt-1.5 pb-1">
+                <Link
+                  href="/respuestas"
+                  onMouseDown={(e) => e.preventDefault()}
+                  className="text-xs font-medium text-(--color-acento-fuerte) hover:underline"
+                >
+                  {sinRespuestas ? "Crear respuestas rápidas" : "Gestionar respuestas rápidas"}
+                </Link>
+              </li>
+            </ul>
+          )}
+          {lista === "menciones" && (
             <ul
               id="menciones"
               role="listbox"
@@ -2026,26 +2122,34 @@ export function Conversacion({
             rows={1}
             autoComplete="off"
             role="combobox"
-            aria-expanded={opcionesDeMencion.length > 0}
-            aria-controls="menciones"
+            aria-expanded={lista !== null}
+            aria-controls={lista ?? "menciones"}
             aria-autocomplete="list"
-            aria-activedescendant={opcionesDeMencion.length > 0 ? `mencion-${resaltada}` : undefined}
+            aria-activedescendant={lista === "respuestas" ? `respuesta-${resaltada}`
+              : lista === "menciones" ? `mencion-${resaltada}` : undefined}
             onInput={(e) => {
               ajustarAltura();
               // Corregir no es escribir: ni «escribiendo…», ni menciones —la
               // edición viaja como texto plano—, ni borrador.
               if (editando) return;
-              alEscribir(e.currentTarget.value); revisarMencion(); apuntarBorrador();
+              alEscribir(e.currentTarget.value); revisarMencion(); revisarRespuesta(); apuntarBorrador();
             }}
-            onSelect={() => { if (!editando) revisarMencion(); }}
-            onBlur={() => setTimeout(() => setConsulta(null), 150)}
+            onSelect={() => { if (!editando) { revisarMencion(); revisarRespuesta(); } }}
+            onBlur={() => setTimeout(() => { setConsulta(null); setBarra(null); }, 150)}
             onKeyDown={(e) => {
               if (editando && e.key === "Escape") {
                 e.preventDefault();
                 terminarEdicion();
                 return;
               }
-              if (opcionesDeMencion.length === 0) {
+              if (lista === null) {
+                // Con la barra puesta y ninguna respuesta creada, Esc quita el aviso.
+                if (sinRespuestas && e.key === "Escape") {
+                  e.preventDefault();
+                  cerradaCon.current = e.currentTarget.value;
+                  setBarra(null);
+                  return;
+                }
                 /*
                  * Enter envía y Shift+Enter hace salto de línea, como en
                  * WhatsApp de escritorio. En un teléfono, Enter es salto de
@@ -2062,18 +2166,22 @@ export function Conversacion({
                 formulario.current?.requestSubmit();
                 return;
               }
+              const n = lista === "respuestas" ? opcionesDeRespuesta.length : opcionesDeMencion.length;
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
-                const n = opcionesDeMencion.length;
                 setResaltada((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
               } else if (e.key === "Enter" || e.key === "Tab") {
-                // Con la lista abierta, Enter elige: mandar «@Ro» a medias
-                // nunca es lo que se quiere.
+                // Con la lista abierta, Enter elige: mandar «@Ro» o «/pre» a
+                // medias nunca es lo que se quiere.
                 e.preventDefault();
-                mencionar(opcionesDeMencion[Math.min(resaltada, opcionesDeMencion.length - 1)]!);
+                const i = Math.min(resaltada, n - 1);
+                if (lista === "respuestas") responderCon(opcionesDeRespuesta[i]!);
+                else mencionar(opcionesDeMencion[i]!);
               } else if (e.key === "Escape") {
                 e.preventDefault();
+                cerradaCon.current = e.currentTarget.value;
                 setConsulta(null);
+                setBarra(null);
               }
             }}
             placeholder={editando ? "Corrige el mensaje" : actual

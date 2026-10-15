@@ -1,6 +1,6 @@
 import Link from "next/link";
 import {
-  IconoBitacora, IconoEntregas, IconoGrupo, IconoLineas, IconoLlave, IconoSalir,
+  IconoBitacora, IconoEntregas, IconoGrupo, IconoLineas, IconoLlave, IconoRespuestas, IconoSalir,
 } from "./iconos";
 
 /**
@@ -19,6 +19,7 @@ import {
 const DESTINOS = [
   { href: "/", texto: "Líneas", Icono: IconoLineas },
   { href: "/equipo", texto: "Equipo", Icono: IconoGrupo },
+  { href: "/respuestas", texto: "Respuestas rápidas", Icono: IconoRespuestas },
   { href: "/claves", texto: "Claves", Icono: IconoLlave },
   { href: "/entregas", texto: "Entregas", Icono: IconoEntregas },
   { href: "/auditoria", texto: "Bitácora", Icono: IconoBitacora },
@@ -41,8 +42,8 @@ export function Rail({ actual }: { actual: string }) {
       aria-label="Secciones"
       className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-around gap-1 border-t border-(--color-borde) bg-(--color-panel) px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] md:inset-x-auto md:inset-y-0 md:left-0 md:w-14 md:flex-col md:justify-start md:border-t-0 md:border-r md:px-0 md:py-3"
     >
-      {/* El logotipo solo en escritorio: en una barra inferior de cinco
-          destinos, un sexto botón que lleva al primero es ruido. */}
+      {/* El logotipo solo en escritorio: en una barra inferior llena de
+          destinos, otro botón más que lleva al primero es ruido. */}
       <Link
         href="/"
         aria-label="Omni, inicio"

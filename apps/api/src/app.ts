@@ -563,6 +563,7 @@ import { registerLineAdminRoutes } from "./routes/lines.js";
 import { registerGroupRoutes, registerGroupChatRoutes } from "./routes/groups.js";
 import { registerLabelRoutes } from "./routes/labels.js";
 import { destacadosDe, registerStarredRoutes } from "./routes/destacados.js";
+import { registerQuickReplyRoutes } from "./routes/respuestas.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerNewsletterRoutes } from "./routes/newsletters.js";
 import { ConversationSchema, registerCrmRoutes } from "./routes/crm.js";
@@ -1610,6 +1611,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
   registerGroupChatRoutes(app, container);
   registerLabelRoutes(app, container);
   registerStarredRoutes(app, container);
+  registerQuickReplyRoutes(app, container);
   registerPluginRoutes(app, container, container.plugins, HOST_VERSION);
   registerNewsletterRoutes(app, container);
   registerCrmRoutes(app, container);

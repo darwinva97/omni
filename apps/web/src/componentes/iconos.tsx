@@ -296,6 +296,14 @@ export const IconoEstrella = ({ relleno = false, ...p }: Props & { relleno?: boo
   </svg>
 );
 
+/** Bocadillo con una barra: las respuestas rápidas, que se piden con «/». */
+export const IconoRespuestas = (p: Props) => (
+  <Base {...p}>
+    <path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9.5A1.5 1.5 0 0 1 19 17h-8.5L6 20.5V17H5a1.5 1.5 0 0 1-1.5-1.5V6A1.5 1.5 0 0 1 5 4.5Z" />
+    <path d="m13.5 7.5-3 6.5" />
+  </Base>
+);
+
 /** Lápiz: editar lo ya enviado. */
 export const IconoEditar = (p: Props) => (
   <Base {...p}>

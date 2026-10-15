@@ -570,6 +570,47 @@ export const COMMANDS: readonly Command[] = [
       }),
   },
   {
+    name: "respuestas",
+    summary: "Las respuestas rápidas de la organización",
+    operation: "GET /v1/quick-replies",
+    args: [],
+    run: (c) => c.request("GET", "/v1/quick-replies"),
+  },
+  {
+    name: "respuesta:crear",
+    summary: "Crear una respuesta rápida: «/atajo» y su texto",
+    operation: "POST /v1/quick-replies",
+    args: [
+      { name: "atajo", required: true, description: "Con o sin barra: «precios» o «/precios»" },
+      { name: "texto", required: true, description: "Lo que se inserta al elegirla" },
+    ],
+    run: (c, a) => c.request("POST", "/v1/quick-replies", {
+      shortcut: req(a, 0, "atajo"), text: req(a, 1, "texto"),
+    }),
+  },
+  {
+    name: "respuesta:editar",
+    summary: "Cambiar el atajo o el texto de una respuesta rápida",
+    operation: "PATCH /v1/quick-replies/{id}",
+    args: [{ name: "respuesta", required: true, description: "Identificador de la respuesta" }],
+    flags: [
+      { name: "atajo", description: "Atajo nuevo" },
+      { name: "texto", description: "Texto nuevo" },
+    ],
+    run: (c, a) => c.request("PATCH", `/v1/quick-replies/${enc(req(a, 0, "respuesta"))}`, {
+      ...(typeof a.flags["atajo"] === "string" ? { shortcut: a.flags["atajo"] } : {}),
+      ...(typeof a.flags["texto"] === "string" ? { text: a.flags["texto"] } : {}),
+    }),
+  },
+  {
+    name: "respuesta:borrar",
+    summary: "Borrar una respuesta rápida",
+    operation: "DELETE /v1/quick-replies/{id}",
+    destructive: true,
+    args: [{ name: "respuesta", required: true, description: "Identificador de la respuesta" }],
+    run: (c, a) => c.request("DELETE", `/v1/quick-replies/${enc(req(a, 0, "respuesta"))}`),
+  },
+  {
     name: "etiquetas",
     summary: "Etiquetas de una línea, con cuántas veces se usa cada una",
     operation: "GET /v1/lines/{lineId}/labels",
