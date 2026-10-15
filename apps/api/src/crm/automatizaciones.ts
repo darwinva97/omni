@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { MotorDeAutomatizacion, type Efectos, type RegistroDeDisparo } from "@omni/core";
 import { parseAddress, type EventEnvelope, type Rule, type RuleContext, type Trigger } from "@omni/shared";
 import {
-  automationRuleTable, automationRunTable, conversationTable,
+  automationRuleTable, automationRunTable,
   labelAssignmentTable, messageTable, type Database,
 } from "@omni/db";
 import type { Kv } from "@omni/platform";
@@ -101,7 +101,12 @@ export class Automatizaciones {
       };
     }
 
-    const chat = data.key?.remoteJid;
+    /*
+     * El chat donde el motor GUARDÓ el mensaje, no `remoteJid`: la misma
+     * persona escribe por su teléfono o por su LID, y su conversación, sus
+     * listas y lo que enseña el panel van por una sola dirección.
+     */
+    const chat = (e.data as { chatId?: string }).chatId ?? data.key?.remoteJid;
     if (!chat) return null;
     const direccion = parseAddress(chat);
 
@@ -215,32 +220,21 @@ export class Automatizaciones {
         ));
       },
 
+      // Por `cambiar`, no a la tabla: lo que hace una regla también se ve en
+      // vivo en el panel, igual que si lo hubiera hecho una persona.
       asignar: async (ctx, userId) => {
         const id = await conversacionDe(ctx);
-        if (!id) return;
-        await db.update(conversationTable)
-          .set({ assigneeId: userId, updatedAt: new Date() })
-          .where(eq(conversationTable.id, id));
+        if (id) await conversaciones.cambiar(id, { assigneeId: userId });
       },
 
       cambiarEstado: async (ctx, estado) => {
         const id = await conversacionDe(ctx);
-        if (!id) return;
-        await db.update(conversationTable)
-          .set({
-            status: estado as "open",
-            ...(estado === "resolved" ? { resolvedAt: new Date() } : { resolvedAt: null }),
-            updatedAt: new Date(),
-          })
-          .where(eq(conversationTable.id, id));
+        if (id) await conversaciones.cambiar(id, { status: estado as "open" });
       },
 
       cambiarPrioridad: async (ctx, prioridad) => {
         const id = await conversacionDe(ctx);
-        if (!id) return;
-        await db.update(conversationTable)
-          .set({ priority: prioridad as "normal", updatedAt: new Date() })
-          .where(eq(conversationTable.id, id));
+        if (id) await conversaciones.cambiar(id, { priority: prioridad as "normal" });
       },
 
       llamarWebhook: async (ctx, url, headers) => {

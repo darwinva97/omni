@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { apiKeyTable, createDatabase, lineTable, migrate, orgTable, type DbHandle } from "@omni/db";
+import {
+  apiKeyTable, createDatabase, lineTable, migrate, orgMemberTable, orgTable, userTable, type DbHandle,
+} from "@omni/db";
+import type { EventEnvelope } from "@omni/shared";
 import { loadConfig } from "../config.js";
 import { buildContainer, type Container } from "../container.js";
 import { createApp } from "../app.js";
@@ -12,6 +15,8 @@ const ORG = "org-crm";
 const LINE = "line-crm";
 const CONTACTO = "51977666555";
 const CHAT = `${CONTACTO}@s.whatsapp.net`;
+const AGENTE = "u-crm-agente";
+const AJENO = "u-crm-ajeno";
 
 let dbh: DbHandle;
 let container: Container;
@@ -60,7 +65,14 @@ beforeAll(async () => {
   await dbh.sql`DELETE FROM api_key WHERE org_id = ${ORG}`;
   await dbh.sql`DELETE FROM line WHERE org_id = ${ORG}`;
   await dbh.sql`DELETE FROM org WHERE id = ${ORG}`;
+  await dbh.sql`DELETE FROM app_user WHERE id IN (${AGENTE}, ${AJENO})`;
   await dbh.db.insert(orgTable).values({ id: ORG, name: "CRM", slug: "crm" });
+  // Una persona del equipo, a la que asignar, y otra que no lo es.
+  await dbh.db.insert(userTable).values([
+    { id: AGENTE, email: "agente-crm@ejemplo.com", name: "Agente", emailVerified: true },
+    { id: AJENO, email: "ajeno-crm@ejemplo.com", name: "Ajeno", emailVerified: true },
+  ]);
+  await dbh.db.insert(orgMemberTable).values({ orgId: ORG, userId: AGENTE, role: "agent" });
   await dbh.db.insert(lineTable).values({
     id: LINE, orgId: ORG, channelKind: "sandbox", name: "L", slug: "l-crm",
     address: "51999888777@s.whatsapp.net", sendRatePerMinute: 6000,
@@ -152,6 +164,103 @@ run("conversaciones", () => {
         await llamar("/v1/conversations"));
       return d.find((c) => c.id === id)?.status === "open";
     }, "la conversación volvió a la bandeja");
+  });
+});
+
+interface Conv { id: string; chatId: string; status: string; assigneeId: string | null }
+
+run("responsable y estado", () => {
+  const OTRO = "51955444333";
+  const CHAT_OTRO = `${OTRO}@s.whatsapp.net`;
+  const delChat = async (): Promise<Conv[]> => {
+    const { data } = await j<{ data: Conv[] }>(await llamar("/v1/conversations?limit=200"));
+    return data.filter((c) => c.chatId === CHAT_OTRO);
+  };
+  const viva = async (): Promise<Conv | undefined> =>
+    (await delChat()).find((c) => c.status !== "resolved");
+
+  it("asignar y resolver sale en vivo, para que lo vea el resto del equipo", async () => {
+    await entrante("buenas", OTRO);
+    await esperar(async () => Boolean(await viva()), "se abrió la conversación");
+    const conv = (await viva())!;
+
+    const eventos: EventEnvelope[] = [];
+    const off = await container.bus.subscribe<EventEnvelope>(`org:${ORG}`, (e) => {
+      if (e.event === "conversation.updated") eventos.push(e);
+    });
+    try {
+      const res = await llamar(`/v1/conversations/${conv.id}`, {
+        method: "PATCH", body: JSON.stringify({ assigneeId: AGENTE }),
+      });
+      expect(res.status).toBe(200);
+      await esperar(async () => eventos.some((e) =>
+        (e.data as Conv).id === conv.id && (e.data as Conv).assigneeId === AGENTE),
+      "llegó el evento de la asignación");
+      // Va con el chat, para que el panel sepa qué fila de la lista cambia.
+      expect((eventos.at(-1)!.data as Conv).chatId).toBe(CHAT_OTRO);
+    } finally {
+      await off();
+    }
+  });
+
+  it("el chat trae su conversación: quién lo lleva y en qué estado", async () => {
+    const res = await llamar(`/v1/lines/${LINE}/chats/${encodeURIComponent(CHAT_OTRO)}`);
+    const { data } = await j<{ data: { conversation: Conv | null } }>(res);
+    expect(data.conversation?.assigneeId).toBe(AGENTE);
+    expect(data.conversation?.status).toBe("open");
+
+    const lista = await j<{ data: { address: string; conversation: Conv | null }[] }>(
+      await llamar(`/v1/lines/${LINE}/chats`));
+    expect(lista.data.find((c) => c.address === CHAT_OTRO)?.conversation?.assigneeId).toBe(AGENTE);
+  });
+
+  it("solo se asigna a alguien del equipo", async () => {
+    const conv = (await viva())!;
+    const res = await llamar(`/v1/conversations/${conv.id}`, {
+      method: "PATCH", body: JSON.stringify({ assigneeId: AJENO }),
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("despedirse después de resolver no la reabre", async () => {
+    const conv = (await viva())!;
+    await llamar(`/v1/conversations/${conv.id}`, {
+      method: "PATCH", body: JSON.stringify({ status: "resolved" }),
+    });
+    await llamar(`/v1/lines/${LINE}/messages`, {
+      method: "POST", body: JSON.stringify({ to: CHAT_OTRO, text: "¡gracias, buen día!" }),
+    });
+    await esperar(async () => (await salientes()).includes("¡gracias, buen día!"), "salió la despedida");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await viva(), "una despedida abrió un expediente que nadie tiene que atender")
+      .toBeUndefined();
+  });
+
+  it("si el cliente vuelve a escribir, se reabre con quien le atendió", async () => {
+    const [resuelta] = await delChat();
+    await entrante("otra pregunta", OTRO);
+    await esperar(async () => Boolean(await viva()), "se reabrió");
+    const nueva = (await viva())!;
+    // Un episodio nuevo: el anterior sigue resuelto y cuenta como resuelto.
+    expect(nueva.id).not.toBe(resuelta!.id);
+    expect(nueva.assigneeId).toBe(AGENTE);
+
+    // Y la vieja ya no se puede reabrir encima: habría dos abiertas.
+    const res = await llamar(`/v1/conversations/${resuelta!.id}`, {
+      method: "PATCH", body: JSON.stringify({ status: "open" }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("se puede abrir a mano la de un chat que no tiene, y nunca dos", async () => {
+    const nuevo = "51944000111@s.whatsapp.net";
+    const abrir = () => llamar("/v1/conversations", {
+      method: "POST", body: JSON.stringify({ lineId: LINE, chatId: nuevo, assigneeId: AGENTE }),
+    });
+    const a = await j<{ data: Conv }>(await abrir());
+    const b = await j<{ data: Conv }>(await abrir());
+    expect(a.data.assigneeId).toBe(AGENTE);
+    expect(b.data.id).toBe(a.data.id);
   });
 });
 

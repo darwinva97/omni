@@ -115,6 +115,21 @@ export const IconoAlerta = (p: Props) => (
   <Base {...p}><path d="M12 3.5 21.5 20H2.5z" /><path d="M12 10v4m0 2.5v.5" /></Base>
 );
 
+/** Círculo con visto: una conversación resuelta. No es un acuse: va en círculo. */
+export const IconoResuelta = (p: Props) => (
+  <Base {...p}><circle cx="12" cy="12" r="8.5" /><path d="m8.5 12.2 2.4 2.4 4.8-5" /></Base>
+);
+
+/** Flecha que vuelve: reabrir lo que estaba resuelto. */
+export const IconoReabrir = (p: Props) => (
+  <Base {...p}><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 9" /><path d="M4.5 4.5V9H9" /></Base>
+);
+
+/** El pico de un desplegable. */
+export const IconoDesplegar = (p: Props) => (
+  <Base {...p}><path d="m7 10 5 5 5-5" /></Base>
+);
+
 export const IconoLineas = (p: Props) => (
   <Base {...p}>
     <rect x="3" y="3" width="7.5" height="7.5" rx="2" />

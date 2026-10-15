@@ -42,6 +42,9 @@ export default async function Equipo({
       <div className="space-y-5">
         {invitacion && <SecretoUnaVez etiqueta="Enlace de invitación" valor={invitacion} />}
 
+        {/* Ver el equipo es de todos; invitar, solo de quien lo administra. Un
+            formulario que siempre contesta «no puedes» no se enseña. */}
+        {yo.role === "owner" && (
         <section className="rounded-xl border border-(--color-borde) bg-(--color-panel) p-5">
           <h2 className="text-sm font-semibold">Invitar</h2>
           <p className="mt-1 text-sm text-(--color-tenue)">
@@ -56,6 +59,7 @@ export default async function Equipo({
             <div className="self-end"><Boton>Invitar</Boton></div>
           </form>
         </section>
+        )}
 
         <section>
           <h2 className="mb-2 text-sm font-medium">Miembros</h2>
