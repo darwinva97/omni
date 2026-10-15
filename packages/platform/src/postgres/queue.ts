@@ -43,7 +43,12 @@ export class PostgresJobQueue implements JobQueue {
   }
 
   #ensure(): Promise<void> {
-    this.#ready ??= ensurePlatformSchema(this.#sql);
+    // Un fallo pasajero no se queda guardado: sin esto, una vez rechazada, la
+    // cola no volvía a encolar nada hasta reiniciar el proceso.
+    this.#ready ??= ensurePlatformSchema(this.#sql).catch((err: unknown) => {
+      this.#ready = null;
+      throw err;
+    });
     return this.#ready;
   }
 
@@ -95,13 +100,22 @@ export class PostgresJobQueue implements JobQueue {
         const row = await this.#claim(queue).catch(() => null);
         if (!row) break;
         running++;
-        void this.#run(row, handler as JobHandler<unknown>, opts).finally(() => { running--; });
+        /*
+         * Sin nadie que espere esta promesa, un rechazo suyo tumba el proceso.
+         * `#run` captura lo que lance el trabajo, pero no lo que falle al
+         * APUNTAR el resultado —la base caída o cerrándose—. Ese trabajo no se
+         * pierde: su arrendamiento vence y se vuelve a reclamar.
+         */
+        void this.#run(row, handler as JobHandler<unknown>, opts)
+          .catch(() => {})
+          .finally(() => { running--; });
       }
     };
 
     const interval = setInterval(() => void tick(), 20);
     this.#timers.add(interval);
-    void this.#ensure().then(() => tick());
+    // Si falla, el intervalo lo vuelve a intentar a los 20 ms.
+    void this.#ensure().then(() => tick()).catch(() => {});
 
     return {
       stop: async () => {

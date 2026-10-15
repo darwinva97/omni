@@ -10,7 +10,11 @@ export class PostgresKv implements Kv {
   constructor(sql: Sql) { this.#sql = sql; }
 
   #ensure(): Promise<void> {
-    this.#ready ??= ensurePlatformSchema(this.#sql);
+    // Un fallo pasajero no se queda guardado (igual que en la cola).
+    this.#ready ??= ensurePlatformSchema(this.#sql).catch((err: unknown) => {
+      this.#ready = null;
+      throw err;
+    });
     return this.#ready;
   }
 

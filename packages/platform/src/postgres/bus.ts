@@ -33,11 +33,14 @@ export class PostgresBus implements Bus {
 
   async subscribe<T>(topic: string, handler: (p: T) => void | Promise<void>): Promise<() => Promise<void>> {
     const listener = await this.#sql.listen(this.#channel(topic), (raw) => {
-      try {
-        void handler(JSON.parse(raw) as T);
-      } catch {
-        /* una carga corrupta no puede tumbar la suscripción */
-      }
+      /*
+       * Ni una carga corrupta ni un manejador que falle pueden tumbar la
+       * suscripción. El `try` de antes no veía el rechazo de un manejador
+       * asíncrono, y un rechazo sin nadie que lo espere tumba el proceso.
+       */
+      void Promise.resolve()
+        .then(() => handler(JSON.parse(raw) as T))
+        .catch(() => {});
     });
     const off = async (): Promise<void> => { await listener.unlisten(); };
     this.#unlisten.add(off);
