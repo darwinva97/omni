@@ -406,6 +406,9 @@ export function Conversacion({
   }, [conPendientes.length]);
   useEffect(() => { yaColocado.current = false; }, [chat]);
 
+  /** Lo que había escrito cuando entró el primer adjunto. Ver prepararAdjuntos. */
+  const textoAntesDeAdjuntar = useRef<string | null>(null);
+
   /**
    * Añade ficheros a la tira: el mismo camino para el clip y para pegar.
    *
@@ -418,11 +421,20 @@ export function Conversacion({
     const { lista, avisos } = agregarAdjuntos(conPie, ficheros, () => crypto.randomUUID());
     setProblema(avisos.length > 0 ? avisos.join(" ") : null);
     if (lista.length === conPie.length) return;
-    // El campo pasa a ser el pie del adjunto: lo que hubiera de borrador se va
-    // con él, y queda solo la cita, que sí acompaña a los adjuntos al enviar.
     if (conPie.length === 0) {
-      if (campo.current) campo.current.value = "";
-      apuntarBorrador();
+      /*
+       * Lo escrito pasa a ser el PIE del primero, como en WhatsApp: pegar una
+       * captura con el texto ya escrito es ponerle ese texto debajo. Antes se
+       * vaciaba el campo y lo escrito se perdía, borrador incluido.
+       *
+       * Se aparta también por si se quitan los adjuntos sin enviar: entonces
+       * vuelve al campo. El borrador se queda como estaba, con ese texto.
+       */
+      const escrito = campo.current?.value ?? "";
+      textoAntesDeAdjuntar.current = escrito;
+      const conTexto = lista.map((a, i) => (i === 0 ? { ...a, pie: escrito } : a));
+      elegir(conTexto[0]!.id, conTexto);
+      return;
     }
     setAdjuntos(lista);
     // Se elige el primero de los recién añadidos, que es lo que se acaba de
@@ -447,9 +459,24 @@ export function Conversacion({
   };
 
   const quitarAdjunto = (id: string): void => {
-    const lista = guardarPie(adjuntos).filter((a) => a.id !== id);
+    const conPie = guardarPie(adjuntos);
+    const lista = conPie.filter((a) => a.id !== id);
     setAdjuntos(lista);
     setProblema(null);
+    if (lista.length === 0) {
+      /*
+       * Sin adjuntos, el campo vuelve a ser un mensaje, y no se queda vacío:
+       * lleva el pie del último que se quita si se escribió algo en él, o si
+       * no lo que había antes de adjuntar. Quitar una imagen pegada por
+       * error no borra lo que estabas escribiendo.
+       */
+      const pie = conPie.find((a) => a.id === id)?.pie ?? "";
+      if (campo.current) campo.current.value = pie.trim() ? pie : textoAntesDeAdjuntar.current ?? "";
+      textoAntesDeAdjuntar.current = null;
+      setElegido(null);
+      ajustarAltura();
+      return;
+    }
     if (id === actual?.id) {
       const siguiente = lista[0];
       setElegido(siguiente?.id ?? null);
@@ -1376,6 +1403,9 @@ export function Conversacion({
                  * para reintentar, y no se repite el mismo error treinta veces.
                  */
                 let pendientes = guardarPie(adjuntos).map((a) => ({ ...a, pie: a.pie.trim() }));
+                // Lo escrito antes de adjuntar sale ahora como pie: ya no hay
+                // nada que devolver al campo.
+                textoAntesDeAdjuntar.current = null;
                 formulario.current?.reset();
                 ajustarAltura();
                 const total = pendientes.length;
