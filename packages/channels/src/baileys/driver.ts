@@ -950,13 +950,22 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * guardamos ese objeto, así que ahí se dice que no en vez de reenviar algo
      * distinto de lo que se pidió.
      */
-    if (!origen.raw) {
+    /*
+     * Lo guardado es el SOBRE del evento —`{ key, kind, text, …, raw }`— y el
+     * mensaje de Baileys va dentro, como en `downloadMedia`. Pasarle el sobre
+     * tal cual hacía que Baileys no encontrara contenido («no content in
+     * message») y ningún reenvío salía.
+     */
+    const sobre = origen.raw as { raw?: WAMessage } | WAMessage | null | undefined;
+    const original = (sobre && "raw" in sobre ? sobre.raw : sobre) as WAMessage | null | undefined;
+    if (!original?.message) {
       throw new OmniError(
         "validation_failed",
-        `no conservamos el mensaje original de "${origen.providerMessageId}", y este transporte lo necesita entero para reenviarlo`,
+        `no conservamos el mensaje original de "${origen.providerMessageId}", y este transporte ` +
+          "(whatsapp.baileys) lo necesita entero para reenviarlo; whatsapp.web lo reenvía por su identificador",
       );
     }
-    const enviado = await socket.sendMessage(hacia.value, { forward: origen.raw as never });
+    const enviado = await socket.sendMessage(hacia.value, { forward: original as never });
     return {
       providerMessageId: String(enviado?.key?.id ?? origen.providerMessageId),
       state: "sent",

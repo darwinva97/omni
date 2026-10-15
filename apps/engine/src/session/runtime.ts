@@ -1612,6 +1612,17 @@ export class EngineRuntime {
             eq(messageTable.id, yaEsta[0]!.id),
             isNull(messageTable.providerMessageId),
           ));
+        /*
+         * Y el mensaje tal cual lo dio el transporte, que solo trae el eco.
+         *
+         * Al encolar no lo hay. Sin él, Baileys no puede reenviar lo que
+         * mandamos nosotros —necesita el original entero, con las claves del
+         * fichero si lo lleva— y «Reenviar» de un mensaje propio daba 422.
+         */
+        await this.#deps.db
+          .update(messageTable)
+          .set({ raw: envelope.data as never })
+          .where(and(eq(messageTable.id, yaEsta[0]!.id), isNull(messageTable.raw)));
         return;
       }
     }

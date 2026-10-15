@@ -24,8 +24,10 @@ import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
   IconoAdjuntar, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
   IconoDocumento, IconoEditar, IconoImagen, IconoMicrofono, IconoSonido,
-  IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoResponder, IconoSticker, IconoVolver,
+  IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoReenviar, IconoResponder, IconoSticker,
+  IconoVolver,
 } from "@/componentes/iconos";
+import { Reenviar } from "@/componentes/reenviar";
 import Link from "next/link";
 import { Menu, useMenu, type OpcionMenu } from "@/componentes/menu";
 import { Reacciones, Stickers } from "@/componentes/stickers";
@@ -556,6 +558,7 @@ export function Conversacion({
    * guarda y Esc deja las cosas como estaban.
    */
   const [editando, setEditando] = useState<Mensaje | null>(null);
+  const [reenviando, setReenviando] = useState<Mensaje | null>(null);
   const [senalado, setSenalado] = useState<string | null>(null);
   const campo = useRef<HTMLTextAreaElement>(null);
   /*
@@ -941,6 +944,24 @@ export function Conversacion({
   };
 
   /**
+   * Reenvía a UN chat de esta línea. Devuelve el motivo si no se pudo: el
+   * diálogo lo enseña junto a ese chat, que es donde hay que leerlo.
+   */
+  const reenviarA = async (m: Mensaje, to: string): Promise<string | null> => {
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId!)}/forward`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to }),
+      },
+    ).catch(() => null);
+    if (r?.ok) return null;
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    return detalle?.detail ?? "no hay conexión con el servidor";
+  };
+
+  /**
    * Las acciones de un mensaje.
    *
    * Solo aparecen las que de verdad se pueden hacer con ESE mensaje: borrar
@@ -989,6 +1010,11 @@ export function Conversacion({
         texto: "Reaccionar",
         onSelect: () => setReaccionando(m.id),
       });
+    }
+    // Se reenvía por el identificador de WhatsApp: uno que aún no lo tiene
+    // no hay forma de señalarlo.
+    if (m.providerMessageId && !m.deleted) {
+      opciones.push({ texto: "Reenviar", Icono: IconoReenviar, onSelect: () => setReenviando(m) });
     }
     if (m.fromMe && m.providerMessageId) {
       opciones.push({
@@ -1817,6 +1843,14 @@ export function Conversacion({
           esGrupo={esGrupo}
           onElegir={(r) => void irAResultado(r)}
           onCerrar={() => setBuscando(false)}
+        />
+      )}
+      {reenviando && (
+        <Reenviar
+          lineId={lineId}
+          resumen={textoDeCita(citaDeMensaje(reenviando))}
+          onReenviar={(to) => reenviarA(reenviando, to)}
+          onCerrar={() => setReenviando(null)}
         />
       )}
       {ficha && info && (
