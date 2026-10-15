@@ -31,6 +31,8 @@ import {
 } from "@/lib/atencion";
 import { Responsable } from "@/componentes/atencion";
 import { fragmentoConCoincidencia } from "@/lib/buscar";
+import { leerTelefono, pareceTelefono } from "@/lib/telefono";
+import { EscribirANumero } from "@/componentes/escribir-a-numero";
 import { IconoReabrir, IconoResuelta } from "@/componentes/iconos";
 
 /**
@@ -468,6 +470,23 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
   );
 
   /*
+   * Un número que no está en ningún sitio: se ofrece escribirle.
+   *
+   * Solo si lo escrito parece un teléfono y ese número no sale ya arriba,
+   * como chat o en la agenda: ofrecer «Escribir a» a alguien que está justo
+   * encima sería abrir una segunda puerta a la misma conversación.
+   */
+  const telefono = useMemo(() => {
+    if (!pareceTelefono(busqueda)) return null;
+    const lectura = leerTelefono(busqueda, linea.address);
+    if (!lectura.ok) return lectura;
+    const yaEsta = conversaciones.some((c) =>
+      c.address.split("@")[0] === lectura.numero || c.phone?.split("@")[0] === lectura.numero)
+      || agenda.some((p) => p.phone?.split("@")[0] === lectura.numero);
+    return yaEsta ? null : lectura;
+  }, [busqueda, linea.address, conversaciones, agenda]);
+
+  /*
    * Los MENSAJES que coinciden, en todos los chats.
    *
    * Esto sí va al servidor: los mensajes no están cargados aquí, y lo que se
@@ -811,7 +830,11 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
       )}
 
       <div className="scroll-discreto flex-1 overflow-y-auto">
-        {visibles.length === 0 && (contactosBuscados.length > 0 || (mensajesBuscados?.lista.length ?? 0) > 0)
+        {telefono && (
+          <EscribirANumero lineId={linea.id} lectura={telefono} onAbierto={() => setBusqueda("")} />
+        )}
+        {visibles.length === 0
+          && (telefono || contactosBuscados.length > 0 || (mensajesBuscados?.lista.length ?? 0) > 0)
           ? null : visibles.length === 0 ? (
           <p className="px-4 py-10 text-center text-sm text-(--color-tenue)">
             {busqueda
