@@ -1341,6 +1341,44 @@ run("organización y limpieza", () => {
     expect(ventana.map((m) => m.providerMessageId)).toEqual(["BUSCA-3", "BUSCA-2", "BUSCA-1"]);
   });
 
+  it("buscar en TODOS los chats encuentra en cada uno, dice de cuál es y se pagina", async () => {
+    const otro = "51901000031@s.whatsapp.net";
+    await container.runtime.publish("contact.updated", LINE, {
+      address: otro, savedName: "Cliente de Búsqueda",
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "BUSCA-OTRO", remoteJid: otro }, kind: "text",
+      text: "¿me pasas esa CANCIÓN también?", timestamp: Date.UTC(2026, 9, 2, 9, 0),
+    });
+    await esperarValor(async () => {
+      const f = await dbh.sql`SELECT 1 FROM message WHERE line_id = ${LINE} AND chat_id = ${otro}`;
+      return f.length === 1 ? true : null;
+    }, "se guardó el del otro chat");
+
+    type R = {
+      providerMessageId: string; timestamp: string;
+      chat: { address: string; displayName: string };
+    };
+    const buscar = async (q: string, extra = "", clave?: string) => j<{ data: R[]; meta: { nextBefore: string | null } }>(
+      await call(`/v1/lines/${LINE}/messages/search?q=${enc(q)}${extra}`, {}, clave));
+
+    // Los de los dos chats, lo más reciente primero, y nada de lo retirado.
+    const { data } = await buscar("cancion");
+    expect(data.map((r) => r.providerMessageId)).toEqual(["BUSCA-OTRO", "BUSCA-2", "BUSCA-1"]);
+    // Cada uno con su chat ya con nombre, para enseñarlo sin otra petición.
+    expect(data[0]!.chat).toMatchObject({ address: otro, displayName: "Cliente de Búsqueda" });
+
+    // De uno en uno, siguiendo `nextBefore`.
+    const p1 = await buscar("cancion", "&limit=1");
+    expect(p1.data.map((r) => r.providerMessageId)).toEqual(["BUSCA-OTRO"]);
+    const p2 = await buscar("cancion", `&limit=1&before=${enc(p1.meta.nextBefore!)}`);
+    expect(p2.data.map((r) => r.providerMessageId)).toEqual(["BUSCA-2"]);
+
+    // Una clave acotada a un chat solo encuentra en el suyo.
+    const acotada = await buscar("cancion", "", scopedKey);
+    expect(acotada.data.every((r) => r.chat.address === CHAT)).toBe(true);
+  });
+
   it("el «escribiendo» llega con el nombre de quien escribe, y nunca el propio", async () => {
     const grupo = "120363000000000555@g.us";
     await container.runtime.publish("contact.updated", LINE, {

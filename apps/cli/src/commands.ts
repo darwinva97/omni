@@ -163,6 +163,22 @@ export const COMMANDS: readonly Command[] = [
     }),
   },
   {
+    name: "buscar",
+    summary: "Buscar en los mensajes de todos los chats de una línea",
+    operation: "GET /v1/lines/{lineId}/messages/search",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "texto", required: true, description: "Lo que se busca; da igual tildes y mayúsculas" },
+    ],
+    flags: [
+      { name: "limite", description: "Cuántos devolver" },
+      { name: "antes-de", description: "ISO-8601: sigue desde ahí (meta.nextBefore)" },
+    ],
+    run: (c, a) => c.request("GET", `/v1/lines/${req(a, 0, "linea")}/messages/search`, undefined, {
+      q: req(a, 1, "texto"), limit: flag(a, "limite"), before: flag(a, "antes-de"),
+    }),
+  },
+  {
     name: "mensajes",
     summary: "Historial de una conversación",
     operation: "GET /v1/lines/{lineId}/chats/{chatId}/messages",

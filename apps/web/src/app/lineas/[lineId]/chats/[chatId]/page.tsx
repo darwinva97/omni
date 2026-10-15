@@ -2,11 +2,14 @@ import { apiFetch, apiFetchAuth, type Chat, type Mensaje } from "@/lib/api";
 import { Conversacion } from "./conversacion";
 
 export default async function ChatAbierto({
-  params,
+  params, searchParams,
 }: {
   params: Promise<{ lineId: string; chatId: string }>;
+  /** `?mensaje=…&en=…`: abrir el chat EN ese mensaje, desde la búsqueda de la lista. */
+  searchParams: Promise<{ mensaje?: string; en?: string }>;
 }) {
   const { lineId, chatId } = await params;
+  const { mensaje: irAMensaje, en: irAEn } = await searchParams;
   const chat = decodeURIComponent(chatId);
 
   const [mensajes, delChat] = await Promise.all([
@@ -101,6 +104,7 @@ export default async function ChatAbierto({
       chat={chat}
       info={info}
       iniciales={[...mensajes].reverse()}
+      irA={irAMensaje && irAEn ? { id: irAMensaje, timestamp: irAEn } : null}
       enviar={enviar}
       enviarMedio={enviarMedio}
     />

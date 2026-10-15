@@ -72,6 +72,9 @@ export const ROUTES = {
   "chat.presence": { id: "chat.presence", permission: "message.send", scope: "chat", chatSafe: true },
   "message.list": { id: "message.list", permission: "message.read", scope: "chat", chatSafe: true },
   "message.search": { id: "message.search", permission: "message.read", scope: "chat", chatSafe: true },
+  // En todos los chats de una línea. Apta para una clave acotada: la ruta
+  // filtra por SUS chats, igual que la lista.
+  "message.search.line": { id: "message.search.line", permission: "message.read", scope: "line", chatSafe: true },
   // Reintentar la descarga de un fichero que ya llegó: no manda nada a nadie.
   "media.retry": { id: "media.retry", permission: "message.read", scope: "chat", chatSafe: true },
   /*

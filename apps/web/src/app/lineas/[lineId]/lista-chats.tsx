@@ -30,6 +30,7 @@ import {
   type CambioDeAtencion, type FiltroDeAtencion,
 } from "@/lib/atencion";
 import { Responsable } from "@/componentes/atencion";
+import { fragmentoConCoincidencia } from "@/lib/buscar";
 import { IconoReabrir, IconoResuelta } from "@/componentes/iconos";
 
 /**
@@ -466,6 +467,55 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     [agenda, busqueda],
   );
 
+  /*
+   * Los MENSAJES que coinciden, en todos los chats.
+   *
+   * Esto sí va al servidor: los mensajes no están cargados aquí, y lo que se
+   * busca casi nunca está entre los últimos. Se espera a que se deje de
+   * teclear un momento, como en la búsqueda de dentro del chat, y desde dos
+   * letras: con una, todo coincide y no ayuda a nadie.
+   */
+  const [enMensajes, setEnMensajes] = useState<{
+    q: string; lista: ResultadoDeMensaje[]; siguiente: string | null;
+  } | null>(null);
+  const [cargandoMas, setCargandoMas] = useState(false);
+  const qMensajes = busqueda.trim();
+  useEffect(() => {
+    if (qMensajes.length < 2) return;
+    const control = new AbortController();
+    const t = setTimeout(async () => {
+      const r = await fetch(
+        `/api/omni/v1/lines/${linea.id}/messages/search?q=${encodeURIComponent(qMensajes)}&limit=20`,
+        { signal: control.signal },
+      ).catch(() => null);
+      if (!r?.ok) return;
+      const { data, meta } = (await r.json()) as {
+        data: ResultadoDeMensaje[]; meta: { nextBefore: string | null };
+      };
+      setEnMensajes({ q: qMensajes, lista: data, siguiente: meta.nextBefore });
+    }, 250);
+    return () => { clearTimeout(t); control.abort(); };
+  }, [qMensajes, linea.id]);
+  // Solo los de ESTA búsqueda: los de la anterior no se enseñan mientras llega.
+  const mensajesBuscados = enMensajes?.q === qMensajes && qMensajes.length >= 2 ? enMensajes : null;
+
+  const masMensajes = async (): Promise<void> => {
+    if (!mensajesBuscados?.siguiente || cargandoMas) return;
+    setCargandoMas(true);
+    const r = await fetch(
+      `/api/omni/v1/lines/${linea.id}/messages/search?q=${encodeURIComponent(mensajesBuscados.q)}`
+      + `&limit=20&before=${encodeURIComponent(mensajesBuscados.siguiente)}`,
+    ).catch(() => null);
+    setCargandoMas(false);
+    if (!r?.ok) return;
+    const { data, meta } = (await r.json()) as {
+      data: ResultadoDeMensaje[]; meta: { nextBefore: string | null };
+    };
+    setEnMensajes((previo) => previo && previo.q === mensajesBuscados.q
+      ? { ...previo, lista: [...previo.lista, ...data], siguiente: meta.nextBefore }
+      : previo);
+  };
+
   const visibles = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
     /*
@@ -761,7 +811,8 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
       )}
 
       <div className="scroll-discreto flex-1 overflow-y-auto">
-        {visibles.length === 0 && contactosBuscados.length > 0 ? null : visibles.length === 0 ? (
+        {visibles.length === 0 && (contactosBuscados.length > 0 || (mensajesBuscados?.lista.length ?? 0) > 0)
+          ? null : visibles.length === 0 ? (
           <p className="px-4 py-10 text-center text-sm text-(--color-tenue)">
             {busqueda
               ? `Nada que coincida con «${busqueda}»`
@@ -927,6 +978,57 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
             </ul>
           </section>
         )}
+
+        {/*
+          Los mensajes, debajo de los chats y la agenda, como en WhatsApp. Cada
+          uno dice de qué chat es, quién lo dijo y cuándo, con lo buscado
+          resaltado; pulsarlo abre el chat EN ese mensaje.
+        */}
+        {mensajesBuscados && mensajesBuscados.lista.length > 0 && (
+          <section aria-label="Mensajes">
+            <h2 className="px-4 pt-4 pb-1.5 text-xs font-semibold tracking-wide text-(--color-acento-fuerte) uppercase">
+              Mensajes
+            </h2>
+            <ul>
+              {mensajesBuscados.lista.map((r) => {
+                const trozo = fragmentoConCoincidencia(r.texto, mensajesBuscados.q);
+                const quien = r.fromMe ? "Tú" : r.chat.kind === "group" ? r.senderName : null;
+                return (
+                  <li key={r.id}>
+                    <Link
+                      href={`/lineas/${linea.id}/chats/${encodeURIComponent(r.chat.address)}`
+                        + `?mensaje=${encodeURIComponent(r.id)}&en=${encodeURIComponent(r.timestamp)}`}
+                      className="block border-b border-(--color-borde-sutil) px-4 py-2.5 transition-colors duration-150 hover:bg-(--color-hundido)"
+                    >
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-sm font-medium">{r.chat.displayName}</span>
+                        <span className="shrink-0 text-[11px] text-(--color-apagado)">{cuando(r.timestamp)}</span>
+                      </span>
+                      <span className="mt-0.5 line-clamp-2 text-xs text-(--color-tenue) wrap-anywhere">
+                        {quien && <span>{quien}: </span>}
+                        {trozo.antes}
+                        <mark className="rounded-sm bg-(--color-acento-tenue) px-0.5 font-semibold text-(--color-acento-fuerte)">
+                          {trozo.coincide}
+                        </mark>
+                        {trozo.despues}
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+            {mensajesBuscados.siguiente && (
+              <button
+                type="button"
+                onClick={() => void masMensajes()}
+                disabled={cargandoMas}
+                className="w-full px-4 py-3 text-center text-xs font-medium text-(--color-acento-fuerte) hover:bg-(--color-hundido) disabled:opacity-60"
+              >
+                {cargandoMas ? "Buscando…" : "Ver más mensajes"}
+              </button>
+            )}
+          </section>
+        )}
       </div>
       <Menu
         punto={menu.punto}
@@ -971,6 +1073,16 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
       )}
     </aside>
   );
+}
+
+/** Un mensaje encontrado al buscar en todos los chats, como lo da la API. */
+interface ResultadoDeMensaje {
+  id: string;
+  timestamp: string;
+  fromMe: boolean;
+  senderName: string | null;
+  texto: string;
+  chat: { address: string; kind: string; displayName: string };
 }
 
 /**

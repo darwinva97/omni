@@ -159,6 +159,7 @@ export function Conversacion({
   chat,
   info,
   iniciales,
+  irA = null,
   enviar,
   enviarMedio,
 }: {
@@ -166,6 +167,8 @@ export function Conversacion({
   chat: string;
   info: Chat | null;
   iniciales: Mensaje[];
+  /** Un mensaje al que ir nada más abrir: viene de buscar en todos los chats. */
+  irA?: { id: string; timestamp: string } | null;
   enviar: (texto: string, replyTo?: string, mentions?: string[]) => Promise<Mensaje | null>;
   enviarMedio: (
     campo: string, storageKey: string, pie: string, fileName: string,
@@ -738,6 +741,24 @@ export function Conversacion({
     setMensajes(alrededor);
     setVentana(true);
   };
+
+  /*
+   * Abrir el chat EN un mensaje, desde la búsqueda de la lista. Es el mismo
+   * salto que el de buscar dentro del chat: si está entre los últimos cien,
+   * se sube a él; si no, se cargan los de alrededor.
+   */
+  useEffect(() => {
+    if (!irA) return;
+    if (iniciales.some((m) => m.id === irA.id)) { saltoPendiente.current = irA.id; return; }
+    // En la siguiente vuelta y no dentro del efecto: el salto carga mensajes
+    // y cambia el hilo, y eso no se hace a mitad de un repintado.
+    const t = setTimeout(() => void irAResultado({
+      id: irA.id, providerMessageId: null, timestamp: irA.timestamp,
+      fromMe: false, senderName: null, kind: "text", texto: "",
+    }), 0);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [irA?.id, iniciales]);
 
   const volverAlPresente = async (): Promise<void> => {
     const ultimos = await historial("limit=100");

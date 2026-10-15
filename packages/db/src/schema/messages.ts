@@ -59,6 +59,8 @@ export const messageTable = pgTable(
   (t) => [
     primaryKey({ columns: [t.id, t.timestamp] }),
     index("message_chat_idx").on(t.lineId, t.chatId, t.timestamp.desc(), t.id),
+    // La búsqueda en toda la línea, de lo más nuevo atrás (migración 0011).
+    index("message_linea_tiempo_idx").on(t.lineId, t.timestamp.desc()),
     index("message_provider_idx").on(t.lineId, t.providerMessageId),
     index("message_client_idx").on(t.lineId, t.clientMessageId),
     index("message_state_idx").on(t.lineId, t.state),
