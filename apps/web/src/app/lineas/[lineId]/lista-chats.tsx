@@ -5,7 +5,7 @@ import { useParams, usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Chat, Linea, Lista } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { conNombres, cuando, resumen } from "@/lib/formato";
+import { conNombres, cuando, nombresDeContactos, resumen } from "@/lib/formato";
 import { describir, usePresencias } from "@/lib/presencia";
 import { buscarEnAgenda, useAgenda } from "@/lib/agenda";
 import { resumenDeBorrador, useBorradores } from "@/lib/borradores";
@@ -362,10 +362,15 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     // Las menciones con el nombre puesto: lo trae el evento, resuelto por el
     // motor, y es lo que se ve en el adelanto y en el aviso.
     const crudo = (data["text"] as string | null) ?? null;
-    const texto = crudo
-      ? conNombres(crudo, data["mentionNames"] as Record<string, string> | undefined)
-      : null;
     const tipo = String(data["kind"] ?? "text");
+    // Un contacto, por su nombre: whatsapp-web.js manda la tarjeta entera
+    // como texto, y el adelanto la enseñaba en crudo.
+    const contactos = data["contacts"] as { name: string }[] | undefined;
+    const texto = tipo === "contact"
+      ? (contactos?.length ? `Contacto: ${nombresDeContactos(contactos)}` : null)
+      : crudo
+        ? conNombres(crudo, data["mentionNames"] as Record<string, string> | undefined)
+        : null;
 
     /*
      * Lo que cambia en WhatsApp llega por su evento.

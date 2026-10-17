@@ -108,6 +108,14 @@ export function resumen(kind: string, body: string | null): string {
   return nombres[kind] ?? "Mensaje";
 }
 
+/** Un contacto compartido se nombra por quién es; varios, el primero y cuántos más. */
+export function nombresDeContactos(contactos: readonly { name: string }[]): string {
+  const [primero, ...resto] = contactos;
+  if (!primero) return "";
+  if (resto.length === 0) return primero.name;
+  return `${primero.name} y ${resto.length} ${resto.length === 1 ? "contacto" : "contactos"} más`;
+}
+
 /** Tamaño legible de un fichero. */
 export function tamano(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

@@ -9,7 +9,7 @@ import { assertCapability, descifrarEdicion, descifrarVoto, encuestaDe, extractT
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
+import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, contactosDeLinea, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -903,8 +903,9 @@ export class EngineRuntime {
    *
    * Se AÑADE y no se sustituye: `text` y `key` llegan intactos. Quien quiera
    * el dato crudo lo sigue teniendo, y quien quiera enseñarlo tiene
-   * `senderName`, `senderAvatarUrl` (en grupos) y `mentionNames` (número de
-   * la mención → nombre).
+   * `senderName`, `senderAvatarUrl` (en grupos), `mentionNames` (número de
+   * la mención → nombre) y, si se comparte un contacto, `contacts`: su tarjeta
+   * leída, con el chat que ya hay con cada número.
    */
   async #conNombres(envelope: EventEnvelope): Promise<EventEnvelope> {
     if (envelope.event === "presence.updated") return this.#presenciaConNombres(envelope);
@@ -914,7 +915,7 @@ export class EngineRuntime {
     try {
       const d = envelope.data as {
         key?: { remoteJid?: string; participant?: string; fromMe?: boolean };
-        text?: string | null; mentions?: string[];
+        text?: string | null; mentions?: string[]; kind?: string;
       };
       const chat = d.key?.remoteJid;
       const autor = d.key?.fromMe ? undefined : d.key?.participant ?? chat;
@@ -927,12 +928,18 @@ export class EngineRuntime {
       // La foto de quien escribe solo en un grupo: en un chat de dos ya está
       // en la cabecera.
       const enGrupo = Boolean(chat?.endsWith("@g.us"));
-      const [nombres, menciones, fotos] = await Promise.all([
+      const [nombres, menciones, fotos, contactos] = await Promise.all([
         autor ? nombresDe(this.#deps.db, envelope.lineId, [autor]) : new Map<string, string>(),
         nombresDeMenciones(this.#deps.db, envelope.lineId, tokens, d.mentions ?? []),
         autor && enGrupo
           ? fotosDe(this.#deps.db, envelope.lineId, [autor])
           : new Map<string, string>(),
+        // Un contacto compartido, ya leído: si no, el panel enseñaba
+        // «Contacto» hasta recargar.
+        d.kind === "contact"
+          ? contactosDeLinea(this.#deps.db, envelope.lineId, [d],
+              (clave) => this.#deps.storage.signedUrl(clave, 3600)).then(([c]) => c ?? [])
+          : [],
       ]);
       const foto = autor ? fotos.get(autor) : undefined;
 
@@ -946,6 +953,7 @@ export class EngineRuntime {
           ...(menciones.size > 0
             ? { mentionNames: Object.fromEntries([...menciones].map(([t, m]) => [t, m.name])) }
             : {}),
+          ...(contactos.length > 0 ? { contacts: contactos } : {}),
         },
       };
     } catch {

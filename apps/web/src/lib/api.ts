@@ -173,6 +173,36 @@ export interface Mensaje {
   replyTo?: Cita | null;
   /** La encuesta, con sus votos ya contados, cuando el mensaje es una. */
   poll?: Encuesta | null;
+  /** Los contactos compartidos, ya leídos de su tarjeta, cuando el mensaje es uno. */
+  contacts?: ContactoCompartido[];
+}
+
+/** Un contacto que alguien compartió: todo lo que traía su tarjeta. */
+export interface ContactoCompartido {
+  name: string;
+  nickname: string | null;
+  phones: {
+    number: string;
+    /** Su número de WhatsApp, si la tarjeta dice que lo tiene. */
+    waId: string | null;
+    label: string | null;
+    /** El chat que ya hay con él en esta línea, por su teléfono o su LID. */
+    chat: string | null;
+    /** Cómo lo conoce esta línea: tu agenda, o el nombre que se puso. */
+    knownAs: string | null;
+  }[];
+  emails: { address: string; label: string | null }[];
+  organization: string | null;
+  title: string | null;
+  urls: string[];
+  addresses: { text: string; label: string | null }[];
+  /** `AAAA-MM-DD`, o `--MM-DD` sin año. */
+  birthday: string | null;
+  note: string | null;
+  business: { name: string | null; description: string | null } | null;
+  avatarUrl: string | null;
+  /** La tarjeta tal cual, para guardarla. */
+  vcard: string | null;
 }
 
 export interface Encuesta {
