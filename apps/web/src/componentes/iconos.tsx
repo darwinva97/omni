@@ -267,6 +267,45 @@ export const IconoCopiar = (p: Props) => (
   </Base>
 );
 
+export const IconoTelefono = (p: Props) => (
+  <Base {...p}>
+    <path d="M5 4h3.5l1.5 4.5-2 1.5a11 11 0 0 0 6 6l1.5-2 4.5 1.5V19a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z" />
+  </Base>
+);
+
+export const IconoCorreo = (p: Props) => (
+  <Base {...p}><rect x="3" y="5" width="18" height="14" rx="2.5" /><path d="m4 7 8 6 8-6" /></Base>
+);
+
+export const IconoEnlace = (p: Props) => (
+  <Base {...p}>
+    <path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1" />
+    <path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1" />
+  </Base>
+);
+
+export const IconoUbicacion = (p: Props) => (
+  <Base {...p}>
+    <path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" />
+    <circle cx="12" cy="10" r="2.25" />
+  </Base>
+);
+
+/** Un regalo: el cumpleaños. */
+export const IconoRegalo = (p: Props) => (
+  <Base {...p}>
+    <rect x="3.5" y="8" width="17" height="4" rx="1" /><path d="M5 12v8h14v-8M12 8v12" />
+    <path d="M12 8c-1.5-3.5-5-4-5-1.5S10 8 12 8Zm0 0c1.5-3.5 5-4 5-1.5S14 8 12 8Z" />
+  </Base>
+);
+
+/** Un maletín: la empresa y el cargo. */
+export const IconoMaletin = (p: Props) => (
+  <Base {...p}>
+    <rect x="3" y="7" width="18" height="13" rx="2.5" /><path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7M3 12.5h18" />
+  </Base>
+);
+
 export const IconoDescargar = (p: Props) => (
   <Base {...p}><path d="M12 3.5v11m0 0 4-4m-4 4-4-4M4.5 20h15" /></Base>
 );

@@ -1300,6 +1300,88 @@ run("organización y limpieza", () => {
     expect(respuesta.replyTo?.body).toBe("Me confirmas @Luisin");
   });
 
+  it("un contacto compartido se lee entero y cada número dice si ya hay chat con él", async () => {
+    /*
+     * El caso real: en un grupo comparten a «Takagi», y la burbuja decía
+     * «Contacto» y nada más. La tarjeta trae el número, y ese número ya tenía
+     * chat en la línea: «Enviar mensaje» tiene que llevar a ESE chat.
+     */
+    const grupo = "120363000000000999@g.us";
+    const takagi = "51956745800@s.whatsapp.net";
+    await container.runtime.publish("contact.updated", LINE, {
+      address: takagi, savedName: "Takagi (Coliseo)", pushName: "Taka",
+    });
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CONTACTO-0", remoteJid: takagi }, kind: "text", text: "hola",
+      timestamp: Date.now() - 120_000,
+    });
+    const tarjeta = (nombre: string, tel: string) => [
+      "BEGIN:VCARD", "VERSION:3.0", `N:;${nombre};;;`, `FN:${nombre}`, tel, "END:VCARD",
+    ].join("\n");
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CONTACTO-1", remoteJid: grupo, participant: "230000000000009@lid" },
+      kind: "contact", text: null, timestamp: Date.now() - 60_000,
+      raw: { message: { contactsArrayMessage: { displayName: "2 contactos", contacts: [
+        { displayName: "Takagi", vcard: tarjeta("Takagi", "TEL;type=CELL;type=VOICE;waid=51956745800:+51 956 745 800") },
+        { displayName: "Recepción", vcard: tarjeta("Recepción", "TEL;type=WORK:+51 1 234 5678") },
+      ] } } },
+    });
+    // Y alguien responde al contacto: la cita lo nombra.
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CONTACTO-2", remoteJid: grupo, participant: "230000000000010@lid" },
+      kind: "text", timestamp: Date.now(), text: "¿este es su número?",
+      replyTo: { id: "CONTACTO-1", author: "230000000000009@lid", kind: "contact", text: null },
+    });
+
+    type M = {
+      providerMessageId: string | null; body: string | null;
+      replyTo: { body: string | null } | null;
+      contacts: { name: string; phones: { number: string; waId: string | null; label: string | null;
+        chat: string | null; knownAs: string | null }[]; vcard: string | null }[];
+    };
+    const mensajes = await esperarValor(async () => {
+      const { data } = await j<{ data: M[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(grupo)}/messages`));
+      return data.length === 2 ? data : null;
+    }, "los dos mensajes se guardaron");
+    const contacto = mensajes.find((m) => m.providerMessageId === "CONTACTO-1")!;
+    expect(contacto.contacts.map((c) => c.name)).toEqual(["Takagi", "Recepción"]);
+    expect(contacto.contacts[0]!.phones).toEqual([{
+      number: "+51 956 745 800", waId: "51956745800", label: "Móvil",
+      chat: takagi, knownAs: "Takagi (Coliseo)",
+    }]);
+    // Un fijo sin WhatsApp: ni chat ni nombre que inventar.
+    expect(contacto.contacts[1]!.phones).toEqual([{
+      number: "+51 1 234 5678", waId: null, label: "Trabajo", chat: null, knownAs: null,
+    }]);
+    expect(contacto.contacts[0]!.vcard).toContain("FN:Takagi");
+
+    const respuesta = mensajes.find((m) => m.providerMessageId === "CONTACTO-2")!;
+    expect(respuesta.replyTo?.body).toBe("Takagi y 1 contacto más");
+    // Lo que responde no comparte nada.
+    expect(respuesta.contacts).toEqual([]);
+
+    // whatsapp-web.js deja la tarjeta en el cuerpo: se lee, no se enseña en crudo.
+    const solo = "51901000099@s.whatsapp.net";
+    const enCrudo = tarjeta("Ana", "TEL;waid=51999000111:+51 999 000 111");
+    await container.runtime.publish("message.received", LINE, {
+      key: { id: "CONTACTO-3", remoteJid: solo }, kind: "contact", text: enCrudo,
+      timestamp: Date.now(), raw: { type: "vcard", body: enCrudo },
+    });
+    const [deWeb] = await esperarValor(async () => {
+      const { data } = await j<{ data: M[] }>(
+        await call(`/v1/lines/${LINE}/chats/${enc(solo)}/messages`));
+      return data.length === 1 ? data : null;
+    }, "el contacto de whatsapp-web.js se guardó");
+    expect(deWeb!.body).toBeNull();
+    expect(deWeb!.contacts.map((c) => c.name)).toEqual(["Ana"]);
+
+    // El adelanto de la lista dice a quién.
+    const { data: chats } = await j<{ data: { address: string; ultimo: string | null }[] }>(
+      await call(`/v1/lines/${LINE}/chats?limit=200`));
+    expect(chats.find((c) => c.address === solo)?.ultimo).toBe("Contacto: Ana");
+  });
+
   it("buscar en un chat no distingue tildes ni mayúsculas, y no encuentra lo retirado", async () => {
     const chat = "51901000030@s.whatsapp.net";
     let n = 0;

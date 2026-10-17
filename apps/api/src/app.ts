@@ -1,10 +1,10 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
-  OmniError, SendMessageInput, capabilities, conNombres, nombreVisible, parseAddress,
+  OmniError, SendMessageInput, capabilities, conNombres, contactosDe, nombreVisible, parseAddress,
   tokensDeMencion,
 } from "@omni/shared";
 import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
-import { apiKeyTable, chatTable, contactTable, conversationTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
+import { apiKeyTable, chatTable, contactTable, conversationTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, contactosDeLinea, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
 import { citadoDe, detallesDeMedio } from "@omni/channels";
@@ -37,6 +37,38 @@ const MEDIA_URL_TTL = 3600;
 
 /** Los tipos de mensaje que llevan fichero; para saber si un hueco es un fallo. */
 const MEDIA_KINDS_API = new Set(["image", "video", "audio", "document", "sticker"]);
+
+const ContactoSchema = z.object({
+  name: z.string(),
+  nickname: z.string().nullable(),
+  phones: z.array(z.object({
+    /** Como venía en la tarjeta: «+51 956 745 854». */
+    number: z.string(),
+    /** Su número de WhatsApp, si la tarjeta dice que lo tiene. Solo cifras. */
+    waId: z.string().nullable(),
+    /** «Móvil», «Trabajo» o la etiqueta que le puso quien lo guardó. */
+    label: z.string().nullable(),
+    /** La conversación que ya hay con ese número en esta línea, por su teléfono o su LID. */
+    chat: z.string().nullable(),
+    /** Cómo lo conoce esta línea, si lo conoce: tu agenda, o el nombre que se puso. */
+    knownAs: z.string().nullable(),
+  })),
+  emails: z.array(z.object({ address: z.string(), label: z.string().nullable() })),
+  /** Empresa y departamento: «Coliseo · Torneos». */
+  organization: z.string().nullable(),
+  title: z.string().nullable(),
+  urls: z.array(z.string()),
+  addresses: z.array(z.object({ text: z.string(), label: z.string().nullable() })),
+  /** `AAAA-MM-DD`, o `--MM-DD` sin año. */
+  birthday: z.string().nullable(),
+  note: z.string().nullable(),
+  /** Cuenta de empresa de WhatsApp: su nombre y su descripción. */
+  business: z.object({ name: z.string().nullable(), description: z.string().nullable() }).nullable(),
+  /** La foto: la de su perfil si esta línea la tiene, o la que traiga la tarjeta. */
+  avatarUrl: z.string().nullable(),
+  /** La tarjeta original, para guardarla como `.vcf`. `null` en la API oficial, que no la da. */
+  vcard: z.string().nullable(),
+}).openapi("ContactoCompartido");
 
 const MensajeSchema = z.object({
   id: z.string(),
@@ -158,6 +190,14 @@ const MensajeSchema = z.object({
       mine: z.boolean(),
     })),
   }).nullable().default(null),
+  /**
+   * Los contactos compartidos, cuando el mensaje es uno (`kind: contact`).
+   *
+   * Leídos de la tarjeta vCard que manda WhatsApp, con todo lo que traiga, y
+   * cada número cruzado con esta línea: si ya hay chat con esa persona y con
+   * qué nombre la tienes. Varios cuando se comparten de golpe.
+   */
+  contacts: z.array(ContactoSchema).default([]),
 }).openapi("Mensaje");
 
 const ChatSchema = z.object({
@@ -260,10 +300,12 @@ async function ultimosMensajes(
    */
   const filas = await container.dbh.sql<
     { chat_id: string; kind: string; body: string | null; from_me: boolean;
-      retirado: boolean; mentions: string[] | null }[]
+      retirado: boolean; mentions: string[] | null; tarjeta: unknown }[]
   >`
     SELECT DISTINCT ON (chat_id)
-      chat_id, kind, body, from_me, deleted_at IS NOT NULL AS retirado, mentions
+      chat_id, kind, body, from_me, deleted_at IS NOT NULL AS retirado, mentions,
+      -- La tarjeta solo de un contacto: es lo que dice a quién se compartió.
+      CASE WHEN kind = 'contact' THEN raw END AS tarjeta
     FROM message
     WHERE line_id = ${lineId} AND chat_id = ANY(${direcciones as string[]})
     ORDER BY chat_id, timestamp DESC`;
@@ -288,8 +330,10 @@ async function ultimosMensajes(
     {
       texto: f.retirado
         ? "Se eliminó este mensaje"
-        : (f.body?.trim() ? conNombres(f.body.trim(), porToken) : null)
-          || nombres[f.kind] || "Mensaje",
+        : f.kind === "contact"
+          ? ["Contacto", nombresDeContactos(f.tarjeta ?? f.body)].filter(Boolean).join(": ")
+          : (f.body?.trim() ? conNombres(f.body.trim(), porToken) : null)
+            || nombres[f.kind] || "Mensaje",
       propio: f.from_me,
     },
   ]));
@@ -457,7 +501,25 @@ type Medio = ReturnType<typeof detallesDeMedio>;
 interface Original {
   fromMe: boolean; senderAddress: string; kind: string; body: string | null;
   mediaKey: string | null; medio: Medio;
+  /** Los nombres de los contactos, si lo citado es un contacto compartido. */
+  contactos: string | null;
 }
+
+/**
+ * Cómo se cita un contacto compartido: por quién es, como en WhatsApp. Uno,
+ * por su nombre; varios, el primero y cuántos más.
+ */
+function nombresDeContactos(crudo: unknown): string | null {
+  const nombres = contactosDe(crudo).map((c) => c.name);
+  if (nombres.length === 0) return null;
+  return nombres.length === 1
+    ? nombres[0]!
+    : `${nombres[0]} y ${nombres.length - 1} ${nombres.length === 2 ? "contacto" : "contactos"} más`;
+}
+
+/** Whatsapp-web.js deja la tarjeta entera en el cuerpo; se enseña leída, no en crudo. */
+const esTarjeta = (kind: string, body: string | null): boolean =>
+  kind === "contact" && /^\s*BEGIN:VCARD/i.test(body ?? "");
 
 /** Los tipos que se citan con imagen. El resto, con icono. */
 const CON_MINIATURA = new Set(["image", "video", "sticker"]);
@@ -504,7 +566,7 @@ async function citaDe(
       fromMe: original.fromMe,
       senderName: original.fromMe ? null : quien(original.senderAddress),
       kind: original.kind,
-      body: texto(original.body),
+      body: original.contactos ?? texto(original.body),
       thumbUrl: await miniatura(original.kind, original.medio, original.mediaKey),
       seconds: original.medio.seconds, ptt: original.medio.ptt,
       fileName: original.medio.fileName,
@@ -523,7 +585,9 @@ async function citaDe(
     fromMe: false,
     senderName: quien(copia.author),
     kind,
-    body: texto(copia.text ?? null),
+    body: kind === "contact"
+      ? nombresDeContactos(citadoDe((crudo as { raw?: { message?: object } }).raw?.message))
+      : texto(copia.text ?? null),
     thumbUrl: await miniatura(kind, medio, null),
     seconds: medio.seconds, ptt: medio.ptt, fileName: medio.fileName,
     disponible: false,
@@ -1082,6 +1146,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           // Un estado no responde a nada ni es una encuesta: no hay hilo.
           replyTo: null,
           poll: null,
+          contacts: [],
           mentions: [],
         }))),
       })));
@@ -1243,6 +1308,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
             medio: f.deletedAt
               ? detallesDeMedio(null)
               : detallesDeMedio((f.raw as { raw?: { message?: object } } | null)?.raw?.message),
+            contactos: f.kind === "contact" && !f.deletedAt ? nombresDeContactos(f.raw) : null,
           });
         }
       }
@@ -1380,6 +1446,14 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       // Los que tiene destacados QUIEN pregunta: la estrella es de cada uno.
       const destacado = await destacadosDe(container.dbh.db, principal, lineId, rows);
 
+      // Los contactos compartidos, leídos de su tarjeta y cruzados con la línea.
+      const conContactos = rows.filter((r) => r.kind === "contact" && r.deletedAt === null);
+      const leidos = await contactosDeLinea(
+        container.dbh.db, lineId, conContactos.map((r) => r.raw ?? r.body),
+        (clave) => urlDeAvatar(container, clave),
+      );
+      const contactos = new Map(conContactos.map((r, i) => [r.id, leidos[i]!]));
+
       const data = await Promise.all(rows.map(async (r) => ({
         id: r.id, providerMessageId: r.providerMessageId,
         clientMessageId: r.clientMessageId, fromMe: r.fromMe,
@@ -1393,7 +1467,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         mentions: tokensDeMencion(r.body)
           .filter((t) => menciones.has(t))
           .map((t) => ({ token: t, ...menciones.get(t)! })),
-        kind: r.kind, body: r.body, state: r.state, timestamp: r.timestamp.toISOString(),
+        kind: r.kind, body: esTarjeta(r.kind, r.body) ? null : r.body,
+        state: r.state, timestamp: r.timestamp.toISOString(),
         media: r.mediaKey
           ? {
               url: await container.storage.signedUrl(r.mediaKey, MEDIA_URL_TTL),
@@ -1416,6 +1491,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         replyTo: await citaDe(container, r.replyToId, r.raw as CrudoConCita | null,
           originales, nombres, chat.value, nombresDeTokens),
         poll: r.providerMessageId ? encuestas.get(r.providerMessageId) ?? null : null,
+        contacts: contactos.get(r.id) ?? [],
       })));
 
       return c.json({
@@ -1796,8 +1872,11 @@ function registerSandboxRoutes(app: OpenAPIHono<Env>, container: Container): voi
           chat: z.string().optional().describe("Para simular un grupo"),
           pushName: z.string().optional(),
           kind: z.enum([
-            "text", "image", "video", "audio", "document", "sticker",
-          ]).optional().describe("Para simular un mensaje con fichero"),
+            "text", "image", "video", "audio", "document", "sticker", "contact",
+          ]).optional().describe(
+            "Para simular un mensaje con fichero, o un contacto compartido: con `contact`, " +
+            "`text` es su tarjeta vCard (una o varias seguidas).",
+          ),
         })),
       },
       responses: { 201: json(z.object({ data: z.object({ id: z.string(), chat: z.string() }) }), "creado"), ...errors },

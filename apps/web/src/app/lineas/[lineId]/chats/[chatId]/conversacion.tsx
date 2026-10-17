@@ -3,14 +3,15 @@
 import {
   useCallback, useEffect, useLayoutEffect, useOptimistic, useRef, useState, startTransition,
 } from "react";
-import type { Chat, Cita as CitaDe, Medio as TipoMedio, Mensaje } from "@/lib/api";
+import type { Chat, Cita as CitaDe, ContactoCompartido, Medio as TipoMedio, Mensaje } from "@/lib/api";
 import { useEventos } from "@/lib/eventos";
-import { conNombres, diaDeSeparador, hora, trozosConMenciones } from "@/lib/formato";
+import { conNombres, diaDeSeparador, hora, nombresDeContactos, trozosConMenciones } from "@/lib/formato";
 import { partirEnlaces } from "@/lib/enlaces";
 import { Acuse, Avatar } from "@/componentes/piezas";
 import { tonoDe } from "@/lib/formato";
 import { Medio } from "@/componentes/medio";
 import { Encuesta } from "@/componentes/encuesta";
+import { TarjetaDeContactos } from "@/componentes/contacto-compartido";
 import { BuscarEnChat, type Resultado } from "@/componentes/buscar-en-chat";
 import { describir, usePresencias } from "@/lib/presencia";
 import {
@@ -23,7 +24,7 @@ import { Grabadora } from "@/componentes/grabadora";
 import { FichaContacto } from "@/componentes/ficha-contacto";
 import {
   IconoAdjuntar, IconoAlerta, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
-  IconoDocumento, IconoEditar, IconoEstrella, IconoImagen, IconoMicrofono, IconoSonido,
+  IconoDocumento, IconoEditar, IconoEstrella, IconoImagen, IconoMicrofono, IconoPersona, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoReenviar, IconoResponder, IconoSticker,
   IconoVolver,
 } from "@/componentes/iconos";
@@ -87,6 +88,7 @@ function IconoDeCita({ kind, ptt }: { kind: string; ptt: boolean }) {
     case "image": return <IconoImagen className={clase} />;
     case "sticker": return <IconoSticker className={clase} />;
     case "document": return <IconoDocumento className={clase} />;
+    case "contact": return <IconoPersona className={clase} />;
     default: return null;
   }
 }
@@ -103,9 +105,11 @@ function citaDeMensaje(m: Mensaje): CitaDe {
      * del hilo trae «@120413787029685» en el texto y a quién es aparte; sin
      * esto la burbuja decía «@Luisin» y su cita, debajo, el número.
      */
-    body: m.body && m.mentions?.length
-      ? conNombres(m.body, Object.fromEntries(m.mentions.map((x) => [x.token, x.name])))
-      : m.body,
+    body: m.contacts?.length
+      ? nombresDeContactos(m.contacts)
+      : m.body && m.mentions?.length
+        ? conNombres(m.body, Object.fromEntries(m.mentions.map((x) => [x.token, x.name])))
+        : m.body,
     // Solo lo que es imagen se cita con imagen: la URL de un audio en una
     // `<img>` es una imagen rota.
     thumbUrl: m.kind === "image" || m.kind === "sticker" ? m.media?.url ?? null : null,
@@ -416,12 +420,16 @@ export function Conversacion({
             };
       }
 
+      const contactos = kind === "contact" && Array.isArray(data["contacts"])
+        ? data["contacts"] as ContactoCompartido[] : undefined;
       return [...prev, {
         id: key.id ?? crypto.randomUUID(),
         providerMessageId: key.id ?? null,
         fromMe: key.fromMe ?? false,
         kind,
-        body: (data["text"] as string | null) ?? null,
+        // whatsapp-web.js manda la tarjeta entera como texto: se enseña leída.
+        body: contactos ? null : (data["text"] as string | null) ?? null,
+        ...(contactos ? { contacts: contactos } : {}),
         state: key.fromMe ? "sent" : "delivered",
         timestamp: new Date(Number(data["timestamp"] ?? Date.now())).toISOString(),
         ...(cita ? { replyTo: cita } : {}),
@@ -1556,6 +1564,8 @@ export function Conversacion({
                       // Sin `Firma`: la encuesta no es un párrafo donde quepa
                       // la hora flotando, así que va debajo como en una foto.
                       <Encuesta datos={m.poll} />
+                    ) : m.contacts?.length ? (
+                      <TarjetaDeContactos lineId={lineId} contactos={m.contacts} propia={m.fromMe} />
                     ) : MEDIOS.has(m.kind) ? (
                       <div className="space-y-1">
                         <Medio

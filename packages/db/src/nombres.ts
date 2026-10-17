@@ -155,17 +155,7 @@ export async function fotosDe(
   const unicas = [...new Set(direcciones)].filter(Boolean);
   if (unicas.length === 0) return new Map();
 
-  const mapa = await db
-    .select({ lid: identityMapTable.lid, phone: identityMapTable.phone })
-    .from(identityMapTable)
-    .where(and(
-      eq(identityMapTable.lineId, lineId),
-      or(inArray(identityMapTable.lid, unicas), inArray(identityMapTable.phone, unicas)),
-    ));
-  const gemela = new Map<string, string>();
-  for (const m of mapa) { gemela.set(m.lid, m.phone); gemela.set(m.phone, m.lid); }
-  const todas = [...new Set([...unicas, ...unicas.map((a) => gemela.get(a))
-    .filter((x): x is string => x !== undefined)])];
+  const { gemela, todas } = await gemelasDe(db, lineId, unicas);
 
   const [deChats, deContactos] = await Promise.all([
     db.select({ address: chatTable.address, key: chatTable.avatarKey })
@@ -186,6 +176,51 @@ export async function fotosDe(
     if (k) fotos.set(a, k);
   }
   return fotos;
+}
+
+/**
+ * La conversación que ya hay con cada dirección, por ella o por su gemela.
+ *
+ * Abrir a alguien por su teléfono cuando su chat está abierto por LID crearía
+ * una segunda conversación con la misma persona. La que no tiene chat no
+ * aparece.
+ */
+export async function chatsDe(
+  db: Db, lineId: string, direcciones: readonly string[],
+): Promise<Map<string, string>> {
+  const unicas = [...new Set(direcciones)].filter(Boolean);
+  if (unicas.length === 0) return new Map();
+  const { gemela, todas } = await gemelasDe(db, lineId, unicas);
+  const filas = await db
+    .select({ address: chatTable.address })
+    .from(chatTable)
+    .where(and(eq(chatTable.lineId, lineId), inArray(chatTable.address, todas)));
+  const conChat = new Set(filas.map((f) => f.address));
+  const chats = new Map<string, string>();
+  for (const a of unicas) {
+    const otra = gemela.get(a);
+    const chat = conChat.has(a) ? a : otra && conChat.has(otra) ? otra : undefined;
+    if (chat) chats.set(a, chat);
+  }
+  return chats;
+}
+
+/** Cada dirección con su gemela —el LID de un teléfono y al revés—, y todas juntas. */
+async function gemelasDe(
+  db: Db, lineId: string, unicas: readonly string[],
+): Promise<{ gemela: Map<string, string>; todas: string[] }> {
+  const mapa = await db
+    .select({ lid: identityMapTable.lid, phone: identityMapTable.phone })
+    .from(identityMapTable)
+    .where(and(
+      eq(identityMapTable.lineId, lineId),
+      or(inArray(identityMapTable.lid, [...unicas]), inArray(identityMapTable.phone, [...unicas])),
+    ));
+  const gemela = new Map<string, string>();
+  for (const m of mapa) { gemela.set(m.lid, m.phone); gemela.set(m.phone, m.lid); }
+  const todas = [...new Set([...unicas, ...unicas.map((a) => gemela.get(a))
+    .filter((x): x is string => x !== undefined)])];
+  return { gemela, todas };
 }
 
 /** Una persona de la agenda, con sus dos direcciones juntas. */
