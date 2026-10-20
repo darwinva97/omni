@@ -30,6 +30,12 @@ const envBoolean = (def: boolean) =>
 export const Config = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+  /**
+   * Dirección en la que escucha. Por defecto solo local: detrás de un proxy en
+   * la misma máquina, nadie de la red tiene por qué llegar a la API sin pasar
+   * por él. En un contenedor el proxy está fuera, y hace falta `0.0.0.0`.
+   */
+  HOST: z.string().default("127.0.0.1"),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().optional(),
   /**
