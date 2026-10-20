@@ -134,6 +134,12 @@ export const Config = z.object({
    */
   OIDC_SESSION_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
   /**
+   * Cada cuántos minutos se revalida una sesión con el proveedor (renovando su
+   * refresh token). Es lo que hace efectiva una baja en el proveedor aunque él
+   * no avise: desactivar a alguien en Keycloak no cierra sus sesiones allí.
+   */
+  OIDC_RECHECK_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
+  /**
    * Entrada con correo y contraseña. Apagada, la única puerta es el proveedor
    * OIDC: no se entra, ni se da de alta, ni se acepta una invitación con
    * contraseña. Exige el proveedor configurado, o nadie podría entrar.

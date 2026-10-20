@@ -36,3 +36,4 @@ cada fichero se aplica **en una transacción**: o entra entero o no entra.
 | `0010_notas_internas.sql` | Notas internas de un chat, en su propia tabla: nunca pasan por la cola de salida. |
 | `0011_buscar_en_la_linea.sql` | Índice `(line_id, timestamp)` para buscar en todos los chats de una línea, de lo más nuevo atrás. |
 | `0012_sesion_oidc.sql` | `oidc_subject` y `oidc_session_id` en `app_session`, para cerrar las sesiones que el proveedor OIDC da por cerradas. |
+| `0013_sesion_oidc_revalidacion.sql` | Refresh token sellado y última comprobación en `app_session`, para revalidar con el proveedor cada pocos minutos. |

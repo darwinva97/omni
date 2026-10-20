@@ -76,9 +76,10 @@ export function destinoSeguro(next: string | undefined | null): string {
  */
 export function identidadDesdeClaims(
   claims: JWTPayload & Record<string, unknown>,
-  esperado: { nonce: string; allowedGroups: readonly string[]; groupsClaim: string },
+  /** `nonce` nulo solo al renovar: ese id_token no responde a un inicio de sesión nuestro. */
+  esperado: { nonce: string | null; allowedGroups: readonly string[]; groupsClaim: string },
 ): OidcIdentity {
-  if (claims.nonce !== esperado.nonce) {
+  if (esperado.nonce !== null && claims.nonce !== esperado.nonce) {
     throw new OidcError("sso", "el nonce del token no corresponde a este inicio de sesión");
   }
   const email = typeof claims["email"] === "string" ? claims["email"].trim().toLowerCase() : "";
@@ -170,33 +171,57 @@ export class OidcClient {
   }
 
   /** Canjea el código y devuelve la identidad, con la firma del token comprobada. */
-  async exchange(code: string, t: { verifier: string; nonce: string }): Promise<OidcIdentity> {
+  async exchange(code: string, t: { verifier: string; nonce: string }): Promise<OidcIdentity & { refreshToken: string | null }> {
+    const tokens = await this.#token({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: this.config.redirectUri,
+      code_verifier: t.verifier,
+    }, "el proveedor rechazó el código");
+    if (!tokens.id_token) throw new OidcError("sso", "el proveedor no devolvió id_token");
+    const id = await this.#identidad(tokens.id_token, t.nonce);
+    return { ...id, refreshToken: tokens.refresh_token ?? null };
+  }
+
+  /**
+   * Renueva la sesión con el proveedor. Un rechazo (cuenta desactivada, sesión
+   * cerrada allí, fuera de los grupos con acceso) sale como `OidcError`; un
+   * proveedor que no responde, como error normal: no es lo mismo «no puedes»
+   * que «no sé».
+   */
+  async refresh(refreshToken: string): Promise<{ identity: OidcIdentity | null; refreshToken: string }> {
+    const tokens = await this.#token({ grant_type: "refresh_token", refresh_token: refreshToken }, "el proveedor rechazó la renovación");
+    return {
+      identity: tokens.id_token ? await this.#identidad(tokens.id_token, null) : null,
+      refreshToken: tokens.refresh_token ?? refreshToken,
+    };
+  }
+
+  async #token(params: Record<string, string>, rechazo: string): Promise<{ id_token?: string; refresh_token?: string }> {
     const d = await this.discovery();
     const res = await this.#fetch(d.token_endpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: this.config.redirectUri,
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
-        code_verifier: t.verifier,
-      }),
+      body: new URLSearchParams({ ...params, client_id: this.config.clientId, client_secret: this.config.clientSecret }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) throw new OidcError("sso", `el proveedor rechazó el código (${res.status})`);
-    const tokens = (await res.json()) as { id_token?: string };
-    if (!tokens.id_token) throw new OidcError("sso", "el proveedor no devolvió id_token");
+    // 4xx: el proveedor dice que no. 5xx: el proveedor no está bien, y eso no
+    // debe echar a nadie.
+    if (res.status >= 400 && res.status < 500) throw new OidcError("sso", `${rechazo} (${res.status})`);
+    if (!res.ok) throw new Error(`el proveedor respondió ${res.status}`);
+    return (await res.json()) as { id_token?: string; refresh_token?: string };
+  }
 
-    const { payload } = await jwtVerify(tokens.id_token, await this.#claves(), {
+  async #identidad(idToken: string, nonce: string | null): Promise<OidcIdentity> {
+    const d = await this.discovery();
+    const { payload } = await jwtVerify(idToken, await this.#claves(), {
       issuer: d.issuer,
       audience: this.config.clientId,
     }).catch((err: unknown) => {
       throw new OidcError("sso", `id_token no válido: ${(err as Error).message}`);
     });
     return identidadDesdeClaims(payload as JWTPayload & Record<string, unknown>, {
-      nonce: t.nonce,
+      nonce,
       allowedGroups: this.config.allowedGroups,
       groupsClaim: this.config.groupsClaim,
     });

@@ -57,7 +57,7 @@ describe("entrada OIDC", () => {
   it("canjea el código con PKCE y devuelve la identidad con el correo normalizado", async () => {
     const visto: { body?: URLSearchParams } = {};
     const id = await cliente(proveedor(() => firmar({ ...persona, sid: "sesion-kc" }), visto)).exchange("codigo", { verifier: "v-1", nonce: "n-1" });
-    expect(id).toEqual({ subject: "sub-1", email: "ana@ejemplo.com", name: "Ana", sessionId: "sesion-kc" });
+    expect(id).toEqual({ subject: "sub-1", email: "ana@ejemplo.com", name: "Ana", sessionId: "sesion-kc", refreshToken: null });
     expect(visto.body?.get("code_verifier")).toBe("v-1");
     expect(visto.body?.get("grant_type")).toBe("authorization_code");
   });
@@ -111,6 +111,34 @@ describe("entrada OIDC", () => {
     for (const malo of ["https://evil.com", "//evil.com", "/\\evil.com", "evil.com", "", undefined, null]) {
       expect(destinoSeguro(malo)).toBe("/");
     }
+  });
+
+  describe("renovación", () => {
+    const con = (status: number, cuerpo: unknown) => (async (input: string | URL | Request) =>
+      String(input).endsWith("/.well-known/openid-configuration")
+        ? Response.json({ issuer: ISSUER, authorization_endpoint: `${ISSUER}/auth`, token_endpoint: `${ISSUER}/token`, jwks_uri: `${ISSUER}/certs` })
+        : Response.json(cuerpo, { status })) as typeof fetch;
+
+    it("devuelve la identidad renovada y el refresh token nuevo", async () => {
+      const r = await cliente(con(200, { id_token: await firmar(persona), refresh_token: "rt-2" })).refresh("rt-1");
+      expect(r.refreshToken).toBe("rt-2");
+      expect(r.identity?.email).toBe("ana@ejemplo.com");
+    });
+
+    it("un 4xx es un rechazo (cuenta desactivada, sesión cerrada): OidcError", async () => {
+      await expect(cliente(con(400, { error: "invalid_grant" })).refresh("rt")).rejects.toBeInstanceOf(OidcError);
+    });
+
+    it("un 5xx NO es un rechazo: el proveedor no está bien y eso no debe echar a nadie", async () => {
+      const err = await cliente(con(503, {})).refresh("rt").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(OidcError);
+    });
+
+    it("sacado de los grupos con acceso: la renovación lo rechaza", async () => {
+      const r = cliente(con(200, { id_token: await firmar({ ...persona, groups: ["ventas"] }) }), ["admins"]);
+      await expect(r.refresh("rt")).rejects.toMatchObject({ motivo: "sso-grupo" });
+    });
   });
 
   describe("aviso de cierre de sesión (back-channel logout)", () => {

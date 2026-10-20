@@ -11,6 +11,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import type { Context } from "hono";
 import { timingSafeEqual } from "node:crypto";
+import { SecretBox } from "@omni/engine";
 import type { Container } from "../container.js";
 import {
   aleatorio, destinoSeguro, OidcClient, OidcError, type OidcIdentity, type OidcRechazo,
@@ -36,15 +37,88 @@ const UserSchema = z.object({
   id: z.string(), email: z.string(), name: z.string(),
 }).openapi("User");
 
+/** El cliente OIDC de la instalación, o null si no hay proveedor configurado. */
+function oidcDesdeConfig(cfg: Container["config"]): OidcClient | null {
+  if (!(cfg.OIDC_ISSUER_URL && cfg.OIDC_CLIENT_ID && cfg.OIDC_CLIENT_SECRET)) return null;
+  return new OidcClient({
+    issuer: cfg.OIDC_ISSUER_URL,
+    clientId: cfg.OIDC_CLIENT_ID,
+    clientSecret: cfg.OIDC_CLIENT_SECRET,
+    redirectUri: `${cfg.PUBLIC_URL.replace(/\/$/, "")}/v1/auth/oidc/callback`,
+    displayName: cfg.OIDC_DISPLAY_NAME,
+    allowedGroups: cfg.OIDC_ALLOWED_GROUPS.split(",").map((g) => g.trim()).filter(Boolean),
+    groupsClaim: cfg.OIDC_GROUPS_CLAIM,
+  });
+}
+
+/**
+ * Revalida con el proveedor una sesión abierta con él, como mucho cada
+ * OIDC_RECHECK_MINUTES. Devuelve false si la sesión se cerró por eso.
+ *
+ * Es lo que hace efectiva una baja en el proveedor: desactivar a alguien en
+ * Keycloak no cierra sus sesiones allí, así que no manda aviso por el canal
+ * trasero; pero la renovación de su refresh token sí falla. También caen quien
+ * ya no está en un grupo con acceso y quien cambió de correo en el proveedor.
+ * Si el proveedor no responde, no se echa a nadie: la sesión sigue hasta que
+ * caduque, que como mucho son OIDC_SESSION_HOURS.
+ */
+export function crearRevalidadorOidc(container: Container): (cookie: string) => Promise<boolean> {
+  const oidc = oidcDesdeConfig(container.config);
+  const db = container.dbh.db;
+  const caja = new SecretBox(container.config.OMNI_MASTER_KEY);
+  const margen = container.config.OIDC_RECHECK_MINUTES * 60 * 1000;
+  // Varias peticiones a la vez de la misma sesión comparten una sola renovación.
+  const enCurso = new Map<string, Promise<boolean>>();
+
+  const revalidar = async (id: string): Promise<boolean> => {
+    const fila = (await db.select({
+      refresh: sessionTable.oidcRefreshToken, checkedAt: sessionTable.oidcCheckedAt, email: userTable.email,
+    }).from(sessionTable).innerJoin(userTable, eq(userTable.id, sessionTable.userId))
+      .where(eq(sessionTable.id, id)).limit(1))[0];
+    if (!fila?.refresh || !oidc) return true; // sesión de contraseña, o ya no existe
+    if (fila.checkedAt && Date.now() - fila.checkedAt.getTime() < margen) return true;
+    try {
+      const r = await oidc.refresh(new TextDecoder().decode(caja.open(fila.refresh)));
+      if (r.identity && r.identity.email !== fila.email) {
+        throw new OidcError("sso-correo", `el proveedor dice ${r.identity.email} y la cuenta es ${fila.email}`);
+      }
+      await db.update(sessionTable)
+        .set({ oidcRefreshToken: caja.seal(new TextEncoder().encode(r.refreshToken)), oidcCheckedAt: new Date() })
+        .where(eq(sessionTable.id, id));
+      return true;
+    } catch (err) {
+      if (!(err instanceof OidcError)) {
+        console.warn(`revalidación OIDC aplazada, el proveedor no respondió: ${(err as Error).message}`);
+        return true;
+      }
+      await db.delete(sessionTable).where(eq(sessionTable.id, id));
+      console.warn(`sesión cerrada al revalidar con el proveedor (${err.motivo}): ${err.message}`);
+      return false;
+    }
+  };
+
+  return async (cookie) => {
+    if (!oidc) return true;
+    const id = await hashToken(cookie);
+    let p = enCurso.get(id);
+    if (!p) {
+      p = revalidar(id).finally(() => enCurso.delete(id));
+      enCurso.set(id, p);
+    }
+    return p;
+  };
+}
+
 export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Container): void {
   const db = container.dbh.db;
+  const caja = new SecretBox(container.config.OMNI_MASTER_KEY);
 
   const crearSesion = async (
     c: Context<ApiEnv>,
     userId: string,
     orgId: string | null,
-    /** Sesión abierta con el proveedor OIDC: dura menos y se cierra cuando él avise. */
-    oidc?: { subject: string; sessionId: string | null },
+    /** Sesión abierta con el proveedor OIDC: dura menos, se revalida y se cierra cuando él avise. */
+    oidc?: { subject: string; sessionId: string | null; refreshToken: string | null },
   ): Promise<void> => {
     const token = generateToken();
     const segundos = oidc ? container.config.OIDC_SESSION_HOURS * 3600 : SESSION_DAYS * 24 * 3600;
@@ -57,6 +131,9 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       userAgent: c.req.header("user-agent") ?? null,
       oidcSubject: oidc?.subject ?? null,
       oidcSessionId: oidc?.sessionId ?? null,
+      // Sellado: quien lea la base no puede renovar la sesión del proveedor.
+      oidcRefreshToken: oidc?.refreshToken ? caja.seal(new TextEncoder().encode(oidc.refreshToken)) : null,
+      oidcCheckedAt: oidc ? new Date() : null,
     });
     setCookie(c, SESSION_COOKIE, token, {
       httpOnly: true,
@@ -450,17 +527,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
    */
   const cfg = container.config;
   const base = cfg.PUBLIC_URL.replace(/\/$/, "");
-  const oidc = cfg.OIDC_ISSUER_URL && cfg.OIDC_CLIENT_ID && cfg.OIDC_CLIENT_SECRET
-    ? new OidcClient({
-        issuer: cfg.OIDC_ISSUER_URL,
-        clientId: cfg.OIDC_CLIENT_ID,
-        clientSecret: cfg.OIDC_CLIENT_SECRET,
-        redirectUri: `${base}/v1/auth/oidc/callback`,
-        displayName: cfg.OIDC_DISPLAY_NAME,
-        allowedGroups: cfg.OIDC_ALLOWED_GROUPS.split(",").map((g) => g.trim()).filter(Boolean),
-        groupsClaim: cfg.OIDC_GROUPS_CLAIM,
-      })
-    : null;
+  const oidc = oidcDesdeConfig(cfg);
 
   /** Ningún detalle del fallo llega al navegador: se anota aquí y el panel enseña un mensaje genérico. */
   const rechazar = (c: Context<ApiEnv>, motivo: OidcRechazo, detalle: string): Response => {
@@ -517,7 +584,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
 
     try {
       const id = await oidc.exchange(code, t);
-      const sesionOidc = { subject: id.subject, sessionId: id.sessionId };
+      const sesionOidc = { subject: id.subject, sessionId: id.sessionId, refreshToken: id.refreshToken };
       if (t.invitacion) {
         const orgId = await aceptarInvitacionOidc(t.invitacion, id);
         await crearSesion(c, (await usuarioPorCorreo(id.email))!.id, orgId, sesionOidc);
@@ -527,7 +594,10 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       if (!user || user.disabledAt) throw new OidcError("sso-sin-cuenta", `no hay cuenta activa con ${id.email}`);
       const pertenencia = await db.select().from(orgMemberTable)
         .where(eq(orgMemberTable.userId, user.id)).limit(1);
-      await crearSesion(c, user.id, pertenencia[0]?.orgId ?? null, sesionOidc);
+      // Quien fue quitado del equipo conserva la cuenta, pero no entra: sin
+      // organización solo vería un panel vacío, y no es eso lo que se decidió.
+      if (!pertenencia[0]) throw new OidcError("sso-sin-cuenta", `${id.email} no pertenece a ninguna organización`);
+      await crearSesion(c, user.id, pertenencia[0].orgId, sesionOidc);
       return c.redirect(`${base}${destinoSeguro(t.next)}`, 302);
     } catch (err) {
       if (err instanceof OidcError) return rechazar(c, err.motivo, err.message);

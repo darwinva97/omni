@@ -28,6 +28,8 @@ let privada: CryptoKey;
 /** Lo que el proveedor de mentira pondrá en el próximo id_token, por código. */
 const porCodigo = new Map<string, Record<string, unknown>>();
 let nonceVisto = "";
+/** Estado de cada cuenta en el proveedor, para la renovación (refresh_token = "rt:<correo>"). */
+const enProveedor = new Map<string, { claims: Record<string, unknown>; estado: "ok" | "desactivada" | "caido" }>();
 
 const firmar = (claims: Record<string, unknown>) =>
   new SignJWT(claims).setProtectedHeader({ alg: "RS256", kid: "k1" }).setIssuer(issuer)
@@ -55,9 +57,18 @@ beforeAll(async () => {
       let body = "";
       req.on("data", (d) => { body += d; });
       req.on("end", async () => {
-        const claims = porCodigo.get(new URLSearchParams(body).get("code") ?? "");
+        const p = new URLSearchParams(body);
+        if (p.get("grant_type") === "refresh_token") {
+          const cuenta = enProveedor.get((p.get("refresh_token") ?? "").replace(/^rt:/, ""));
+          if (cuenta?.estado === "caido") { res.statusCode = 503; return send({ error: "temporarily_unavailable" }); }
+          // Así responde Keycloak a una cuenta desactivada o a una sesión cerrada.
+          if (!cuenta || cuenta.estado === "desactivada") { res.statusCode = 400; return send({ error: "invalid_grant" }); }
+          return send({ id_token: await firmar(cuenta.claims), refresh_token: p.get("refresh_token") });
+        }
+        const claims = porCodigo.get(p.get("code") ?? "");
         if (!claims) { res.statusCode = 400; return send({ error: "invalid_grant" }); }
-        send({ id_token: await firmar({ ...claims, nonce: nonceVisto }) });
+        enProveedor.set(String(claims["email"]), { claims, estado: "ok" });
+        send({ id_token: await firmar({ ...claims, nonce: nonceVisto }), refresh_token: `rt:${String(claims["email"])}` });
       });
       return;
     }
@@ -177,13 +188,65 @@ run("instalación solo con proveedor OIDC", () => {
     expect((await llamar("DELETE", "/v1/members/u-dueno", dueno)).status).toBe(409);
   });
 
-  it("quitar a alguien le cierra la sesión al momento", async () => {
+  it("quitar a alguien le cierra la sesión al momento, y no puede volver a entrar", async () => {
     const carla = await entrar("carla@ejemplo.com");
     expect((await me(carla.cookie)).status).toBe(200);
     const ids = await j<{ data: { userId: string; email: string }[] }>(await llamar("GET", "/v1/members", dueno));
     const carlaId = ids.data.find((m) => m.email === "carla@ejemplo.com")!.userId;
     expect((await llamar("DELETE", `/v1/members/${carlaId}`, dueno)).status).toBe(200);
     expect((await me(carla.cookie)).status).toBe(401);
+    // Conserva la cuenta, pero sin organización no entra.
+    expect((await entrar("carla@ejemplo.com")).location).toContain("error=sso-sin-cuenta");
+  });
+
+  describe("revalidación con el proveedor", () => {
+    /** Hace que la próxima petición tenga que revalidar, sin esperar los minutos de verdad. */
+    const envejecer = (email: string) => dbh.sql`
+      UPDATE app_session SET oidc_checked_at = now() - interval '1 hour'
+      WHERE user_id = (SELECT id FROM app_user WHERE email = ${email})`;
+
+    it("la renovación se guarda sellada, no en claro", async () => {
+      await entrar("bea@ejemplo.com");
+      const [f] = await dbh.sql<{ rt: string }[]>`
+        SELECT oidc_refresh_token AS rt FROM app_session s JOIN app_user u ON u.id = s.user_id
+        WHERE u.email = 'bea@ejemplo.com' ORDER BY s.created_at DESC LIMIT 1`;
+      expect(f!.rt).toMatch(/^v1\./);
+      expect(f!.rt).not.toContain("bea@ejemplo.com");
+    });
+
+    it("desactivar a alguien en el proveedor lo saca en la siguiente revalidación", async () => {
+      // Keycloak no cierra sus sesiones al desactivar: no hay aviso que esperar.
+      const bea = await entrar("bea@ejemplo.com");
+      expect((await me(bea.cookie)).status).toBe(200);
+      enProveedor.get("bea@ejemplo.com")!.estado = "desactivada";
+      expect((await me(bea.cookie)).status).toBe(200); // aún dentro del margen
+      await envejecer("bea@ejemplo.com");
+      expect((await me(bea.cookie)).status).toBe(401);
+      enProveedor.get("bea@ejemplo.com")!.estado = "ok";
+    });
+
+    it("sacarlo de los grupos con acceso también lo saca", async () => {
+      const bea = await entrar("bea@ejemplo.com");
+      enProveedor.get("bea@ejemplo.com")!.claims = { ...enProveedor.get("bea@ejemplo.com")!.claims, groups: ["ventas"] };
+      await envejecer("bea@ejemplo.com");
+      expect((await me(bea.cookie)).status).toBe(401);
+      enProveedor.get("bea@ejemplo.com")!.claims = { ...enProveedor.get("bea@ejemplo.com")!.claims, groups: ["devs"] };
+    });
+
+    it("si el proveedor está caído no se echa a nadie", async () => {
+      const bea = await entrar("bea@ejemplo.com");
+      enProveedor.get("bea@ejemplo.com")!.estado = "caido";
+      await envejecer("bea@ejemplo.com");
+      expect((await me(bea.cookie)).status).toBe(200);
+      enProveedor.get("bea@ejemplo.com")!.estado = "ok";
+      await envejecer("bea@ejemplo.com");
+      expect((await me(bea.cookie)).status).toBe(200);
+    });
+
+    it("las sesiones de contraseña no se tocan", async () => {
+      const [n] = await dbh.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM app_session WHERE oidc_refresh_token IS NULL AND oidc_subject IS NOT NULL`;
+      expect(n!.n).toBe(0);
+    });
   });
 
   it("el aviso de cierre del proveedor cierra las sesiones de esa sesión suya, y no otras", async () => {
