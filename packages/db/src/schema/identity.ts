@@ -47,6 +47,12 @@ export const sessionTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     ip: text("ip"),
     userAgent: text("user_agent"),
+    /** Solo en sesiones abiertas con OpenID Connect: para cerrarlas cuando el proveedor avise. */
+    oidcSubject: text("oidc_subject"),
+    oidcSessionId: text("oidc_session_id"),
+    /** Refresh token del proveedor, sellado con la clave maestra; se renueva para revalidar. */
+    oidcRefreshToken: text("oidc_refresh_token"),
+    oidcCheckedAt: timestamp("oidc_checked_at", { withTimezone: true }),
   },
   (t) => [index("app_session_user_idx").on(t.userId), index("app_session_expiry_idx").on(t.expiresAt)],
 );

@@ -30,6 +30,12 @@ const envBoolean = (def: boolean) =>
 export const Config = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+  /**
+   * Dirección en la que escucha. Por defecto solo local: detrás de un proxy en
+   * la misma máquina, nadie de la red tiene por qué llegar a la API sin pasar
+   * por él. En un contenedor el proxy está fuera, y hace falta `0.0.0.0`.
+   */
+  HOST: z.string().default("127.0.0.1"),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().optional(),
   /**
@@ -103,8 +109,45 @@ export const Config = z.object({
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().default("auto"),
   S3_ENDPOINT: z.string().optional(),
+  /**
+   * Host público contra el que se firman las URLs de descarga, cuando la API
+   * habla con el almacén por una dirección interna (`S3_ENDPOINT`) que desde
+   * fuera no existe. Sin él se firma contra `S3_ENDPOINT`.
+   */
+  S3_PUBLIC_ENDPOINT: z.string().optional(),
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
+
+  /**
+   * Entrada con OpenID Connect (p. ej. Keycloak). Se activa con emisor, cliente
+   * y secreto; sin ellos el panel solo ofrece correo y contraseña. Solo entra
+   * quien ya tiene cuenta en Omni con el mismo correo, verificado en el
+   * proveedor: el proveedor dice quién es, Omni decide a qué tiene acceso.
+   */
+  OIDC_ISSUER_URL: z.string().url().optional(),
+  OIDC_CLIENT_ID: z.string().optional(),
+  OIDC_CLIENT_SECRET: z.string().optional(),
+  OIDC_DISPLAY_NAME: z.string().default("Keycloak"),
+  /**
+   * Horas que dura una sesión abierta con el proveedor. Más corta que la de
+   * contraseña: es la red de seguridad si un aviso de cierre no llegara.
+   */
+  OIDC_SESSION_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
+  /**
+   * Cada cuántos minutos se revalida una sesión con el proveedor (renovando su
+   * refresh token). Es lo que hace efectiva una baja en el proveedor aunque él
+   * no avise: desactivar a alguien en Keycloak no cierra sus sesiones allí.
+   */
+  OIDC_RECHECK_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
+  /**
+   * Entrada con correo y contraseña. Apagada, la única puerta es el proveedor
+   * OIDC: no se entra, ni se da de alta, ni se acepta una invitación con
+   * contraseña. Exige el proveedor configurado, o nadie podría entrar.
+   */
+  PASSWORD_LOGIN_ENABLED: envBoolean(true),
+  /** Grupos del proveedor con acceso, separados por comas. Vacío: cualquiera con cuenta en Omni. */
+  OIDC_ALLOWED_GROUPS: z.string().default(""),
+  OIDC_GROUPS_CLAIM: z.string().default("groups"),
 });
 export type Config = z.infer<typeof Config>;
 
@@ -114,5 +157,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n");
     throw new Error(`configuración inválida:\n${issues}`);
   }
-  return parsed.data;
+  const c = parsed.data;
+  // Sin contraseña y sin proveedor no entra nadie: mejor no arrancar que
+  // arrancar un panel con la puerta tapiada.
+  if (!c.PASSWORD_LOGIN_ENABLED && !(c.OIDC_ISSUER_URL && c.OIDC_CLIENT_ID && c.OIDC_CLIENT_SECRET)) {
+    throw new Error(
+      "configuración inválida:\n  PASSWORD_LOGIN_ENABLED: apagar la contraseña exige OIDC_ISSUER_URL, OIDC_CLIENT_ID y OIDC_CLIENT_SECRET",
+    );
+  }
+  return c;
 }

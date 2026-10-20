@@ -19,11 +19,11 @@ const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
 const gateway = new RealtimeGateway(container.bus);
 registerWebSocketRoute(app, container, gateway, upgradeWebSocket);
 
-const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "127.0.0.1" }, (info) => {
-  console.log(`omni api escuchando en http://127.0.0.1:${info.port}`);
-  console.log(`  documentación  http://127.0.0.1:${info.port}/docs`);
-  console.log(`  contrato       http://127.0.0.1:${info.port}/openapi.json`);
-  console.log(`  tiempo real   ws://127.0.0.1:${info.port}/v1/realtime/ws`);
+const server = serve({ fetch: app.fetch, port: config.PORT, hostname: config.HOST }, (info) => {
+  console.log(`omni api escuchando en http://${config.HOST}:${info.port}`);
+  console.log(`  documentación  ${config.PUBLIC_URL}/docs`);
+  console.log(`  contrato       ${config.PUBLIC_URL}/openapi.json`);
+  console.log(`  tiempo real   ${config.PUBLIC_URL.replace(/^http/, "ws")}/v1/realtime/ws`);
   if (config.SANDBOX_ENABLED) {
     console.log("  sandbox ACTIVO: se puede probar sin teléfono y sin riesgo de baneo");
   }

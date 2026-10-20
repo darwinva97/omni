@@ -107,6 +107,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
         bucket: config.S3_BUCKET,
         region: config.S3_REGION,
         ...(config.S3_ENDPOINT ? { endpoint: config.S3_ENDPOINT } : {}),
+        ...(config.S3_PUBLIC_ENDPOINT ? { publicEndpoint: config.S3_PUBLIC_ENDPOINT } : {}),
         accessKeyId: config.S3_ACCESS_KEY_ID!,
         secretAccessKey: config.S3_SECRET_ACCESS_KEY!,
       })

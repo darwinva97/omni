@@ -235,6 +235,9 @@ importers:
       imapflow:
         specifier: ^2.1.2
         version: 2.1.2
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
       nodemailer:
         specifier: ^10.0.12
         version: 10.0.12

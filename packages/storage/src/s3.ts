@@ -16,19 +16,29 @@ import { MAX_OBJECT_BYTES, type PutOptions, type Storage, type StoredObject } fr
 export class S3Storage implements Storage {
   readonly kind = "s3" as const;
   readonly #client: S3Client;
+  /**
+   * Firma las URLs que salen hacia fuera. Es el mismo cliente salvo que haya
+   * `publicEndpoint`: con el almacén en la red interna (p. ej. un servicio de
+   * Kubernetes), los bytes van por ahí, pero una URL firmada contra ese host no
+   * la puede abrir nadie de fuera. La firma incluye el host, así que no basta
+   * con reescribirlo después: hay que firmar contra el público.
+   */
+  readonly #signer: S3Client;
   readonly #bucket: string;
 
   constructor(opts: {
-    bucket: string; region?: string; endpoint?: string;
+    bucket: string; region?: string; endpoint?: string; publicEndpoint?: string;
     accessKeyId: string; secretAccessKey: string; forcePathStyle?: boolean;
   }) {
     this.#bucket = opts.bucket;
-    this.#client = new S3Client({
+    const client = (endpoint: string | undefined) => new S3Client({
       region: opts.region ?? "auto",
-      ...(opts.endpoint ? { endpoint: opts.endpoint } : {}),
+      ...(endpoint ? { endpoint } : {}),
       forcePathStyle: opts.forcePathStyle ?? true,
       credentials: { accessKeyId: opts.accessKeyId, secretAccessKey: opts.secretAccessKey },
     });
+    this.#client = client(opts.endpoint);
+    this.#signer = opts.publicEndpoint ? client(opts.publicEndpoint) : this.#client;
   }
 
   async put(key: string, bytes: Uint8Array, opts: PutOptions): Promise<StoredObject> {
@@ -72,7 +82,7 @@ export class S3Storage implements Storage {
 
   async signedUrl(key: string, ttlSeconds: number): Promise<string> {
     return getSignedUrl(
-      this.#client,
+      this.#signer,
       new GetObjectCommand({ Bucket: this.#bucket, Key: key }),
       { expiresIn: ttlSeconds },
     );

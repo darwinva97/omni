@@ -1,0 +1,11 @@
+.git
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+apps/web/.next
+.data
+.env
+.env.local
+coverage
+**/__pycache__

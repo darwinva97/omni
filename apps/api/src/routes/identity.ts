@@ -4,10 +4,18 @@ import {
   authorize, canGrantRole, generateToken, hashPassword, hashToken,
   fakeVerify, verifyPassword, route as routeOf, type Role,
 } from "@omni/core";
-import { invitationTable, orgMemberTable, orgTable, sessionTable, userTable } from "@omni/db";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import {
+  invitationTable, lineMemberTable, lineTable, orgMemberTable, orgTable, sessionTable, userTable,
+} from "@omni/db";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import type { Context } from "hono";
+import { timingSafeEqual } from "node:crypto";
+import { SecretBox } from "@omni/engine";
 import type { Container } from "../container.js";
+import {
+  aleatorio, destinoSeguro, OidcClient, OidcError, type OidcIdentity, type OidcRechazo,
+} from "../oidc.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
 import { anotarFallo, exigirIntentoPermitido, olvidarFallos, origenDe } from "../intentos.js";
@@ -29,22 +37,103 @@ const UserSchema = z.object({
   id: z.string(), email: z.string(), name: z.string(),
 }).openapi("User");
 
+/** El cliente OIDC de la instalación, o null si no hay proveedor configurado. */
+function oidcDesdeConfig(cfg: Container["config"]): OidcClient | null {
+  if (!(cfg.OIDC_ISSUER_URL && cfg.OIDC_CLIENT_ID && cfg.OIDC_CLIENT_SECRET)) return null;
+  return new OidcClient({
+    issuer: cfg.OIDC_ISSUER_URL,
+    clientId: cfg.OIDC_CLIENT_ID,
+    clientSecret: cfg.OIDC_CLIENT_SECRET,
+    redirectUri: `${cfg.PUBLIC_URL.replace(/\/$/, "")}/v1/auth/oidc/callback`,
+    displayName: cfg.OIDC_DISPLAY_NAME,
+    allowedGroups: cfg.OIDC_ALLOWED_GROUPS.split(",").map((g) => g.trim()).filter(Boolean),
+    groupsClaim: cfg.OIDC_GROUPS_CLAIM,
+  });
+}
+
+/**
+ * Revalida con el proveedor una sesión abierta con él, como mucho cada
+ * OIDC_RECHECK_MINUTES. Devuelve false si la sesión se cerró por eso.
+ *
+ * Es lo que hace efectiva una baja en el proveedor: desactivar a alguien en
+ * Keycloak no cierra sus sesiones allí, así que no manda aviso por el canal
+ * trasero; pero la renovación de su refresh token sí falla. También caen quien
+ * ya no está en un grupo con acceso y quien cambió de correo en el proveedor.
+ * Si el proveedor no responde, no se echa a nadie: la sesión sigue hasta que
+ * caduque, que como mucho son OIDC_SESSION_HOURS.
+ */
+export function crearRevalidadorOidc(container: Container): (cookie: string) => Promise<boolean> {
+  const oidc = oidcDesdeConfig(container.config);
+  const db = container.dbh.db;
+  const caja = new SecretBox(container.config.OMNI_MASTER_KEY);
+  const margen = container.config.OIDC_RECHECK_MINUTES * 60 * 1000;
+  // Varias peticiones a la vez de la misma sesión comparten una sola renovación.
+  const enCurso = new Map<string, Promise<boolean>>();
+
+  const revalidar = async (id: string): Promise<boolean> => {
+    const fila = (await db.select({
+      refresh: sessionTable.oidcRefreshToken, checkedAt: sessionTable.oidcCheckedAt, email: userTable.email,
+    }).from(sessionTable).innerJoin(userTable, eq(userTable.id, sessionTable.userId))
+      .where(eq(sessionTable.id, id)).limit(1))[0];
+    if (!fila?.refresh || !oidc) return true; // sesión de contraseña, o ya no existe
+    if (fila.checkedAt && Date.now() - fila.checkedAt.getTime() < margen) return true;
+    try {
+      const r = await oidc.refresh(new TextDecoder().decode(caja.open(fila.refresh)));
+      if (r.identity && r.identity.email !== fila.email) {
+        throw new OidcError("sso-correo", `el proveedor dice ${r.identity.email} y la cuenta es ${fila.email}`);
+      }
+      await db.update(sessionTable)
+        .set({ oidcRefreshToken: caja.seal(new TextEncoder().encode(r.refreshToken)), oidcCheckedAt: new Date() })
+        .where(eq(sessionTable.id, id));
+      return true;
+    } catch (err) {
+      if (!(err instanceof OidcError)) {
+        console.warn(`revalidación OIDC aplazada, el proveedor no respondió: ${(err as Error).message}`);
+        return true;
+      }
+      await db.delete(sessionTable).where(eq(sessionTable.id, id));
+      console.warn(`sesión cerrada al revalidar con el proveedor (${err.motivo}): ${err.message}`);
+      return false;
+    }
+  };
+
+  return async (cookie) => {
+    if (!oidc) return true;
+    const id = await hashToken(cookie);
+    let p = enCurso.get(id);
+    if (!p) {
+      p = revalidar(id).finally(() => enCurso.delete(id));
+      enCurso.set(id, p);
+    }
+    return p;
+  };
+}
+
 export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Container): void {
   const db = container.dbh.db;
+  const caja = new SecretBox(container.config.OMNI_MASTER_KEY);
 
   const crearSesion = async (
-    c: Parameters<Parameters<typeof app.openapi>[1]>[0],
+    c: Context<ApiEnv>,
     userId: string,
     orgId: string | null,
+    /** Sesión abierta con el proveedor OIDC: dura menos, se revalida y se cierra cuando él avise. */
+    oidc?: { subject: string; sessionId: string | null; refreshToken: string | null },
   ): Promise<void> => {
     const token = generateToken();
+    const segundos = oidc ? container.config.OIDC_SESSION_HOURS * 3600 : SESSION_DAYS * 24 * 3600;
     await db.insert(sessionTable).values({
       id: await hashToken(token),
       userId,
       activeOrgId: orgId,
-      expiresAt: new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000),
+      expiresAt: new Date(Date.now() + segundos * 1000),
       ip: c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
       userAgent: c.req.header("user-agent") ?? null,
+      oidcSubject: oidc?.subject ?? null,
+      oidcSessionId: oidc?.sessionId ?? null,
+      // Sellado: quien lea la base no puede renovar la sesión del proveedor.
+      oidcRefreshToken: oidc?.refreshToken ? caja.seal(new TextEncoder().encode(oidc.refreshToken)) : null,
+      oidcCheckedAt: oidc ? new Date() : null,
     });
     setCookie(c, SESSION_COOKIE, token, {
       httpOnly: true,
@@ -53,8 +142,15 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       // autenticadas desde el navegador de quien tiene sesión abierta.
       sameSite: "Lax",
       path: "/",
-      maxAge: SESSION_DAYS * 24 * 3600,
+      maxAge: segundos,
     });
+  };
+
+  /** Con la contraseña apagada, todo lo que la crea o la usa queda cerrado. */
+  const exigirContrasenaActiva = (): void => {
+    if (!container.config.PASSWORD_LOGIN_ENABLED) {
+      throw new OmniError("forbidden", `la entrada con contraseña está desactivada; entra con ${container.config.OIDC_DISPLAY_NAME}`);
+    }
   };
 
   // ─────────────────────────────── alta
@@ -75,6 +171,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       responses: { 201: json(z.object({ data: UserSchema }), "creada"), ...errors },
     }),
     async (c) => {
+      exigirContrasenaActiva();
       const input = c.req.valid("json");
       const existentes = await db.select({ n: sql<number>`count(*)::int` }).from(orgTable);
       if ((existentes[0]?.n ?? 0) > 0) {
@@ -106,6 +203,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       responses: { 200: json(z.object({ data: UserSchema }), "sesión iniciada"), ...errors },
     }),
     async (c) => {
+      exigirContrasenaActiva();
       const { email, password } = c.req.valid("json");
 
       /*
@@ -226,6 +324,108 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
     },
   );
 
+  /**
+   * Comprobaciones comunes a cambiar el rol y quitar a alguien: que esté en la
+   * organización y que quien lo hace no esté por debajo de él. Si no, un
+   * `manager` podría degradar al `owner` y quedarse con la organización.
+   */
+  const miembroGestionable = async (
+    principal: { kind: string; orgId: string; orgRole?: Role },
+    userId: string,
+  ): Promise<{ role: Role; propio: Role }> => {
+    const propio: Role = principal.kind === "user" && principal.orgRole ? principal.orgRole : "owner";
+    const filas = await db.select({ role: orgMemberTable.role }).from(orgMemberTable)
+      .where(and(eq(orgMemberTable.orgId, principal.orgId), eq(orgMemberTable.userId, userId))).limit(1);
+    const actual = filas[0];
+    if (!actual) throw new OmniError("not_found", "esa persona no está en la organización");
+    if (!canGrantRole(propio, actual.role)) {
+      throw new OmniError("forbidden", `no puedes gestionar a alguien con rol "${actual.role}" teniendo "${propio}"`);
+    }
+    return { role: actual.role, propio };
+  };
+
+  /** Nunca se deja la organización sin dueño: nadie podría gestionarla después. */
+  const exigirOtroOwner = async (orgId: string): Promise<void> => {
+    const owners = await db.select({ n: sql<number>`count(*)::int` }).from(orgMemberTable)
+      .where(and(eq(orgMemberTable.orgId, orgId), eq(orgMemberTable.role, "owner")));
+    if ((owners[0]?.n ?? 0) <= 1) {
+      throw new OmniError("conflict", "es el único owner: nombra a otro antes de cambiarlo o quitarlo");
+    }
+  };
+
+  const miembroParam = z.object({ userId: z.string().min(1) });
+
+  app.openapi(
+    createRoute({
+      method: "patch", path: "/v1/members/{userId}", tags: ["identidad"],
+      summary: "Cambiar el rol de alguien en la organización",
+      description: "Se aplica en su siguiente petición: el rol se lee en cada una, no se guarda en la sesión.",
+      request: {
+        params: miembroParam,
+        ...body(z.object({ role: z.enum(["owner", "manager", "agent", "viewer"]) })),
+      },
+      responses: {
+        200: json(z.object({ data: z.object({ userId: z.string(), role: z.string() }) }), "cambiado"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      await authorize(principal, routeOf("org.members.update"));
+      const { userId } = c.req.valid("param");
+      const { role } = c.req.valid("json");
+
+      const { role: actual, propio } = await miembroGestionable(principal, userId);
+      if (!canGrantRole(propio, role)) {
+        throw new OmniError("forbidden", `no puedes otorgar el rol "${role}" teniendo "${propio}"`, {
+          tuRol: propio, rolPedido: role,
+        });
+      }
+      if (actual === "owner" && role !== "owner") await exigirOtroOwner(principal.orgId);
+
+      await db.update(orgMemberTable).set({ role })
+        .where(and(eq(orgMemberTable.orgId, principal.orgId), eq(orgMemberTable.userId, userId)));
+      return c.json({ data: { userId, role } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "delete", path: "/v1/members/{userId}", tags: ["identidad"],
+      summary: "Quitar a alguien de la organización",
+      description:
+        "Pierde el acceso al momento: se borran su pertenencia, sus roles por línea en esta " +
+        "organización y sus sesiones abiertas en ella. La cuenta no se borra.",
+      request: { params: miembroParam },
+      responses: {
+        200: json(z.object({ data: z.object({ ok: z.boolean() }) }), "quitado"),
+        ...errors,
+      },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      await authorize(principal, routeOf("org.members.update"));
+      const { userId } = c.req.valid("param");
+
+      const { role } = await miembroGestionable(principal, userId);
+      if (role === "owner") await exigirOtroOwner(principal.orgId);
+
+      await db.transaction(async (tx) => {
+        await tx.delete(lineMemberTable).where(and(
+          eq(lineMemberTable.userId, userId),
+          inArray(lineMemberTable.lineId,
+            tx.select({ id: lineTable.id }).from(lineTable).where(eq(lineTable.orgId, principal.orgId))),
+        ));
+        await tx.delete(orgMemberTable)
+          .where(and(eq(orgMemberTable.orgId, principal.orgId), eq(orgMemberTable.userId, userId)));
+        // Sin esto seguiría dentro hasta que caducara su sesión.
+        await tx.delete(sessionTable)
+          .where(and(eq(sessionTable.userId, userId), eq(sessionTable.activeOrgId, principal.orgId)));
+      });
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
   app.openapi(
     createRoute({
       method: "post", path: "/v1/invitations", tags: ["identidad"],
@@ -283,6 +483,9 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       responses: { 201: json(z.object({ data: UserSchema }), "cuenta creada"), ...errors },
     }),
     async (c) => {
+      // Aceptar con contraseña crea una cuenta que entra sin el proveedor; con
+      // la contraseña apagada se acepta desde /unirse, entrando con él.
+      exigirContrasenaActiva();
       const { token, name, password } = c.req.valid("json");
       const filas = await db.select().from(invitationTable)
         .where(and(eq(invitationTable.tokenHash, await hashToken(token)), isNull(invitationTable.acceptedAt)))
@@ -316,4 +519,180 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       return c.json({ data: { id: userId, email: inv.email, name } }, 201);
     },
   );
+
+  // ─────────────────────────────── entrar con OpenID Connect
+  /*
+   * Fuera del contrato OpenAPI a propósito, como `GET /v1/media/...`: son
+   * redirecciones del navegador, no operaciones que una integración llame.
+   */
+  const cfg = container.config;
+  const base = cfg.PUBLIC_URL.replace(/\/$/, "");
+  const oidc = oidcDesdeConfig(cfg);
+
+  /** Ningún detalle del fallo llega al navegador: se anota aquí y el panel enseña un mensaje genérico. */
+  const rechazar = (c: Context<ApiEnv>, motivo: OidcRechazo, detalle: string): Response => {
+    console.warn(`entrada OIDC rechazada (${motivo}): ${detalle}`);
+    deleteCookie(c, OIDC_COOKIE, { path: OIDC_COOKIE_PATH });
+    return c.redirect(`${base}/entrar?error=${motivo}`, 302);
+  };
+
+  app.get("/v1/auth/providers", (c) => c.json({
+    data: {
+      password: cfg.PASSWORD_LOGIN_ENABLED,
+      oidc: oidc ? { name: oidc.config.displayName, startUrl: `${base}/v1/auth/oidc/start` } : null,
+    },
+  }));
+
+  app.get("/v1/auth/oidc/start", async (c) => {
+    if (!oidc) throw new OmniError("not_found", "la entrada con OpenID Connect no está configurada");
+    // `invitacion`: aceptar una invitación entrando con el proveedor, sin contraseña.
+    const invitacion = c.req.query("invitacion");
+    const t: EntradaOidc = {
+      state: aleatorio(), nonce: aleatorio(), verifier: aleatorio(48),
+      next: destinoSeguro(c.req.query("next")),
+      ...(invitacion && invitacion.length >= 10 && invitacion.length <= 200 ? { invitacion } : {}),
+    };
+    let url: string;
+    try {
+      url = await oidc.authorizeUrl(t);
+    } catch (err) {
+      return rechazar(c, "sso", (err as Error).message);
+    }
+    // Lo que hay que comprobar a la vuelta viaja en una cookie corta y solo
+    // para esta ruta: sin estado en el servidor, y otro sitio no puede leerla.
+    setCookie(c, OIDC_COOKIE, Buffer.from(JSON.stringify(t)).toString("base64url"), {
+      httpOnly: true, secure: base.startsWith("https"), sameSite: "Lax",
+      path: OIDC_COOKIE_PATH, maxAge: 600,
+    });
+    return c.redirect(url, 302);
+  });
+
+  app.get("/v1/auth/oidc/callback", async (c) => {
+    if (!oidc) throw new OmniError("not_found", "la entrada con OpenID Connect no está configurada");
+    const t = leerEntradaOidc(getCookie(c, OIDC_COOKIE));
+    deleteCookie(c, OIDC_COOKIE, { path: OIDC_COOKIE_PATH });
+
+    const errorProveedor = c.req.query("error");
+    if (errorProveedor) return rechazar(c, "sso", `el proveedor devolvió ${errorProveedor}`);
+    const state = c.req.query("state");
+    const code = c.req.query("code");
+    // Sin esta comparación, otro sitio podría colar su propio código y dejar a
+    // la víctima dentro de una sesión ajena (CSRF de entrada).
+    if (!t || !state || !code || !mismoTexto(state, t.state)) {
+      return rechazar(c, "sso", "state ausente o distinto: caducó o empezó en otro navegador");
+    }
+
+    try {
+      const id = await oidc.exchange(code, t);
+      const sesionOidc = { subject: id.subject, sessionId: id.sessionId, refreshToken: id.refreshToken };
+      if (t.invitacion) {
+        const orgId = await aceptarInvitacionOidc(t.invitacion, id);
+        await crearSesion(c, (await usuarioPorCorreo(id.email))!.id, orgId, sesionOidc);
+        return c.redirect(`${base}/`, 302);
+      }
+      const user = await usuarioPorCorreo(id.email);
+      if (!user || user.disabledAt) throw new OidcError("sso-sin-cuenta", `no hay cuenta activa con ${id.email}`);
+      const pertenencia = await db.select().from(orgMemberTable)
+        .where(eq(orgMemberTable.userId, user.id)).limit(1);
+      // Quien fue quitado del equipo conserva la cuenta, pero no entra: sin
+      // organización solo vería un panel vacío, y no es eso lo que se decidió.
+      if (!pertenencia[0]) throw new OidcError("sso-sin-cuenta", `${id.email} no pertenece a ninguna organización`);
+      await crearSesion(c, user.id, pertenencia[0].orgId, sesionOidc);
+      return c.redirect(`${base}${destinoSeguro(t.next)}`, 302);
+    } catch (err) {
+      if (err instanceof OidcError) return rechazar(c, err.motivo, err.message);
+      return rechazar(c, "sso", (err as Error).message);
+    }
+  });
+
+  const usuarioPorCorreo = async (email: string) =>
+    (await db.select().from(userTable).where(eq(userTable.email, email)).limit(1))[0];
+
+  /**
+   * Acepta una invitación con la identidad del proveedor, en vez de con una
+   * contraseña nueva. El correo VERIFICADO del proveedor tiene que ser el de la
+   * invitación: si no, quien reciba un enlace reenviado entraría con su propia
+   * cuenta en el sitio de otra persona.
+   */
+  const aceptarInvitacionOidc = async (token: string, id: OidcIdentity): Promise<string> => {
+    const inv = (await db.select().from(invitationTable)
+      .where(and(eq(invitationTable.tokenHash, await hashToken(token)), isNull(invitationTable.acceptedAt)))
+      .limit(1))[0];
+    if (!inv || inv.expiresAt.getTime() <= Date.now()) {
+      throw new OidcError("sso-invitacion", "la invitación no existe, ya se usó o caducó");
+    }
+    if (inv.email !== id.email) {
+      throw new OidcError("sso-invitacion-correo", `la invitación es para ${inv.email} y el proveedor dice ${id.email}`);
+    }
+    return db.transaction(async (tx) => {
+      // Se reclama primero: dos aceptaciones a la vez no pueden usar el mismo enlace.
+      const reclamada = await tx.update(invitationTable).set({ acceptedAt: new Date() })
+        .where(and(eq(invitationTable.id, inv.id), isNull(invitationTable.acceptedAt)))
+        .returning({ id: invitationTable.id });
+      if (reclamada.length === 0) throw new OidcError("sso-invitacion", "la invitación ya se usó");
+
+      const existente = (await tx.select().from(userTable).where(eq(userTable.email, inv.email)).limit(1))[0];
+      if (existente?.disabledAt) throw new OidcError("sso-sin-cuenta", `la cuenta ${inv.email} está deshabilitada`);
+      const userId = existente?.id ?? `u-${crypto.randomUUID()}`;
+      if (!existente) {
+        // Sin contraseña: esta cuenta solo entra por el proveedor.
+        await tx.insert(userTable).values({ id: userId, email: inv.email, name: id.name, passwordHash: null, emailVerified: true });
+      }
+      await tx.insert(orgMemberTable).values({ orgId: inv.orgId, userId, role: inv.role }).onConflictDoNothing();
+      return inv.orgId;
+    });
+  };
+
+  /*
+   * OpenID Connect Back-Channel Logout 1.0: el proveedor avisa, de servidor a
+   * servidor, de que una sesión suya terminó (cierre de sesión, sesión revocada
+   * por un administrador, usuario dado de baja). Se cierran las nuestras que
+   * nacieron de ella, sin esperar a que caduquen.
+   */
+  app.post("/v1/auth/oidc/backchannel-logout", async (c) => {
+    if (!oidc) throw new OmniError("not_found", "la entrada con OpenID Connect no está configurada");
+    c.header("Cache-Control", "no-store");
+    const form = await c.req.parseBody();
+    const token = form["logout_token"];
+    if (typeof token !== "string" || !token) return c.json({ error: "invalid_request" }, 400);
+    let cierre: { subject: string | null; sessionId: string | null };
+    try {
+      cierre = await oidc.verifyLogoutToken(token);
+    } catch (err) {
+      console.warn(`aviso de cierre de sesión OIDC rechazado: ${(err as Error).message}`);
+      return c.json({ error: "invalid_request" }, 400);
+    }
+    const condicion = cierre.sessionId
+      ? eq(sessionTable.oidcSessionId, cierre.sessionId)
+      : eq(sessionTable.oidcSubject, cierre.subject!);
+    const cerradas = await db.delete(sessionTable).where(condicion).returning({ id: sessionTable.id });
+    console.log(`cierre de sesión OIDC: ${cerradas.length} sesión(es) cerrada(s)`);
+    return c.body(null, 200);
+  });
+}
+
+const OIDC_COOKIE = "omni_oidc";
+const OIDC_COOKIE_PATH = "/v1/auth/oidc";
+
+interface EntradaOidc { state: string; nonce: string; verifier: string; next: string; invitacion?: string }
+
+function leerEntradaOidc(raw: string | undefined): EntradaOidc | null {
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<EntradaOidc>;
+    if (typeof t.state !== "string" || typeof t.nonce !== "string" || typeof t.verifier !== "string") return null;
+    return {
+      state: t.state, nonce: t.nonce, verifier: t.verifier, next: destinoSeguro(t.next),
+      ...(typeof t.invitacion === "string" ? { invitacion: t.invitacion } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Comparación en tiempo constante. */
+function mismoTexto(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }

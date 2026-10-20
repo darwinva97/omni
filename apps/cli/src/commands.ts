@@ -290,6 +290,24 @@ export const COMMANDS: readonly Command[] = [
     run: (c) => c.request("GET", "/v1/members"),
   },
   {
+    name: "miembro:rol",
+    summary: "Cambiar el rol de alguien en la organización",
+    operation: "PATCH /v1/members/{userId}",
+    args: [
+      { name: "usuario", required: true, description: "Identificador de la persona (ver `omni equipo`)" },
+      { name: "rol", required: true, description: "owner, manager, agent o viewer" },
+    ],
+    run: (c, a) => c.request("PATCH", `/v1/members/${req(a, 0, "usuario")}`, { role: req(a, 1, "rol") }),
+  },
+  {
+    name: "miembro:quitar",
+    summary: "Quitar a alguien de la organización (pierde el acceso al momento)",
+    operation: "DELETE /v1/members/{userId}",
+    destructive: true,
+    args: [{ name: "usuario", required: true, description: "Identificador de la persona (ver `omni equipo`)" }],
+    run: (c, a) => c.request("DELETE", `/v1/members/${req(a, 0, "usuario")}`),
+  },
+  {
     name: "invitar",
     summary: "Invitar a alguien a la organización",
     operation: "POST /v1/invitations",

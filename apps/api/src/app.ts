@@ -646,7 +646,7 @@ import { presentarConversacion } from "./crm/conversaciones.js";
 import { registerNoteRoutes } from "./routes/notas.js";
 import { registerCommerceRoutes } from "./routes/commerce.js";
 import { HOST_VERSION } from "./container.js";
-import { registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
+import { crearRevalidadorOidc, registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
 import { registerRealtimeRoutes } from "./routes/realtime.js";
 import { wasenderCompat } from "./compat/wasender.js";
@@ -762,6 +762,13 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     path === "/v1/auth/register" ||
     path === "/v1/auth/login" ||
     path === "/v1/auth/logout" ||
+    // Qué formas de entrar hay, y la ida y vuelta con el proveedor OIDC.
+    path === "/v1/auth/providers" ||
+    path === "/v1/auth/oidc/start" ||
+    path === "/v1/auth/oidc/callback" ||
+    // La llama el proveedor, no una persona: se autentica con la firma del
+    // logout_token, comprobada en el manejador.
+    path === "/v1/auth/oidc/backchannel-logout" ||
     path === "/v1/invitations/accept" ||
     // El billete de un solo uso ES la credencial; se canjea en el manejador.
     path === "/v1/realtime/ws" ||
@@ -769,6 +776,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     // del cuerpo, comprobada dentro del propio manejador.
     /^\/v1\/channels\/cloud\/[^/]+\/webhook$/.test(path) ||
     (method === "GET" && path.startsWith("/v1/media/"));
+
+  const revalidarOidc = crearRevalidadorOidc(container);
 
   app.use("/v1/*", async (c, next) => {
     if (sinCredencial(c.req.method, c.req.path)) return next();
@@ -782,6 +791,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
      */
     const cookie = getCookie(c, SESSION_COOKIE);
     if (cookie) {
+      // Una sesión del proveedor que él ya no reconoce se cierra aquí, antes de leerla.
+      await revalidarOidc(cookie);
       const persona = await authenticateSession(container.dbh.db, cookie);
       if (persona) {
         c.set("principal", persona);
