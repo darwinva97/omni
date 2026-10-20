@@ -1,0 +1,68 @@
+# Imagen para el despliegue en k3s (bezenti-gitops, apps/omni).
+#
+# Solo corre en la rama k3s y en el runner del clúster: main sigue desplegándose
+# como hasta ahora (omni-cd en la otra máquina) y no se entera de esto.
+name: k3s image
+
+on:
+  push:
+    branches: [k3s]
+  workflow_dispatch:
+
+concurrency:
+  group: k3s-image
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/darwinva97/omni
+
+jobs:
+  build:
+    runs-on: k3s-omni
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Las pruebas unitarias corren dentro del build: si fallan, no hay imagen.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.IMAGE }}:k3s
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: k3s-omni
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: darwinva97/bezenti-gitops
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+
+      - name: Actualizar el tag de la imagen
+        run: |
+          sed -i -E "s|(image: ghcr.io/darwinva97/omni:)[^ ]*( # omni-image)|\1${{ needs.build.outputs.tag }}\2|" apps/omni/workloads.yaml
+          git diff --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "omni: ${{ needs.build.outputs.tag }}" || echo "sin cambios"
+          git push

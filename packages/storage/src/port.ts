@@ -69,6 +69,8 @@ export const StorageConfig = z.discriminatedUnion("kind", [
     bucket: z.string().min(1),
     region: z.string().default("auto"),
     endpoint: z.string().optional(),
+    /** Host contra el que se firman las URLs de descarga, si no es `endpoint`. */
+    publicEndpoint: z.string().optional(),
     accessKeyId: z.string().min(1),
     secretAccessKey: z.string().min(1),
     forcePathStyle: z.boolean().default(true),

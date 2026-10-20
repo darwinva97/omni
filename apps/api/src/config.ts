@@ -103,6 +103,12 @@ export const Config = z.object({
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().default("auto"),
   S3_ENDPOINT: z.string().optional(),
+  /**
+   * Host público contra el que se firman las URLs de descarga, cuando la API
+   * habla con el almacén por una dirección interna (`S3_ENDPOINT`) que desde
+   * fuera no existe. Sin él se firma contra `S3_ENDPOINT`.
+   */
+  S3_PUBLIC_ENDPOINT: z.string().optional(),
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
 });
