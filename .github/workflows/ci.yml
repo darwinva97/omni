@@ -45,13 +45,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      # La versión de pnpm sale de `packageManager` en package.json. Sin ese
-      # campo este paso fallaba y CI no llegó a ejecutar ni una prueba.
-      - uses: pnpm/action-setup@v6
+      # Node primero: el runner del clúster no trae Node en el sistema, y
+      # pnpm/action-setup lo necesita para instalarse (salía con 127).
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
+      # La versión de pnpm sale de `packageManager` en package.json.
+      - run: corepack enable
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
