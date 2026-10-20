@@ -1,8 +1,11 @@
 name: CI
 
-# Lo que esté en main con este flujo en verde se despliega solo: lo recoge el
-# temporizador omni-cd de la máquina (ver despliegue/README.md). Un rojo aquí
-# es un despliegue que no ocurre.
+# Lo que esté en main con este flujo en verde se despliega solo: al terminar en
+# verde se construye la imagen (k3s-image.yml) y ArgoCD la lleva al clúster (ver
+# despliegue/README.md). Un rojo aquí es un despliegue que no ocurre.
+#
+# Corre en el runner del clúster (k3s-omni): los runners de GitHub no están
+# disponibles para esta cuenta.
 on:
   push: { branches: [main] }
   pull_request:
@@ -20,7 +23,7 @@ permissions:
 jobs:
   node:
     name: Tipos, build y pruebas
-    runs-on: ubuntu-latest
+    runs-on: k3s-omni
     timeout-minutes: 20
     services:
       postgres:
@@ -72,7 +75,7 @@ jobs:
 
   sdk-python:
     name: SDK de Python
-    runs-on: ubuntu-latest
+    runs-on: k3s-omni
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -85,7 +88,7 @@ jobs:
 
   sdk-go:
     name: SDK de Go
-    runs-on: ubuntu-latest
+    runs-on: k3s-omni
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

@@ -2,9 +2,9 @@
 #   API:   node apps/api/dist/main.js
 #   Panel: cd apps/web && node_modules/.bin/next start -p 4011
 #
-# Compila igual que scripts/despliegue.sh, y no sale imagen si fallan las
-# pruebas unitarias: una imagen con el código nuevo y sin probar es justo lo que
-# ese script existe para evitar.
+# Compila paquete a paquete con tsc y empaqueta los plugins. No sale imagen si
+# fallan las pruebas unitarias: una imagen con código nuevo y sin probar es justo
+# lo que no debe llegar a producción.
 
 FROM node:22-bookworm-slim AS build
 ENV CI=true
