@@ -28,6 +28,16 @@ describe("configuración por entorno", () => {
     }
   });
 
+  it("no arranca sin contraseña y sin proveedor OIDC: nadie podría entrar", () => {
+    expect(() => loadConfig({ ...base, PASSWORD_LOGIN_ENABLED: "false" })).toThrow(/OIDC_ISSUER_URL/);
+    const c = loadConfig({
+      ...base, PASSWORD_LOGIN_ENABLED: "false",
+      OIDC_ISSUER_URL: "https://idp.ejemplo.com/realms/r", OIDC_CLIENT_ID: "omni", OIDC_CLIENT_SECRET: "s",
+    });
+    expect(c.PASSWORD_LOGIN_ENABLED).toBe(false);
+    expect(c.OIDC_SESSION_HOURS).toBe(12);
+  });
+
   it("respeta los valores por defecto", () => {
     const c = loadConfig(base);
     expect(c.SANDBOX_ENABLED).toBe(true);

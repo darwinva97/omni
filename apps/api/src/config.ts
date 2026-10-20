@@ -128,6 +128,17 @@ export const Config = z.object({
   OIDC_CLIENT_ID: z.string().optional(),
   OIDC_CLIENT_SECRET: z.string().optional(),
   OIDC_DISPLAY_NAME: z.string().default("Keycloak"),
+  /**
+   * Horas que dura una sesión abierta con el proveedor. Más corta que la de
+   * contraseña: es la red de seguridad si un aviso de cierre no llegara.
+   */
+  OIDC_SESSION_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
+  /**
+   * Entrada con correo y contraseña. Apagada, la única puerta es el proveedor
+   * OIDC: no se entra, ni se da de alta, ni se acepta una invitación con
+   * contraseña. Exige el proveedor configurado, o nadie podría entrar.
+   */
+  PASSWORD_LOGIN_ENABLED: envBoolean(true),
   /** Grupos del proveedor con acceso, separados por comas. Vacío: cualquiera con cuenta en Omni. */
   OIDC_ALLOWED_GROUPS: z.string().default(""),
   OIDC_GROUPS_CLAIM: z.string().default("groups"),
@@ -140,5 +151,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`).join("\n");
     throw new Error(`configuración inválida:\n${issues}`);
   }
-  return parsed.data;
+  const c = parsed.data;
+  // Sin contraseña y sin proveedor no entra nadie: mejor no arrancar que
+  // arrancar un panel con la puerta tapiada.
+  if (!c.PASSWORD_LOGIN_ENABLED && !(c.OIDC_ISSUER_URL && c.OIDC_CLIENT_ID && c.OIDC_CLIENT_SECRET)) {
+    throw new Error(
+      "configuración inválida:\n  PASSWORD_LOGIN_ENABLED: apagar la contraseña exige OIDC_ISSUER_URL, OIDC_CLIENT_ID y OIDC_CLIENT_SECRET",
+    );
+  }
+  return c;
 }

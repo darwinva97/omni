@@ -56,8 +56,8 @@ const persona = { email: "Ana@Ejemplo.com", email_verified: true, name: "Ana", n
 describe("entrada OIDC", () => {
   it("canjea el código con PKCE y devuelve la identidad con el correo normalizado", async () => {
     const visto: { body?: URLSearchParams } = {};
-    const id = await cliente(proveedor(() => firmar(persona), visto)).exchange("codigo", { verifier: "v-1", nonce: "n-1" });
-    expect(id).toEqual({ subject: "sub-1", email: "ana@ejemplo.com", name: "Ana" });
+    const id = await cliente(proveedor(() => firmar({ ...persona, sid: "sesion-kc" }), visto)).exchange("codigo", { verifier: "v-1", nonce: "n-1" });
+    expect(id).toEqual({ subject: "sub-1", email: "ana@ejemplo.com", name: "Ana", sessionId: "sesion-kc" });
     expect(visto.body?.get("code_verifier")).toBe("v-1");
     expect(visto.body?.get("grant_type")).toBe("authorization_code");
   });
@@ -111,6 +111,31 @@ describe("entrada OIDC", () => {
     for (const malo of ["https://evil.com", "//evil.com", "/\\evil.com", "evil.com", "", undefined, null]) {
       expect(destinoSeguro(malo)).toBe("/");
     }
+  });
+
+  describe("aviso de cierre de sesión (back-channel logout)", () => {
+    const evento = { "http://schemas.openid.net/event/backchannel-logout": {} };
+
+    it("acepta un aviso firmado y dice qué sesión cerrar", async () => {
+      const t = await firmar({ events: evento, sid: "sesion-kc", jti: "j1" });
+      await expect(cliente(proveedor(() => firmar(persona))).verifyLogoutToken(t))
+        .resolves.toEqual({ subject: "sub-1", sessionId: "sesion-kc" });
+    });
+
+    it("rechaza un id_token presentado como aviso: no lleva el evento y sí nonce", async () => {
+      // Si valiera, un id_token robado serviría para cerrar sesiones ajenas.
+      const idToken = await firmar(persona);
+      await expect(cliente(proveedor(() => firmar(persona))).verifyLogoutToken(idToken)).rejects.toThrow();
+      const conNonce = await firmar({ events: evento, sid: "s", nonce: "n" });
+      await expect(cliente(proveedor(() => firmar(persona))).verifyLogoutToken(conNonce)).rejects.toThrow(/nonce/);
+    });
+
+    it("rechaza un aviso firmado con otra clave o para otro cliente", async () => {
+      await expect(cliente(proveedor(() => firmar(persona))).verifyLogoutToken(await firmar({ events: evento, sid: "s" }, { key: ajena })))
+        .rejects.toThrow();
+      await expect(cliente(proveedor(() => firmar(persona))).verifyLogoutToken(await firmar({ events: evento, sid: "s" }, { aud: "otra" })))
+        .rejects.toThrow();
+    });
   });
 
   it("si el emisor anunciado no es el configurado, no sigue", async () => {

@@ -37,13 +37,13 @@ async function entrar(formData: FormData): Promise<void> {
 }
 
 /** Qué formas de entrar ofrece la API. Si no responde, queda la de siempre. */
-async function proveedores(): Promise<{ oidc: { name: string; startUrl: string } | null }> {
+async function proveedores(): Promise<{ password: boolean; oidc: { name: string; startUrl: string } | null }> {
   try {
     const res = await fetch(`${API_URL}/v1/auth/providers`, { cache: "no-store" });
-    if (!res.ok) return { oidc: null };
-    return ((await res.json()) as { data: { oidc: { name: string; startUrl: string } | null } }).data;
+    if (!res.ok) return { password: true, oidc: null };
+    return ((await res.json()) as { data: { password: boolean; oidc: { name: string; startUrl: string } | null } }).data;
   } catch {
-    return { oidc: null };
+    return { password: true, oidc: null };
   }
 }
 
@@ -53,6 +53,8 @@ const MENSAJES_SSO: Record<string, string> = {
   "sso-correo": "Tu correo no está verificado en el proveedor de identidad.",
   "sso-grupo": "Tu cuenta del proveedor no pertenece a un grupo con acceso a Omni.",
   "sso-sin-cuenta": "No hay una cuenta de Omni con ese correo. Pide una invitación.",
+  "sso-invitacion": "La invitación no existe, ya se usó o caducó. Pide una nueva.",
+  "sso-invitacion-correo": "Esa invitación es para otro correo. Entra con la cuenta a la que se envió.",
 };
 
 export default async function Entrar({
@@ -61,7 +63,7 @@ export default async function Entrar({
   searchParams: Promise<{ error?: string }>;
 }) {
   const { error } = await searchParams;
-  const { oidc } = await proveedores();
+  const { password, oidc } = await proveedores();
   const errorSso = error ? MENSAJES_SSO[error] : undefined;
 
   return (
@@ -81,10 +83,12 @@ export default async function Entrar({
           {errorSso && (
             <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-300">{errorSso}</p>
           )}
-          <p className="mt-6 text-center text-xs text-(--color-tenue)">o con correo y contraseña</p>
+          {password && <p className="mt-6 text-center text-xs text-(--color-tenue)">o con correo y contraseña</p>}
         </>
       )}
 
+      {/* La instalación decide qué puertas abre (PASSWORD_LOGIN_ENABLED en la API). */}
+      {password && (
       <form action={entrar} className={oidc ? "mt-3 space-y-3" : "mt-6 space-y-3"}>
         <label className="block">
           <span className="text-xs text-(--color-tenue)">Correo</span>
@@ -114,6 +118,13 @@ export default async function Entrar({
           Entrar
         </button>
       </form>
+      )}
+
+      {!password && !oidc && (
+        <p role="alert" className="mt-6 text-sm text-red-700 dark:text-red-300">
+          No se pudo consultar cómo entrar. Recarga la página en unos segundos.
+        </p>
+      )}
     </main>
   );
 }

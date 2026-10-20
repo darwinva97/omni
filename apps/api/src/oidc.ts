@@ -32,10 +32,16 @@ export interface OidcIdentity {
   readonly subject: string;
   readonly email: string;
   readonly name: string;
+  /** Sesión del proveedor (`sid`), para poder cerrar la nuestra cuando él la cierre. */
+  readonly sessionId: string | null;
 }
 
 /** Motivo por el que no se deja entrar; el panel enseña un mensaje por cada uno. */
-export type OidcRechazo = "sso" | "sso-correo" | "sso-grupo" | "sso-sin-cuenta";
+export type OidcRechazo =
+  | "sso" | "sso-correo" | "sso-grupo" | "sso-sin-cuenta"
+  | "sso-invitacion" | "sso-invitacion-correo";
+
+const BACKCHANNEL_EVENT = "http://schemas.openid.net/event/backchannel-logout";
 
 export class OidcError extends Error {
   readonly motivo: OidcRechazo;
@@ -94,7 +100,26 @@ export function identidadDesdeClaims(
     (typeof claims["preferred_username"] === "string" && claims["preferred_username"]) ||
     email;
   if (typeof claims.sub !== "string" || !claims.sub) throw new OidcError("sso", "token sin sujeto");
-  return { subject: claims.sub, email, name };
+  const sid = typeof claims["sid"] === "string" && claims["sid"] ? claims["sid"] : null;
+  return { subject: claims.sub, email, name, sessionId: sid };
+}
+
+/**
+ * Comprueba un aviso de cierre de sesión (OIDC Back-Channel Logout 1.0) ya
+ * verificado en firma, emisor y audiencia. Es un token, pero NO de identidad:
+ * lleva el evento de cierre y nunca `nonce`, así que un id_token robado no
+ * sirve para cerrar sesiones ajenas ni para lo contrario.
+ */
+export function cierreDesdeClaims(claims: JWTPayload & Record<string, unknown>): { subject: string | null; sessionId: string | null } {
+  const events = claims["events"];
+  if (!events || typeof events !== "object" || !(BACKCHANNEL_EVENT in events)) {
+    throw new Error("el token no es un aviso de cierre de sesión");
+  }
+  if ("nonce" in claims) throw new Error("un aviso de cierre de sesión no lleva nonce");
+  const subject = typeof claims.sub === "string" && claims.sub ? claims.sub : null;
+  const sessionId = typeof claims["sid"] === "string" && claims["sid"] ? claims["sid"] : null;
+  if (!subject && !sessionId) throw new Error("el aviso no dice qué sesión cerrar");
+  return { subject, sessionId };
 }
 
 export class OidcClient {
@@ -164,8 +189,7 @@ export class OidcClient {
     const tokens = (await res.json()) as { id_token?: string };
     if (!tokens.id_token) throw new OidcError("sso", "el proveedor no devolvió id_token");
 
-    this.#jwks ??= this.#getKey ?? createRemoteJWKSet(new URL(d.jwks_uri));
-    const { payload } = await jwtVerify(tokens.id_token, this.#jwks, {
+    const { payload } = await jwtVerify(tokens.id_token, await this.#claves(), {
       issuer: d.issuer,
       audience: this.config.clientId,
     }).catch((err: unknown) => {
@@ -176,5 +200,25 @@ export class OidcClient {
       allowedGroups: this.config.allowedGroups,
       groupsClaim: this.config.groupsClaim,
     });
+  }
+
+  /** Verifica el `logout_token` que el proveedor manda al cerrar una sesión. */
+  async verifyLogoutToken(token: string): Promise<{ subject: string | null; sessionId: string | null }> {
+    const d = await this.discovery();
+    const { payload } = await jwtVerify(token, await this.#claves(), {
+      issuer: d.issuer,
+      audience: this.config.clientId,
+      // Un aviso viejo no debe poder reproducirse para siempre.
+      maxTokenAge: "10m",
+    });
+    return cierreDesdeClaims(payload as JWTPayload & Record<string, unknown>);
+  }
+
+  async #claves(): Promise<JWTVerifyGetKey> {
+    if (!this.#jwks) {
+      const d = await this.discovery();
+      this.#jwks = this.#getKey ?? createRemoteJWKSet(new URL(d.jwks_uri));
+    }
+    return this.#jwks;
   }
 }

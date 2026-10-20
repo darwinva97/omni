@@ -35,3 +35,4 @@ cada fichero se aplica **en una transacción**: o entra entero o no entra.
 | `0009_respuestas_rapidas.sql` | Respuestas rápidas de la organización, con su atajo único. |
 | `0010_notas_internas.sql` | Notas internas de un chat, en su propia tabla: nunca pasan por la cola de salida. |
 | `0011_buscar_en_la_linea.sql` | Índice `(line_id, timestamp)` para buscar en todos los chats de una línea, de lo más nuevo atrás. |
+| `0012_sesion_oidc.sql` | `oidc_subject` y `oidc_session_id` en `app_session`, para cerrar las sesiones que el proveedor OIDC da por cerradas. |

@@ -766,6 +766,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     path === "/v1/auth/providers" ||
     path === "/v1/auth/oidc/start" ||
     path === "/v1/auth/oidc/callback" ||
+    // La llama el proveedor, no una persona: se autentica con la firma del
+    // logout_token, comprobada en el manejador.
+    path === "/v1/auth/oidc/backchannel-logout" ||
     path === "/v1/invitations/accept" ||
     // El billete de un solo uso ES la credencial; se canjea en el manejador.
     path === "/v1/realtime/ws" ||
