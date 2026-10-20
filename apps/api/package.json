@@ -19,6 +19,7 @@
     "@omni/core": "workspace:*",
     "@omni/db": "workspace:*",
     "@omni/engine": "workspace:*",
+    "@omni/media": "workspace:*",
     "@omni/platform": "workspace:*",
     "@omni/plugins": "workspace:*",
     "@omni/shared": "workspace:*",
@@ -27,10 +28,10 @@
     "fetch-to-node": "^2.1.0",
     "hono": "^4.13.8",
     "imapflow": "^2.1.2",
+    "jose": "6.2.12",
     "nodemailer": "^10.0.12",
     "ws": "^8.21.3",
-    "zod": "^4.6.5",
-    "@omni/media": "workspace:*"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

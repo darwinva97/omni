@@ -117,6 +117,20 @@ export const Config = z.object({
   S3_PUBLIC_ENDPOINT: z.string().optional(),
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
+
+  /**
+   * Entrada con OpenID Connect (p. ej. Keycloak). Se activa con emisor, cliente
+   * y secreto; sin ellos el panel solo ofrece correo y contraseña. Solo entra
+   * quien ya tiene cuenta en Omni con el mismo correo, verificado en el
+   * proveedor: el proveedor dice quién es, Omni decide a qué tiene acceso.
+   */
+  OIDC_ISSUER_URL: z.string().url().optional(),
+  OIDC_CLIENT_ID: z.string().optional(),
+  OIDC_CLIENT_SECRET: z.string().optional(),
+  OIDC_DISPLAY_NAME: z.string().default("Keycloak"),
+  /** Grupos del proveedor con acceso, separados por comas. Vacío: cualquiera con cuenta en Omni. */
+  OIDC_ALLOWED_GROUPS: z.string().default(""),
+  OIDC_GROUPS_CLAIM: z.string().default("groups"),
 });
 export type Config = z.infer<typeof Config>;
 

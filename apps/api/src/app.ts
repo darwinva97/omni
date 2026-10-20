@@ -762,6 +762,10 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
     path === "/v1/auth/register" ||
     path === "/v1/auth/login" ||
     path === "/v1/auth/logout" ||
+    // Qué formas de entrar hay, y la ida y vuelta con el proveedor OIDC.
+    path === "/v1/auth/providers" ||
+    path === "/v1/auth/oidc/start" ||
+    path === "/v1/auth/oidc/callback" ||
     path === "/v1/invitations/accept" ||
     // El billete de un solo uso ES la credencial; se canjea en el manejador.
     path === "/v1/realtime/ws" ||

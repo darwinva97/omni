@@ -36,19 +36,56 @@ async function entrar(formData: FormData): Promise<void> {
   redirect("/");
 }
 
+/** Qué formas de entrar ofrece la API. Si no responde, queda la de siempre. */
+async function proveedores(): Promise<{ oidc: { name: string; startUrl: string } | null }> {
+  try {
+    const res = await fetch(`${API_URL}/v1/auth/providers`, { cache: "no-store" });
+    if (!res.ok) return { oidc: null };
+    return ((await res.json()) as { data: { oidc: { name: string; startUrl: string } | null } }).data;
+  } catch {
+    return { oidc: null };
+  }
+}
+
+/** Los motivos son de la API (`OidcRechazo`); el detalle se queda en su registro. */
+const MENSAJES_SSO: Record<string, string> = {
+  sso: "No se pudo completar la entrada con el proveedor. Inténtalo de nuevo.",
+  "sso-correo": "Tu correo no está verificado en el proveedor de identidad.",
+  "sso-grupo": "Tu cuenta del proveedor no pertenece a un grupo con acceso a Omni.",
+  "sso-sin-cuenta": "No hay una cuenta de Omni con ese correo. Pide una invitación.",
+};
+
 export default async function Entrar({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
   const { error } = await searchParams;
+  const { oidc } = await proveedores();
+  const errorSso = error ? MENSAJES_SSO[error] : undefined;
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-6">
       <h1 className="text-xl font-semibold tracking-tight">omni</h1>
       <p className="mt-1 text-sm text-(--color-tenue)">Entra con tu cuenta.</p>
 
-      <form action={entrar} className="mt-6 space-y-3">
+      {oidc && (
+        <>
+          {/* Un enlace y no un botón con JavaScript: la entrada es una redirección del navegador. */}
+          <a
+            href={oidc.startUrl}
+            className="mt-6 block w-full rounded-lg bg-(--color-acento) px-3 py-2 text-center text-sm font-medium text-white transition-opacity hover:opacity-90"
+          >
+            Entrar con {oidc.name}
+          </a>
+          {errorSso && (
+            <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-300">{errorSso}</p>
+          )}
+          <p className="mt-6 text-center text-xs text-(--color-tenue)">o con correo y contraseña</p>
+        </>
+      )}
+
+      <form action={entrar} className={oidc ? "mt-3 space-y-3" : "mt-6 space-y-3"}>
         <label className="block">
           <span className="text-xs text-(--color-tenue)">Correo</span>
           <input
@@ -64,7 +101,7 @@ export default async function Entrar({
           />
         </label>
 
-        {error && (
+        {error && !errorSso && (
           <p role="alert" className="text-sm text-red-700 dark:text-red-300">
             Correo o contraseña incorrectos.
           </p>

@@ -7,7 +7,10 @@ import {
 import { invitationTable, orgMemberTable, orgTable, sessionTable, userTable } from "@omni/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import type { Context } from "hono";
+import { timingSafeEqual } from "node:crypto";
 import type { Container } from "../container.js";
+import { aleatorio, destinoSeguro, OidcClient, OidcError, type OidcRechazo } from "../oidc.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
 import { anotarFallo, exigirIntentoPermitido, olvidarFallos, origenDe } from "../intentos.js";
@@ -33,7 +36,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
   const db = container.dbh.db;
 
   const crearSesion = async (
-    c: Parameters<Parameters<typeof app.openapi>[1]>[0],
+    c: Context<ApiEnv>,
     userId: string,
     orgId: string | null,
   ): Promise<void> => {
@@ -316,4 +319,112 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       return c.json({ data: { id: userId, email: inv.email, name } }, 201);
     },
   );
+
+  // ─────────────────────────────── entrar con OpenID Connect
+  /*
+   * Fuera del contrato OpenAPI a propósito, como `GET /v1/media/...`: son
+   * redirecciones del navegador, no operaciones que una integración llame.
+   */
+  const cfg = container.config;
+  const base = cfg.PUBLIC_URL.replace(/\/$/, "");
+  const oidc = cfg.OIDC_ISSUER_URL && cfg.OIDC_CLIENT_ID && cfg.OIDC_CLIENT_SECRET
+    ? new OidcClient({
+        issuer: cfg.OIDC_ISSUER_URL,
+        clientId: cfg.OIDC_CLIENT_ID,
+        clientSecret: cfg.OIDC_CLIENT_SECRET,
+        redirectUri: `${base}/v1/auth/oidc/callback`,
+        displayName: cfg.OIDC_DISPLAY_NAME,
+        allowedGroups: cfg.OIDC_ALLOWED_GROUPS.split(",").map((g) => g.trim()).filter(Boolean),
+        groupsClaim: cfg.OIDC_GROUPS_CLAIM,
+      })
+    : null;
+
+  /** Ningún detalle del fallo llega al navegador: se anota aquí y el panel enseña un mensaje genérico. */
+  const rechazar = (c: Context<ApiEnv>, motivo: OidcRechazo, detalle: string): Response => {
+    console.warn(`entrada OIDC rechazada (${motivo}): ${detalle}`);
+    deleteCookie(c, OIDC_COOKIE, { path: OIDC_COOKIE_PATH });
+    return c.redirect(`${base}/entrar?error=${motivo}`, 302);
+  };
+
+  app.get("/v1/auth/providers", (c) => c.json({
+    data: {
+      password: true,
+      oidc: oidc ? { name: oidc.config.displayName, startUrl: `${base}/v1/auth/oidc/start` } : null,
+    },
+  }));
+
+  app.get("/v1/auth/oidc/start", async (c) => {
+    if (!oidc) throw new OmniError("not_found", "la entrada con OpenID Connect no está configurada");
+    const t: EntradaOidc = {
+      state: aleatorio(), nonce: aleatorio(), verifier: aleatorio(48),
+      next: destinoSeguro(c.req.query("next")),
+    };
+    let url: string;
+    try {
+      url = await oidc.authorizeUrl(t);
+    } catch (err) {
+      return rechazar(c, "sso", (err as Error).message);
+    }
+    // Lo que hay que comprobar a la vuelta viaja en una cookie corta y solo
+    // para esta ruta: sin estado en el servidor, y otro sitio no puede leerla.
+    setCookie(c, OIDC_COOKIE, Buffer.from(JSON.stringify(t)).toString("base64url"), {
+      httpOnly: true, secure: base.startsWith("https"), sameSite: "Lax",
+      path: OIDC_COOKIE_PATH, maxAge: 600,
+    });
+    return c.redirect(url, 302);
+  });
+
+  app.get("/v1/auth/oidc/callback", async (c) => {
+    if (!oidc) throw new OmniError("not_found", "la entrada con OpenID Connect no está configurada");
+    const t = leerEntradaOidc(getCookie(c, OIDC_COOKIE));
+    deleteCookie(c, OIDC_COOKIE, { path: OIDC_COOKIE_PATH });
+
+    const errorProveedor = c.req.query("error");
+    if (errorProveedor) return rechazar(c, "sso", `el proveedor devolvió ${errorProveedor}`);
+    const state = c.req.query("state");
+    const code = c.req.query("code");
+    // Sin esta comparación, otro sitio podría colar su propio código y dejar a
+    // la víctima dentro de una sesión ajena (CSRF de entrada).
+    if (!t || !state || !code || !mismoTexto(state, t.state)) {
+      return rechazar(c, "sso", "state ausente o distinto: caducó o empezó en otro navegador");
+    }
+
+    try {
+      const id = await oidc.exchange(code, t);
+      const filas = await db.select().from(userTable).where(eq(userTable.email, id.email)).limit(1);
+      const user = filas[0];
+      if (!user || user.disabledAt) throw new OidcError("sso-sin-cuenta", `no hay cuenta activa con ${id.email}`);
+      const pertenencia = await db.select().from(orgMemberTable)
+        .where(eq(orgMemberTable.userId, user.id)).limit(1);
+      await crearSesion(c, user.id, pertenencia[0]?.orgId ?? null);
+      return c.redirect(`${base}${destinoSeguro(t.next)}`, 302);
+    } catch (err) {
+      if (err instanceof OidcError) return rechazar(c, err.motivo, err.message);
+      return rechazar(c, "sso", (err as Error).message);
+    }
+  });
+}
+
+const OIDC_COOKIE = "omni_oidc";
+const OIDC_COOKIE_PATH = "/v1/auth/oidc";
+
+interface EntradaOidc { state: string; nonce: string; verifier: string; next: string }
+
+function leerEntradaOidc(raw: string | undefined): EntradaOidc | null {
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<EntradaOidc>;
+    return typeof t.state === "string" && typeof t.nonce === "string" && typeof t.verifier === "string"
+      ? { state: t.state, nonce: t.nonce, verifier: t.verifier, next: destinoSeguro(t.next) }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Comparación en tiempo constante. */
+function mismoTexto(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
