@@ -40,7 +40,9 @@ const TEMA_DE_PLATAFORMA = `(() => {
     const aplicar = (tema, acento, marco, marcoClaro) => {
       if (tema === "oscuro" || tema === "claro") { html.dataset.tema = tema; localStorage.setItem("omni.tema", tema); }
       if (ok(acento)) { html.style.setProperty("--acento-plataforma", acento.trim()); html.dataset.acento = "1"; localStorage.setItem("omni.acento", acento.trim()); }
-      if (ok(marco)) {
+      // El marco es el fondo de la página que lo aloja: sólo vale dentro de ella. Abierto en su
+      // propia pestaña, el panel lleva el suyo.
+      if (ok(marco) && window.parent !== window) {
         const claro = marcoClaro === true || marcoClaro === "1";
         html.style.setProperty("--marco-plataforma", marco.trim());
         html.dataset.marco = claro ? "claro" : "oscuro";
@@ -48,7 +50,7 @@ const TEMA_DE_PLATAFORMA = `(() => {
       }
     };
     const url = new URL(location.href);
-    const [marcoGuardado, claroGuardado] = (localStorage.getItem("omni.marco") || "").split("|");
+    const [marcoGuardado, claroGuardado] = window.parent !== window ? (localStorage.getItem("omni.marco") || "").split("|") : [];
     aplicar(
       url.searchParams.get("tema") || localStorage.getItem("omni.tema"),
       url.searchParams.get("acento") || localStorage.getItem("omni.acento"),
