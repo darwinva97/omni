@@ -1,8 +1,10 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { setCookie } from "hono/cookie";
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "@hono/zod-openapi";
 import { OmniError } from "@omni/shared";
-import { apiKeyTable, lineTable, orgTable } from "@omni/db";
+import { apiKeyTable, lineTable, orgMemberTable, orgTable, sessionTable, userTable } from "@omni/db";
+import { generateToken, hashToken } from "@omni/core";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Container } from "../container.js";
 import { problem } from "../http.js";
@@ -23,6 +25,12 @@ import { mintApiKey } from "../keys.js";
  *   identificador externo y acuña una clave de administración nueva, que se
  *   enseña UNA vez. Las claves anteriores de la plataforma para esa organización
  *   se revocan: siempre hay una sola viva.
+ * - `POST /platform/orgs/{externalId}/acceso`: un enlace de UN solo uso (60 s) para
+ *   que el cliente entre al panel web de su organización sin otro login. La
+ *   organización tiene un usuario propio de la plataforma (rol owner, sin
+ *   contraseña: sólo se entra así). `GET /platform/entrar?codigo=` lo canjea
+ *   por la sesión de siempre y lleva al panel con el tema y el acento que pasó
+ *   la plataforma.
  * - `DELETE /platform/orgs/{externalId}`: baja del cliente. Revoca sus claves y
  *   cierra y borra (en blando) sus líneas; los mensajes se conservan, como en
  *   `DELETE /v1/lines/{lineId}`.
@@ -91,6 +99,80 @@ export function registerPlatformRoutes(app: OpenAPIHono<any>, container: Contain
     } catch (e) {
       return problem(c, e);
     }
+  });
+
+  /*
+   * Códigos de entrada: en memoria (la API es un solo proceso, `Recreate`) y de
+   * un solo uso. Lo que se guarda es el hash: quien vuelque la memoria no puede
+   * usarlos.
+   */
+  const codigos = new Map<string, { userId: string; orgId: string; vence: number; tema: string; acento: string }>();
+  const ACENTO = /^(#[0-9a-fA-F]{3,8}|oklch\([0-9.% ]{5,40}\)|rgb\([0-9., %]{5,40}\))$/;
+
+  app.post("/platform/orgs/:externalId/acceso", async (c) => {
+    try {
+      exigirToken(c.req.header("authorization"));
+      const externalId = c.req.param("externalId");
+      if (!EXTERNAL_ID.test(externalId)) throw new OmniError("validation_failed", "identificador externo inválido");
+      const org = (await db.select().from(orgTable).where(eq(orgTable.slug, slugDe(externalId))).limit(1))[0];
+      if (!org) throw new OmniError("not_found", "esa organización no existe");
+      const cuerpo = (await c.req.json().catch(() => ({}))) as { tema?: string; acento?: string };
+
+      // El usuario de la plataforma en esa organización: uno por organización.
+      const userId = `u-plat-${org.id}`;
+      await db.insert(userTable).values({
+        id: userId, email: `${org.id}@plataforma.omni.invalid`, name: "Plataforma", emailVerified: true, passwordHash: null,
+      }).onConflictDoNothing();
+      await db.insert(orgMemberTable).values({ orgId: org.id, userId, role: "owner" }).onConflictDoNothing();
+
+      const ahora = Date.now();
+      for (const [k, v] of codigos) if (v.vence <= ahora) codigos.delete(k);
+      const codigo = randomBytes(24).toString("base64url");
+      codigos.set(await hashToken(codigo), {
+        userId, orgId: org.id, vence: ahora + 60_000,
+        tema: cuerpo.tema === "oscuro" || cuerpo.tema === "claro" ? cuerpo.tema : "",
+        acento: typeof cuerpo.acento === "string" && ACENTO.test(cuerpo.acento.trim()) ? cuerpo.acento.trim() : "",
+      });
+      const base = container.config.PUBLIC_URL.replace(/\/$/, "");
+      return c.json({ data: { url: `${base}/platform/entrar?codigo=${codigo}` } }, 200);
+    } catch (e) {
+      return problem(c, e);
+    }
+  });
+
+  app.get("/platform/entrar", async (c) => {
+    const codigo = c.req.query("codigo") ?? "";
+    const clave = codigo ? await hashToken(codigo) : "";
+    const entrada = codigos.get(clave);
+    codigos.delete(clave);
+    if (!entrada || entrada.vence <= Date.now()) {
+      return c.html(
+        `<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:2rem">` +
+          `<p>El enlace caducó o ya se usó. Vuelve a abrir WhatsApp desde tu panel.</p></body>`,
+        410,
+      );
+    }
+    const token = generateToken();
+    const segundos = 12 * 3600;
+    await db.insert(sessionTable).values({
+      id: await hashToken(token),
+      userId: entrada.userId,
+      activeOrgId: entrada.orgId,
+      expiresAt: new Date(Date.now() + segundos * 1000),
+      ip: c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
+      userAgent: c.req.header("user-agent") ?? null,
+    });
+    setCookie(c, "omni_session", token, {
+      httpOnly: true,
+      secure: container.config.PUBLIC_URL.startsWith("https"),
+      sameSite: "Lax",
+      path: "/",
+      maxAge: segundos,
+    });
+    const q = new URLSearchParams();
+    if (entrada.tema) q.set("tema", entrada.tema);
+    if (entrada.acento) q.set("acento", entrada.acento);
+    return c.redirect(`/${q.size ? `?${q}` : ""}`, 302);
   });
 
   app.delete("/platform/orgs/:externalId", async (c) => {
