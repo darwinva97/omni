@@ -43,7 +43,7 @@ export function Rail({ actual }: { actual: string }) {
      */
     <nav
       aria-label="Secciones"
-      className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-around gap-1 border-t border-(--color-borde) bg-(--color-panel) px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] md:inset-x-auto md:inset-y-0 md:left-0 md:w-14 md:flex-col md:justify-start md:border-t-0 md:border-r md:px-0 md:py-3"
+      className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-around gap-1 border-t border-(--color-borde) bg-(--color-panel) px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] md:inset-x-auto md:inset-y-0 md:left-0 md:w-14 md:flex-col md:justify-start md:border-t-0 md:bg-transparent md:px-0 md:py-3"
     >
       {/* El logotipo solo en escritorio: en una barra inferior llena de
           destinos, otro botón más que lleva al primero es ruido. */}
@@ -70,7 +70,7 @@ export function Rail({ actual }: { actual: string }) {
             className={`relative flex size-10 items-center justify-center rounded-xl transition-colors duration-150 ${
               activo
                 ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
-                : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto)"
+                : "text-(--color-tenue) hover:bg-(--color-hundido) hover:text-(--color-texto) md:text-(--color-sobre-marco-tenue) md:hover:bg-(--color-marco-hover) md:hover:text-(--color-sobre-marco)"
             }`}
           >
             <Icono className="size-5" />
@@ -89,7 +89,7 @@ export function Rail({ actual }: { actual: string }) {
           type="submit"
           title="Salir"
           aria-label="Salir"
-          className="flex size-10 items-center justify-center rounded-xl text-(--color-tenue) transition-colors duration-150 hover:bg-(--color-hundido) hover:text-(--color-error)"
+          className="flex size-10 items-center justify-center rounded-xl text-(--color-sobre-marco-tenue) transition-colors duration-150 hover:bg-(--color-marco-hover) hover:text-(--color-error)"
         >
           <IconoSalir className="size-5" />
         </button>
@@ -117,7 +117,8 @@ export function Pagina({
   return (
     <>
       <Rail actual={actual} />
-      <div className="min-h-dvh pb-16 md:ml-14 md:pb-0">
+      {/* En escritorio, la página es una tarjeta sobre el marco, como las columnas de una línea. */}
+      <div className="min-h-dvh pb-16 md:ml-14 md:min-h-[calc(100dvh-1rem)] md:my-2 md:mr-2 md:overflow-hidden md:rounded-2xl md:border md:border-(--color-borde) md:bg-(--color-fondo) md:pb-0 md:shadow-sm">
         <FranjaDeLineas />
         <header className="border-b border-(--color-borde) bg-(--color-panel)">
           <div className="mx-auto flex max-w-5xl flex-wrap items-end justify-between gap-4 px-5 py-5 md:px-8 md:py-6">

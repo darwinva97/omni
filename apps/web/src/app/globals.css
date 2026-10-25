@@ -97,6 +97,24 @@
   --radius-burbuja: 0.75rem;
 
   /*
+   * El marco: lo que queda detrás de las tarjetas en escritorio (raíl, huecos
+   * entre columnas). Las columnas no van adosadas con una línea sino como
+   * tarjetas redondeadas sobre él, como en el correo de BePanel. Oscuro en los
+   * dos temas, como el suyo; la plataforma que aloja el panel puede pasar el
+   * suyo (`--marco-plataforma`, y `data-marco="claro"` si es claro).
+   */
+  --color-marco: #323238;
+  --color-sobre-marco: oklch(0.97 0 0);
+  --color-sobre-marco-tenue: oklch(0.8 0.008 240);
+
+  /*
+   * «Escritorio» desde 640 px y no 768: dentro de BePanel el panel comparte el
+   * ancho con el asistente IA y con 768 caía al diseño de teléfono (una
+   * columna y la barra abajo) en cualquier portátil.
+   */
+  --breakpoint-md: 40rem;
+
+  /*
    * Luminosidad del nombre de quien escribe en un grupo.
    *
    * El tono sale de su dirección, pero la claridad tiene que cambiar con el
@@ -117,6 +135,7 @@
  */
 @media (prefers-color-scheme: dark) {
   :root:not([data-tema="claro"]) {
+    --color-marco: #1f1f23;
     --color-fondo: oklch(0.155 0.008 240);
     --color-panel: oklch(0.195 0.008 240);
     --color-elevado: oklch(0.23 0.009 240);
@@ -167,6 +186,7 @@
  * él, todo sigue al sistema como siempre.
  */
 :root[data-tema="oscuro"] {
+    --color-marco: #1f1f23;
     --color-fondo: oklch(0.155 0.008 240);
     --color-panel: oklch(0.195 0.008 240);
     --color-elevado: oklch(0.23 0.009 240);
@@ -252,8 +272,28 @@ html[data-tema="oscuro"] {
   --color-cita-propia: color-mix(in oklch, var(--acento-plataforma) 22%, oklch(0.18 0.008 240));
 }
 
+/* El marco de la plataforma que aloja el panel manda sobre el propio. */
+:root[data-marco] {
+  --color-marco: var(--marco-plataforma);
+}
+:root[data-marco="claro"] {
+  --color-sobre-marco: var(--color-texto);
+  --color-sobre-marco-tenue: var(--color-tenue);
+}
+:root {
+  --color-marco-hover: color-mix(in oklch, var(--color-sobre-marco) 12%, transparent);
+}
+
 html {
   color-scheme: light dark;
+}
+
+/* En escritorio, detrás de las tarjetas está el marco (sólo en el panel: las
+   pantallas de entrar no llevan tarjetas y su texto va sobre el fondo). */
+@media (min-width: 40rem) {
+  body:has(nav[aria-label="Secciones"]) {
+    background: var(--color-marco);
+  }
 }
 
 body {

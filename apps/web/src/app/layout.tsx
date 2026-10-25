@@ -37,19 +37,31 @@ const TEMA_DE_PLATAFORMA = `(() => {
   try {
     const ok = (a) => typeof a === "string" && /^(#[0-9a-fA-F]{3,8}|oklch\\([0-9.% ]{5,40}\\)|rgb\\([0-9., %]{5,40}\\))$/.test(a.trim());
     const html = document.documentElement;
-    const aplicar = (tema, acento) => {
+    const aplicar = (tema, acento, marco, marcoClaro) => {
       if (tema === "oscuro" || tema === "claro") { html.dataset.tema = tema; localStorage.setItem("omni.tema", tema); }
       if (ok(acento)) { html.style.setProperty("--acento-plataforma", acento.trim()); html.dataset.acento = "1"; localStorage.setItem("omni.acento", acento.trim()); }
+      if (ok(marco)) {
+        const claro = marcoClaro === true || marcoClaro === "1";
+        html.style.setProperty("--marco-plataforma", marco.trim());
+        html.dataset.marco = claro ? "claro" : "oscuro";
+        localStorage.setItem("omni.marco", marco.trim() + "|" + (claro ? "1" : "0"));
+      }
     };
     const url = new URL(location.href);
-    aplicar(url.searchParams.get("tema") || localStorage.getItem("omni.tema"), url.searchParams.get("acento") || localStorage.getItem("omni.acento"));
-    if (url.searchParams.has("tema") || url.searchParams.has("acento")) {
-      url.searchParams.delete("tema"); url.searchParams.delete("acento");
+    const [marcoGuardado, claroGuardado] = (localStorage.getItem("omni.marco") || "").split("|");
+    aplicar(
+      url.searchParams.get("tema") || localStorage.getItem("omni.tema"),
+      url.searchParams.get("acento") || localStorage.getItem("omni.acento"),
+      url.searchParams.get("marco") || marcoGuardado,
+      url.searchParams.has("marco") ? url.searchParams.get("marcoClaro") : claroGuardado,
+    );
+    if (["tema", "acento", "marco", "marcoClaro"].some((k) => url.searchParams.has(k))) {
+      for (const k of ["tema", "acento", "marco", "marcoClaro"]) url.searchParams.delete(k);
       history.replaceState(null, "", url.pathname + url.search + url.hash);
     }
     addEventListener("message", (e) => {
       if (e.source !== parent || !e.data || e.data.tipo !== "bepanel-tema") return;
-      aplicar(e.data.tema, e.data.acento);
+      aplicar(e.data.tema, e.data.acento, e.data.marco, e.data.marcoClaro);
     });
   } catch {}
 })();`;

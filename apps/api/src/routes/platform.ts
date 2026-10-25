@@ -106,7 +106,7 @@ export function registerPlatformRoutes(app: OpenAPIHono<any>, container: Contain
    * un solo uso. Lo que se guarda es el hash: quien vuelque la memoria no puede
    * usarlos.
    */
-  const codigos = new Map<string, { userId: string; orgId: string; vence: number; tema: string; acento: string }>();
+  const codigos = new Map<string, { userId: string; orgId: string; vence: number; tema: string; acento: string; marco: string; marcoClaro: boolean }>();
   const ACENTO = /^(#[0-9a-fA-F]{3,8}|oklch\([0-9.% ]{5,40}\)|rgb\([0-9., %]{5,40}\))$/;
 
   app.post("/platform/orgs/:externalId/acceso", async (c) => {
@@ -116,7 +116,7 @@ export function registerPlatformRoutes(app: OpenAPIHono<any>, container: Contain
       if (!EXTERNAL_ID.test(externalId)) throw new OmniError("validation_failed", "identificador externo inválido");
       const org = (await db.select().from(orgTable).where(eq(orgTable.slug, slugDe(externalId))).limit(1))[0];
       if (!org) throw new OmniError("not_found", "esa organización no existe");
-      const cuerpo = (await c.req.json().catch(() => ({}))) as { tema?: string; acento?: string };
+      const cuerpo = (await c.req.json().catch(() => ({}))) as { tema?: string; acento?: string; marco?: string; marcoClaro?: boolean };
 
       // El usuario de la plataforma en esa organización: uno por organización.
       const userId = `u-plat-${org.id}`;
@@ -132,6 +132,8 @@ export function registerPlatformRoutes(app: OpenAPIHono<any>, container: Contain
         userId, orgId: org.id, vence: ahora + 60_000,
         tema: cuerpo.tema === "oscuro" || cuerpo.tema === "claro" ? cuerpo.tema : "",
         acento: typeof cuerpo.acento === "string" && ACENTO.test(cuerpo.acento.trim()) ? cuerpo.acento.trim() : "",
+        marco: typeof cuerpo.marco === "string" && ACENTO.test(cuerpo.marco.trim()) ? cuerpo.marco.trim() : "",
+        marcoClaro: cuerpo.marcoClaro === true,
       });
       const base = container.config.PUBLIC_URL.replace(/\/$/, "");
       return c.json({ data: { url: `${base}/platform/entrar?codigo=${codigo}` } }, 200);
@@ -172,6 +174,10 @@ export function registerPlatformRoutes(app: OpenAPIHono<any>, container: Contain
     const q = new URLSearchParams();
     if (entrada.tema) q.set("tema", entrada.tema);
     if (entrada.acento) q.set("acento", entrada.acento);
+    if (entrada.marco) {
+      q.set("marco", entrada.marco);
+      q.set("marcoClaro", entrada.marcoClaro ? "1" : "0");
+    }
     return c.redirect(`/${q.size ? `?${q}` : ""}`, 302);
   });
 
