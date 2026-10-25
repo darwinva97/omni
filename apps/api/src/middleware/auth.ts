@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { OmniError } from "@omni/shared";
 import type { Principal } from "@omni/core";
-import { apiKeyTable, type Database } from "@omni/db";
+import { apiKeyTable, lineTable, type Database } from "@omni/db";
 import { parseApiKey, verifySecret } from "../keys.js";
 
 /**
@@ -143,4 +143,31 @@ export async function authenticateSession(
     orgRole: pertenencia[0].role,
     lineRoles: new Map(porLinea.map((l) => [l.lineId, l.role])),
   };
+}
+
+/**
+ * Que la línea sea de la organización de quien pregunta.
+ *
+ * `authorize` es pura: no sabe de quién es cada línea, y las consultas filtran
+ * por `lineId`. Con una sola organización por instalación daba igual; con
+ * varias (`/platform`), sin esto una clave de una organización leía y enviaba
+ * por las líneas de otra con solo conocer su id. 401 y no 403, como en
+ * ADR-0003: un 403 confirmaría que esa línea existe.
+ */
+export async function exigirLineaDeLaOrganizacion(db: Database, orgId: string, lineId: string): Promise<void> {
+  const rows = await db.select({ orgId: lineTable.orgId }).from(lineTable).where(eq(lineTable.id, lineId)).limit(1);
+  if (!rows[0] || rows[0].orgId !== orgId) {
+    throw new OmniError("unauthenticated", "la clave no alcanza esa línea");
+  }
+}
+
+/** El id de línea que nombra una ruta de `/v1`, si nombra alguna. */
+export function lineaDeLaRuta(path: string): string | null {
+  const m = /^\/v1\/(?:sandbox\/)?lines\/([^/]+)/.exec(path);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return m[1]!;
+  }
 }

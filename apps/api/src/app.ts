@@ -630,7 +630,7 @@ function presentarChat(r: FilaDeChat) {
     conversation: r.conversation ?? null,
   };
 }
-import { authenticateApiKey, authenticateSession, checkCidr } from "./middleware/auth.js";
+import { authenticateApiKey, authenticateSession, checkCidr, exigirLineaDeLaOrganizacion, lineaDeLaRuta } from "./middleware/auth.js";
 import { getCookie } from "hono/cookie";
 import { problem } from "./http.js";
 import { registerMessagingRoutes } from "./routes/messaging.js";
@@ -647,6 +647,7 @@ import { registerNoteRoutes } from "./routes/notas.js";
 import { registerCommerceRoutes } from "./routes/commerce.js";
 import { HOST_VERSION } from "./container.js";
 import { crearRevalidadorOidc, registerIdentityRoutes, SESSION_COOKIE } from "./routes/identity.js";
+import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerCloudWebhookRoutes } from "./routes/cloud-webhook.js";
 import { registerRealtimeRoutes } from "./routes/realtime.js";
 import { wasenderCompat } from "./compat/wasender.js";
@@ -795,6 +796,8 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       await revalidarOidc(cookie);
       const persona = await authenticateSession(container.dbh.db, cookie);
       if (persona) {
+        const linea = lineaDeLaRuta(c.req.path);
+        if (linea) await exigirLineaDeLaOrganizacion(container.dbh.db, persona.orgId, linea);
         c.set("principal", persona);
         return next();
       }
@@ -815,6 +818,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .set({ lastUsedAt: new Date() })
         .where(eq(apiKeyTable.id, principal.apiKeyId));
     }
+
+    const linea = lineaDeLaRuta(c.req.path);
+    if (linea) await exigirLineaDeLaOrganizacion(container.dbh.db, principal.orgId, linea);
 
     c.set("principal", principal);
     await next();
@@ -1702,6 +1708,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
   registerRealtimeRoutes(app, container);
   registerIdentityRoutes(app, container);
+  registerPlatformRoutes(app, container);
   registerCloudWebhookRoutes(app, container);
   registerMessagingRoutes(app, container);
   registerLineAdminRoutes(app, container);

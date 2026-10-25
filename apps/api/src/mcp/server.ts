@@ -3,6 +3,7 @@ import { OmniError } from "@omni/shared";
 import type { Principal } from "@omni/core";
 import type { Container } from "../container.js";
 import { TOOLS, toolError, toolResult, type ToolDef } from "./tools.js";
+import { exigirLineaDeLaOrganizacion } from "../middleware/auth.js";
 
 /**
  * Servidor MCP sobre HTTP, sin estado.
@@ -111,6 +112,10 @@ export async function handleMcp(
          * acotado alcanzando por MCP lo que no alcanza por HTTP: una superficie
          * fuera del guard REST no hereda sus permisos.
          */
+        // Igual que en REST: la línea tiene que ser de la organización de la clave.
+        if (typeof parsed["lineId"] === "string") {
+          await exigirLineaDeLaOrganizacion(container.dbh.db, principal.orgId, parsed["lineId"]);
+        }
         return reply(id, toolResult(await tool.run({ container, principal }, parsed)));
       } catch (err) {
         if (err instanceof z.ZodError) {
