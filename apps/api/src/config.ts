@@ -43,6 +43,13 @@ export const Config = z.object({
    * LAS SESIONES: 64 caracteres hex, o una frase de 32 o más.
    */
   OMNI_MASTER_KEY: z.string().min(32),
+  /**
+   * Token de la plataforma que aloja Omni para sus clientes (p. ej. BePanel).
+   * Con él se crean organizaciones y sus claves por `/platform/*`, una por
+   * cliente. Sin él, esas rutas no existen (404): una instalación normal no
+   * tiene ninguna puerta extra.
+   */
+  OMNI_PLATFORM_TOKEN: z.string().min(32).optional(),
   /** Base pública, para construir URLs absolutas en la documentación. */
   PUBLIC_URL: z.string().default("http://127.0.0.1:4000"),
   /** Habilita el sandbox. En producción suele quedarse encendido: no toca nada real. */

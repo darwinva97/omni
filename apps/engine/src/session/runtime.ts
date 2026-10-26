@@ -752,7 +752,14 @@ export class EngineRuntime {
       // El mapeo LID↔teléfono se aprende ANTES de persistir: si el mensaje se
       // guarda primero y aquí falla algo, el chat queda con un LID que ya no
       // se puede atar a nadie, porque el servidor solo lo dice esta vez.
-      await this.#aprenderIdentidad(envelope);
+      /*
+       * `message.upsert` acompaña SIEMPRE a un `message.received`/`sent` del mismo
+       * mensaje: lo que se aprende de él ya se aprendió con el otro, y el panel lo
+       * ignora. Antes pasaba por todo de nuevo —identidad, nombre, aviso al panel—
+       * y cada mensaje costaba el doble de consultas. Sólo sigue a los webhooks.
+       */
+      const eco = envelope.event === "message.upsert";
+      if (!eco) await this.#aprenderIdentidad(envelope);
       /*
        * Se guardan los entrantes Y los que salen del TELÉFONO.
        *
@@ -772,7 +779,7 @@ export class EngineRuntime {
        * `#persistInbound`: hacerlo antes dejaba el primer mensaje de cada
        * conversación nueva sin nombre, que es justo el que lo trae.
        */
-      await this.#aprenderNombre(envelope);
+      if (!eco) await this.#aprenderNombre(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
       if (envelope.event === "message.reaction") await this.#aplicarReaccion(envelope);
       if (envelope.event === "poll.vote") await this.#aplicarVoto(envelope);
@@ -846,7 +853,8 @@ export class EngineRuntime {
        * Postgres eso son otras tantas conexiones `LISTEN` a la base.
        */
       const publicado = await this.#conNombres(envelope);
-      await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado);
+      // Que el panel no reciba el aviso no puede dejar sin webhook, conversación ni automatización.
+      if (!eco) await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado).catch(() => {});
       await this.#deps.dispatcher.dispatch(publicado);
 
       for (const oyente of this.#oyentes) {

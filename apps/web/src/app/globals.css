@@ -97,6 +97,24 @@
   --radius-burbuja: 0.75rem;
 
   /*
+   * El marco: lo que queda detrás de las tarjetas en escritorio (raíl, huecos
+   * entre columnas). Las columnas no van adosadas con una línea sino como
+   * tarjetas redondeadas sobre él, como en el correo de BePanel. Oscuro en los
+   * dos temas, como el suyo; la plataforma que aloja el panel puede pasar el
+   * suyo (`--marco-plataforma`, y `data-marco="claro"` si es claro).
+   */
+  --color-marco: #323238;
+  --color-sobre-marco: oklch(0.97 0 0);
+  --color-sobre-marco-tenue: oklch(0.8 0.008 240);
+
+  /*
+   * «Escritorio» desde 640 px y no 768: dentro de BePanel el panel comparte el
+   * ancho con el asistente IA y con 768 caía al diseño de teléfono (una
+   * columna y la barra abajo) en cualquier portátil.
+   */
+  --breakpoint-md: 40rem;
+
+  /*
    * Luminosidad del nombre de quien escribe en un grupo.
    *
    * El tono sale de su dirección, pero la claridad tiene que cambiar con el
@@ -116,7 +134,8 @@
  * oscuro era lo que todos esperábamos.
  */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-tema="claro"]) {
+    --color-marco: #1f1f23;
     --color-fondo: oklch(0.155 0.008 240);
     --color-panel: oklch(0.195 0.008 240);
     --color-elevado: oklch(0.23 0.009 240);
@@ -161,8 +180,120 @@
   }
 }
 
+/*
+ * Tema fijado por la plataforma que aloja el panel (BePanel lo abre dentro de
+ * su propio panel y le pasa el suyo): `data-tema` manda sobre el sistema. Sin
+ * él, todo sigue al sistema como siempre.
+ */
+:root[data-tema="oscuro"] {
+    --color-marco: #1f1f23;
+    --color-fondo: oklch(0.155 0.008 240);
+    --color-panel: oklch(0.195 0.008 240);
+    --color-elevado: oklch(0.23 0.009 240);
+    --color-hundido: oklch(0.13 0.008 240);
+
+    --color-borde: oklch(0.29 0.009 240);
+    --color-borde-sutil: oklch(0.25 0.008 240);
+
+    --color-texto: oklch(0.95 0.004 240);
+    --color-tenue: oklch(0.7 0.012 240);
+    --color-apagado: oklch(0.58 0.012 240);
+
+    --color-acento: oklch(0.73 0.1 195);
+    --color-acento-fuerte: oklch(0.8 0.1 195);
+    --color-acento-tenue: oklch(0.28 0.04 195);
+    --color-sobre-acento: oklch(0.16 0.01 240);
+
+    --color-propio: oklch(0.32 0.045 195);
+    --color-propio-borde: oklch(0.37 0.05 195);
+    --color-ajeno: oklch(0.235 0.009 240);
+    --color-ajeno-borde: oklch(0.28 0.009 240);
+    --color-cita-propia: oklch(0.265 0.05 195);
+    --color-cita-ajena: oklch(0.195 0.009 240);
+
+    --color-leido: oklch(0.72 0.14 245);
+    --color-enlace: oklch(0.78 0.12 240);
+
+    --color-exito: oklch(0.72 0.13 150);
+    --color-exito-tenue: oklch(0.28 0.05 150);
+    --color-aviso: oklch(0.78 0.12 80);
+    --color-aviso-tenue: oklch(0.3 0.06 80);
+    --color-error: oklch(0.7 0.16 27);
+    --color-error-tenue: oklch(0.3 0.07 27);
+
+    --color-lienzo: oklch(0.135 0.008 240);
+    --color-nota: oklch(0.29 0.055 80);
+    --color-nota-borde: oklch(0.45 0.09 75);
+    --color-nota-texto: oklch(0.85 0.11 82);
+    --color-nota-fuerte: oklch(0.78 0.14 75);
+    --color-sobre-nota: oklch(0.18 0.03 65);
+    --l-remitente: 0.78;
+  }
+html[data-tema="claro"] {
+  color-scheme: light;
+}
+html[data-tema="oscuro"] {
+  color-scheme: dark;
+}
+
+/*
+ * Acento de la plataforma (`--acento-plataforma`, lo pone el arranque del
+ * panel): las variantes salen de él mezclando, así cualquier color de marca
+ * mantiene la jerarquía — fuerte para pulsar, tenue para seleccionar, la
+ * burbuja propia diluida y su cita un paso más oscura.
+ */
+:root[data-acento] {
+  --color-acento: var(--acento-plataforma);
+  --color-acento-fuerte: color-mix(in oklch, var(--acento-plataforma) 82%, black);
+  --color-acento-tenue: color-mix(in oklch, var(--acento-plataforma) 12%, white);
+  --color-sobre-acento: oklch(0.99 0 0);
+  --color-propio: color-mix(in oklch, var(--acento-plataforma) 16%, white);
+  --color-propio-borde: color-mix(in oklch, var(--acento-plataforma) 28%, white);
+  --color-cita-propia: color-mix(in oklch, var(--acento-plataforma) 26%, white);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-acento]:not([data-tema="claro"]) {
+    --color-acento: color-mix(in oklch, var(--acento-plataforma) 80%, white);
+    --color-acento-fuerte: color-mix(in oklch, var(--acento-plataforma) 60%, white);
+    --color-acento-tenue: color-mix(in oklch, var(--acento-plataforma) 22%, oklch(0.195 0.008 240));
+    --color-sobre-acento: oklch(0.16 0.01 240);
+    --color-propio: color-mix(in oklch, var(--acento-plataforma) 30%, oklch(0.2 0.008 240));
+    --color-propio-borde: color-mix(in oklch, var(--acento-plataforma) 40%, oklch(0.2 0.008 240));
+    --color-cita-propia: color-mix(in oklch, var(--acento-plataforma) 22%, oklch(0.18 0.008 240));
+  }
+}
+:root[data-acento][data-tema="oscuro"] {
+  --color-acento: color-mix(in oklch, var(--acento-plataforma) 80%, white);
+  --color-acento-fuerte: color-mix(in oklch, var(--acento-plataforma) 60%, white);
+  --color-acento-tenue: color-mix(in oklch, var(--acento-plataforma) 22%, oklch(0.195 0.008 240));
+  --color-sobre-acento: oklch(0.16 0.01 240);
+  --color-propio: color-mix(in oklch, var(--acento-plataforma) 30%, oklch(0.2 0.008 240));
+  --color-propio-borde: color-mix(in oklch, var(--acento-plataforma) 40%, oklch(0.2 0.008 240));
+  --color-cita-propia: color-mix(in oklch, var(--acento-plataforma) 22%, oklch(0.18 0.008 240));
+}
+
+/* El marco de la plataforma que aloja el panel manda sobre el propio. */
+:root[data-marco] {
+  --color-marco: var(--marco-plataforma);
+}
+:root[data-marco="claro"] {
+  --color-sobre-marco: var(--color-texto);
+  --color-sobre-marco-tenue: var(--color-tenue);
+}
+:root {
+  --color-marco-hover: color-mix(in oklch, var(--color-sobre-marco) 12%, transparent);
+}
+
 html {
   color-scheme: light dark;
+}
+
+/* En escritorio, detrás de las tarjetas está el marco (sólo en el panel: las
+   pantallas de entrar no llevan tarjetas y su texto va sobre el fondo). */
+@media (min-width: 40rem) {
+  body:has(nav[aria-label="Secciones"]) {
+    background: var(--color-marco);
+  }
 }
 
 body {

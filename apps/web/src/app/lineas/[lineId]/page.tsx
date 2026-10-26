@@ -3,6 +3,7 @@ import { apiFetch, apiFetchAuth, type Linea } from "@/lib/api";
 import { Qr } from "@/componentes/qr";
 import { Aviso, Estado } from "@/componentes/piezas";
 import { IconoPersona } from "@/componentes/iconos";
+import { RefrescarMientras } from "@/componentes/refrescar-mientras";
 
 /**
  * El panel derecho cuando no hay ninguna conversación abierta.
@@ -46,6 +47,10 @@ export default async function Linea({ params }: { params: Promise<{ lineId: stri
             </div>
             <Estado estado={estado.state} />
           </div>
+
+          {/* Enlazando o conectando: se vuelve a preguntar hasta que quede conectada (y el QR,
+              que caduca, se renueva). */}
+          {(estado.state === "awaiting-link" || estado.state === "connecting") && <RefrescarMientras />}
 
           {estado.state === "awaiting-link" && estado.qr && (
             <div className="mt-5">

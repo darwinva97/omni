@@ -1300,6 +1300,39 @@ export function Conversacion({
 
   const esGrupo = info?.kind === "group";
   const nombre = info?.displayName ?? chat;
+
+  /*
+   * Dentro de una plataforma (BePanel abre este panel en un iframe con su asistente IA al lado):
+   * se le dice qué chat está abierto, para que la IA sepa de cuál le hablan, y se acepta un texto
+   * suyo en la caja de mensaje — la IA propone, la persona lo revisa y pulsa enviar. Sólo de la
+   * ventana que aloja el panel, y nunca se envía solo.
+   */
+  useEffect(() => {
+    if (window.parent === window) return;
+    window.parent.postMessage({ tipo: "omni-chat", linea: lineId, chat, nombre, grupo: esGrupo }, "*");
+  }, [lineId, chat, nombre, esGrupo]);
+  useEffect(() => {
+    if (window.parent === window) return;
+    const alMensaje = (e: MessageEvent) => {
+      if (e.source !== window.parent || !e.data || e.data.tipo !== "bepanel-borrador") return;
+      const texto = typeof e.data.texto === "string" ? e.data.texto.slice(0, 4096) : "";
+      const c = campo.current;
+      if (!texto || !c || editando) return;
+      c.value = texto;
+      ajustarAltura();
+      apuntarBorrador();
+      c.focus();
+      c.setSelectionRange(texto.length, texto.length);
+    };
+    window.addEventListener("message", alMensaje);
+    return () => window.removeEventListener("message", alMensaje);
+  });
+  useEffect(
+    () => () => {
+      if (window.parent !== window) window.parent.postMessage({ tipo: "omni-chat", linea: lineId, chat: null }, "*");
+    },
+    [lineId, chat],
+  );
   const detalleFijo = info?.phone
     ? `+${info.phone.split("@")[0]}`
     : info?.kind === "group" ? "Grupo" : chat;

@@ -46,11 +46,15 @@ export default async function LayoutLinea({
       <Rail actual="/lineas" />
       {/* `pb-16` en móvil: la barra inferior flota sobre el contenido y sin
           esto taparía el compositor de mensajes. */}
-      <div className="flex h-dvh flex-col overflow-hidden pb-16 md:ml-14 md:pb-0">
+      {/* En escritorio, cada columna es una tarjeta redondeada sobre el marco,
+          con un hueco entre ellas: como el correo de BePanel. */}
+      <div className="flex h-dvh flex-col overflow-hidden pb-16 md:ml-14 md:gap-2 md:py-2 md:pr-2 md:pb-2">
         {/* Encima de las dos columnas: una línea caída se ve también desde
             una conversación de OTRA línea, que es donde se está. */}
-        <FranjaDeLineas />
-        <div className="flex min-h-0 flex-1">
+        <div className="shrink-0 md:overflow-hidden md:rounded-2xl empty:hidden">
+          <FranjaDeLineas />
+        </div>
+        <div className="flex min-h-0 flex-1 md:gap-2">
           <ListaChats linea={linea} iniciales={chats} />
           <PanelDerecho lineId={lineId}>{children}</PanelDerecho>
         </div>

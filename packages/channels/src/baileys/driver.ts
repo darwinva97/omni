@@ -19,6 +19,7 @@ import {
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
+import { guardadoAgrupado } from "./guardado.js";
 
 /**
  * Driver de WhatsApp sobre Baileys.
@@ -54,12 +55,16 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
   ),
 };
 
+/** Lo más grande que se descarga de un medio (OMNI_MEDIA_MAX_MB, 64 por defecto). */
+const MAX_MEDIO_BYTES = (Number(process.env["OMNI_MEDIA_MAX_MB"]) || 64) * 1024 * 1024;
+
 interface LineRuntime {
   socket: WASocket | null;
   status: LineStatus;
   readonly orgId: string;
   readonly store: BlobAuthStore;
   readonly save: (b: Uint8Array) => Promise<void>;
+  readonly guardado: { cambio: () => void; vaciar: () => Promise<void> };
   /** Reintentos de reconexión consumidos, para el retardo creciente. */
   attempts: number;
   closing: boolean;
@@ -162,9 +167,9 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const existente = this.#lines.get(req.lineId);
     if (existente?.status.state === "connected") return { status: existente.status };
 
-    const store = BlobAuthStore.from(req.credentials, () => {
-      void req.saveCredentials(store.serialize());
-    });
+    // Agrupado (guardado.ts): antes cada clave nueva reescribía la sesión entera.
+    const guardado = guardadoAgrupado(() => store.serialize(), req.saveCredentials);
+    const store = BlobAuthStore.from(req.credentials, () => guardado.cambio());
 
     const line: LineRuntime = {
       socket: null,
@@ -172,6 +177,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       orgId,
       store,
       save: req.saveCredentials,
+      guardado,
       attempts: 0,
       closing: false,
       recent: new Map(),
@@ -601,6 +607,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const line = this.#lines.get(lineId);
     if (!line) return;
     line.closing = true;
+    await line.guardado.vaciar(); // que la sesión quede guardada tal como está
     if (line.enLinea) clearTimeout(line.enLinea.temporizador);
     line.enLinea = null;
     try {
@@ -990,6 +997,16 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const nodo = nodoDeMedio(m);
 
     /*
+     * Tope de tamaño ANTES de bajar nada: el fichero entero vive en memoria
+     * mientras se guarda, y cuatro vídeos de 100 MB a la vez se comían casi un
+     * giga de un servidor que comparte con webs de clientes. Lo que pasa del
+     * tope se queda sin guardar (como un medio que ya no está en WhatsApp).
+     */
+    const declarado = Number((normalizeMessageContent(m.message) as Record<string, { fileLength?: unknown } | undefined> | undefined)
+      ?.[`${tipo}Message`]?.fileLength ?? 0);
+    if (declarado > MAX_MEDIO_BYTES) return null;
+
+    /*
      * Un canal no cifra sus ficheros: no hay `mediaKey`, y Baileys se niega a
      * descargar sin ella («Cannot derive from empty media key»). Se piden tal
      * cual al servidor de medios. Eran las 35 fotos del canal que salían como
@@ -999,6 +1016,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     if (nodo && !nodo.mediaKey && nodo.directPath) {
       const res = await fetch(`https://${HOST_DE_MEDIOS}${nodo.directPath}`);
       if (!res.ok) throw new Error(`el servidor de medios respondió ${res.status}`);
+      if (Number(res.headers.get("content-length") ?? 0) > MAX_MEDIO_BYTES) return null;
       bytes = new Uint8Array(await res.arrayBuffer());
     } else {
       /*
@@ -1024,7 +1042,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         reuploadRequest: socket.updateMediaMessage,
       });
       try {
-        bytes = new Uint8Array(await bajar(host));
+        bytes = await bajar(host); // ya es un Uint8Array (Buffer): sin otra copia en memoria
       } catch (e) {
         /*
          * Y si falla la RED —no una respuesta del servidor— con un servidor
@@ -1035,7 +1053,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         const respondio = typeof (e as { status?: unknown })?.status === "number"
           || typeof (e as { output?: { statusCode?: unknown } })?.output?.statusCode === "number";
         if (respondio || host === HOST_DE_MEDIOS) throw e;
-        bytes = new Uint8Array(await bajar(HOST_DE_MEDIOS));
+        bytes = await bajar(HOST_DE_MEDIOS);
       }
     }
 

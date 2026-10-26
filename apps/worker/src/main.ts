@@ -5,7 +5,7 @@ import {
   type JobQueue, type Subscription,
 } from "@omni/platform";
 import { createDatabase, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
-import { runMaintenance } from "./maintenance.js";
+import { runMaintenance } from "@omni/db";
 
 /**
  * Proceso trabajador.

@@ -4,7 +4,6 @@ export * from "./ports/bus.port.js";
 export { MemoryJobQueue } from "./memory/queue.js";
 export { MemoryKv } from "./memory/kv.js";
 export { MemoryBus } from "./memory/bus.js";
-export { runJobQueueContract, runKvContract } from "./contract/queue-suite.js";
 export { PostgresJobQueue } from "./postgres/queue.js";
 export { PostgresKv } from "./postgres/kv.js";
 export { PostgresBus } from "./postgres/bus.js";
