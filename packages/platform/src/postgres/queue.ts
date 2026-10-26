@@ -18,7 +18,7 @@ interface Row {
 }
 
 const MIN_PAUSA_MS = 20;
-const MAX_PAUSA_MS = 500;
+const MAX_PAUSA_MS = 250;
 
 function toMillis(v: Date | string | number): number {
   if (v instanceof Date) return v.getTime();
@@ -105,7 +105,7 @@ export class PostgresJobQueue implements JobQueue {
     let running = 0;
     /*
      * Pausa entre consultas: 20 ms mientras hay trabajo y, si no encuentra
-     * nada, el doble cada vez hasta medio segundo. Antes preguntaba cada 20 ms
+     * nada, el doble cada vez hasta un cuarto de segundo. Antes preguntaba cada 20 ms
      * siempre: con tres colas eran ~150 consultas por segundo a la base sin
      * un solo mensaje (medido en producción: un 10 % de CPU constante). Lo que
      * se encola en este proceso despierta la cola al momento (`#despertar`), así

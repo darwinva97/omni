@@ -846,7 +846,8 @@ export class EngineRuntime {
        * Postgres eso son otras tantas conexiones `LISTEN` a la base.
        */
       const publicado = await this.#conNombres(envelope);
-      await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado);
+      // Que el panel no reciba el aviso no puede dejar sin webhook, conversación ni automatización.
+      await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado).catch(() => {});
       await this.#deps.dispatcher.dispatch(publicado);
 
       for (const oyente of this.#oyentes) {
