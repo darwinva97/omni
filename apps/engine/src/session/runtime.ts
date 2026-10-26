@@ -9,7 +9,7 @@ import { assertCapability, descifrarEdicion, descifrarVoto, encuestaDe, extractT
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, contactosDeLinea, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
+import { authKeyTable, authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, contactosDeLinea, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -241,6 +241,34 @@ export class EngineRuntime {
       lineId: lineId as LineId,
       credentials: sealed ? this.#deps.box.open(sealed) : null,
       saveCredentials: async (blob) => { await this.#persistCredentials(lineId, blob); },
+      keys: {
+        cargar: async () => {
+          const filas = await this.#deps.db.select().from(authKeyTable).where(eq(authKeyTable.lineId, lineId));
+          return filas.map((f) => ({ type: f.type, id: f.keyId, value: this.#deps.box.open(f.sealed) }));
+        },
+        guardar: async (cambios) => {
+          const poner = cambios.filter((c) => c.value !== null);
+          const quitar = cambios.filter((c) => c.value === null);
+          await this.#deps.db.transaction(async (tx) => {
+            for (let i = 0; i < poner.length; i += 200) {
+              await tx
+                .insert(authKeyTable)
+                .values(poner.slice(i, i + 200).map((c) => ({
+                  lineId, type: c.type, keyId: c.id, sealed: this.#deps.box.seal(c.value!),
+                })))
+                .onConflictDoUpdate({
+                  target: [authKeyTable.lineId, authKeyTable.type, authKeyTable.keyId],
+                  set: { sealed: sql`excluded.sealed` },
+                });
+            }
+            for (const c of quitar) {
+              await tx.delete(authKeyTable).where(and(
+                eq(authKeyTable.lineId, lineId), eq(authKeyTable.type, c.type), eq(authKeyTable.keyId, c.id),
+              ));
+            }
+          });
+        },
+      },
       config: { ...(line.driverConfig ?? {}), orgId: line.orgId },
     });
 
@@ -269,6 +297,7 @@ export class EngineRuntime {
   async logout(lineId: string): Promise<void> {
     await this.disconnect(lineId).catch(() => {});
     await this.#deps.db.delete(authStateTable).where(eq(authStateTable.lineId, lineId));
+    await this.#deps.db.delete(authKeyTable).where(eq(authKeyTable.lineId, lineId));
     await this.#setStatus(lineId, "logged-out");
   }
 
@@ -1357,17 +1386,25 @@ export class EngineRuntime {
       return;
     }
 
-    const medio = await driver.downloadMedia(job.lineId as LineId, job.raw);
+    /*
+     * Por trozos cuando el canal y el almacén saben: el fichero se guarda según llega y no pasa
+     * entero por la memoria (cuatro vídeos a la vez eran cientos de MB en un servidor que
+     * comparte con webs de clientes). Si no, como siempre.
+     */
+    const storage = this.#deps.storage;
+    const medio = driver.downloadMediaStream && storage.putStream
+      ? await driver.downloadMediaStream(job.lineId as LineId, job.raw)
+      : await driver.downloadMedia(job.lineId as LineId, job.raw);
     if (!medio) return;
 
     const key = mediaKey({
       orgId: job.orgId, lineId: job.lineId, messageId: job.providerMessageId,
       ...(medio.fileName ? { fileName: medio.fileName } : {}),
     });
-    const guardado = await this.#deps.storage.put(key, medio.bytes, {
-      mimeType: medio.mimeType,
-      ...(medio.fileName ? { fileName: medio.fileName } : {}),
-    });
+    const opciones = { mimeType: medio.mimeType, ...(medio.fileName ? { fileName: medio.fileName } : {}) };
+    const guardado = "stream" in medio
+      ? await storage.putStream!(key, medio.stream, opciones)
+      : await storage.put(key, medio.bytes, opciones);
 
     await this.#deps.db
       .update(messageTable)

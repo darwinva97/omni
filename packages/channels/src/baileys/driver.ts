@@ -14,12 +14,12 @@ import {
   EventEmitterBase, PRESENCIA_ALQUILER_MS,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
   type ChatAnchorMessage, type Collection, type CommunityMetadata, type ContactProfile,
-  type DownloadedMedia, type ForwardSource, type GroupMetadata, type GroupPatch,
+  type DownloadedMedia, type DownloadedMediaStream, type ForwardSource, type GroupMetadata, type GroupPatch,
   type LineStatus, type NewsletterMetadata, type OrderDetails, type Product, type ProductInput, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
-import { guardadoAgrupado } from "./guardado.js";
+import { escrituraAgrupada, guardadoAgrupado } from "./guardado.js";
 
 /**
  * Driver de WhatsApp sobre Baileys.
@@ -167,9 +167,33 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const existente = this.#lines.get(req.lineId);
     if (existente?.status.state === "connected") return { status: existente.status };
 
-    // Agrupado (guardado.ts): antes cada clave nueva reescribía la sesión entera.
-    const guardado = guardadoAgrupado(() => store.serialize(), req.saveCredentials);
+    // Agrupado (guardado.ts): antes cada clave nueva reescribía la sesión entera. Con `keys`,
+    // además, sólo se escriben las claves que cambiaron, cada una en su fila.
+    const filas = req.keys;
+    const guardado = filas
+      ? escrituraAgrupada(async () => {
+          const { claves, creds } = store.tomarCambios();
+          try {
+            // Primero las claves y después el blob ya sin ellas: si algo se corta a medias, al
+            // volver se juntan las dos cosas y no se pierde nada.
+            if (claves.length) await filas.guardar(claves);
+            if (creds) await req.saveCredentials(creds);
+          } catch (e) {
+            store.devolver(claves, !!creds);
+            throw e;
+          }
+        })
+      : guardadoAgrupado(() => store.serialize(), req.saveCredentials);
     const store = BlobAuthStore.from(req.credentials, () => guardado.cambio());
+    if (filas) {
+      const legado = store.clavesEnBlob;
+      store.mezclar(await filas.cargar());
+      // Una sesión del formato antiguo pasa a filas una vez.
+      if (legado) {
+        store.marcarTodo();
+        guardado.cambio();
+      }
+    }
 
     const line: LineRuntime = {
       socket: null,
@@ -985,6 +1009,21 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   }
 
   async downloadMedia(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null> {
+    const r = await this.#medio(lineId, raw, "buffer");
+    return r ? { bytes: r.datos as Uint8Array, mimeType: r.mimeType, ...(r.fileName ? { fileName: r.fileName } : {}) } : null;
+  }
+
+  /** Igual, pero por trozos: el fichero no pasa entero por la memoria (se guarda según llega). */
+  async downloadMediaStream(lineId: LineId, raw: unknown): Promise<DownloadedMediaStream | null> {
+    const r = await this.#medio(lineId, raw, "stream");
+    return r ? { stream: r.datos as AsyncIterable<Uint8Array>, mimeType: r.mimeType, ...(r.fileName ? { fileName: r.fileName } : {}) } : null;
+  }
+
+  async #medio(
+    lineId: LineId,
+    raw: unknown,
+    modo: "buffer" | "stream",
+  ): Promise<{ datos: Uint8Array | AsyncIterable<Uint8Array>; mimeType: string; fileName?: string } | null> {
     const { socket } = this.#require(lineId);
     const mensaje = raw as WAMessage | { raw?: WAMessage } | null;
     // La ingesta guarda el sobre entero; el mensaje de Baileys va dentro.
@@ -1012,12 +1051,14 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * cual al servidor de medios. Eran las 35 fotos del canal que salían como
      * «No se pudo descargar».
      */
-    let bytes: Uint8Array;
+    let bytes: Uint8Array | AsyncIterable<Uint8Array>;
     if (nodo && !nodo.mediaKey && nodo.directPath) {
       const res = await fetch(`https://${HOST_DE_MEDIOS}${nodo.directPath}`);
       if (!res.ok) throw new Error(`el servidor de medios respondió ${res.status}`);
       if (Number(res.headers.get("content-length") ?? 0) > MAX_MEDIO_BYTES) return null;
-      bytes = new Uint8Array(await res.arrayBuffer());
+      bytes = modo === "stream" && res.body
+        ? (res.body as unknown as AsyncIterable<Uint8Array>)
+        : new Uint8Array(await res.arrayBuffer());
     } else {
       /*
        * El servidor de donde bajar el fichero.
@@ -1030,7 +1071,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
        * URL completa; si no, el de siempre, con la ruta de `directPath`.
        */
       const host = hostDeMedio(nodo?.url);
-      const bajar = (h: string) => downloadMediaMessage(m, "buffer", { host: h }, {
+      const bajar = (h: string): Promise<Uint8Array | AsyncIterable<Uint8Array>> => downloadMediaMessage(m, modo as "buffer", { host: h }, {
         // Baileys escribe por aquí; sin un registro mudo saca ruido por consola
         // en cada medio que llega.
         logger: REGISTRO_MUDO,
@@ -1062,7 +1103,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       contenido.imageMessage ?? contenido.videoMessage ?? contenido.audioMessage ??
       contenido.documentMessage ?? contenido.stickerMessage;
     return {
-      bytes,
+      datos: bytes,
       mimeType: info?.mimetype ?? "application/octet-stream",
       ...(contenido.documentMessage?.fileName
         ? { fileName: contenido.documentMessage.fileName }

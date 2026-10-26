@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { OmniError } from "@omni/shared";
 import { MAX_OBJECT_BYTES, type PutOptions, type Storage, type StoredObject } from "./port.js";
@@ -57,6 +58,39 @@ export class LocalStorage implements Storage {
       mimeType: opts.mimeType,
       checksum: createHash("sha256").update(bytes).digest("hex"),
     };
+  }
+
+  async putStream(
+    key: string,
+    trozos: AsyncIterable<Uint8Array>,
+    opts: PutOptions & { max?: number },
+  ): Promise<StoredObject> {
+    const max = Math.min(opts.max ?? MAX_OBJECT_BYTES, MAX_OBJECT_BYTES);
+    const path = this.#pathFor(key);
+    await mkdir(dirname(path), { recursive: true });
+    // A un temporal y se renombra al terminar: nunca queda un fichero a medias con su nombre.
+    const temporal = `${path}.part-${process.pid}-${Date.now()}`;
+    const salida = createWriteStream(temporal);
+    const hash = createHash("sha256");
+    let size = 0;
+    try {
+      for await (const t of trozos) {
+        size += t.byteLength;
+        if (size > max) {
+          throw new OmniError("validation_failed", `el objeto supera el máximo de ${max} bytes`, { max });
+        }
+        hash.update(t);
+        if (!salida.write(t)) await new Promise<void>((r) => salida.once("drain", () => r()));
+      }
+      await new Promise<void>((r, e) => salida.end((err?: Error | null) => (err ? e(err) : r())));
+      await rename(temporal, path);
+    } catch (e) {
+      salida.destroy();
+      await rm(temporal, { force: true });
+      throw e;
+    }
+    await writeFile(`${path}.meta`, JSON.stringify({ mimeType: opts.mimeType, fileName: opts.fileName }));
+    return { key, size, mimeType: opts.mimeType, checksum: hash.digest("hex") };
   }
 
   async get(key: string): Promise<{ bytes: Uint8Array; mimeType: string } | null> {

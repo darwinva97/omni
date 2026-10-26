@@ -26,6 +26,15 @@ export interface ConnectRequest {
   readonly credentials: Uint8Array | null;
   /** Se llama cada vez que el driver produce credenciales nuevas; debe persistirlas. */
   readonly saveCredentials: (blob: Uint8Array) => Promise<void>;
+  /**
+   * Claves de la sesión guardadas una a una (opcional). Con esto el driver guarda en
+   * `saveCredentials` sólo las credenciales y cada clave que cambia va a su fila, en vez de
+   * reescribir la sesión entera en cada mensaje. Sin esto, todo va en el blob como antes.
+   */
+  readonly keys?: {
+    cargar(): Promise<ReadonlyArray<{ type: string; id: string; value: Uint8Array }>>;
+    guardar(cambios: ReadonlyArray<{ type: string; id: string; value: Uint8Array | null }>): Promise<void>;
+  };
   /** Configuración propia del driver (proxy, token de Cloud API, servidor SMTP…). */
   readonly config: Readonly<Record<string, unknown>>;
 }
@@ -154,6 +163,8 @@ export interface ChannelDriverOptional {
    * de descarga se lanzan, para que el reintento los vea.
    */
   downloadMedia?(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null>;
+  /** Lo mismo por trozos, si el driver sabe (el motor lo prefiere cuando el almacén también). */
+  downloadMediaStream?(lineId: LineId, raw: unknown): Promise<DownloadedMediaStream | null>;
 
   /**
    * Comunidades: grupos de grupos.
@@ -199,6 +210,13 @@ export interface ChannelDriverOptional {
 
 export interface DownloadedMedia {
   readonly bytes: Uint8Array;
+  readonly mimeType: string;
+  readonly fileName?: string;
+}
+
+/** Un medio que se lee por trozos (no entero en memoria). */
+export interface DownloadedMediaStream {
+  readonly stream: AsyncIterable<Uint8Array>;
   readonly mimeType: string;
   readonly fileName?: string;
 }

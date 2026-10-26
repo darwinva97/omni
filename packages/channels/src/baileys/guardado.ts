@@ -13,6 +13,15 @@ export function guardadoAgrupado(
   guardar: (b: Uint8Array) => Promise<void>,
   ms = 1000,
 ): { cambio: () => void; vaciar: () => Promise<void> } {
+  // Se serializa al escribir, no al cambiar: así va siempre lo último.
+  return escrituraAgrupada(() => guardar(serializar()), ms);
+}
+
+/** Lo mismo con cualquier escritura (p. ej. las claves que cambiaron, cada una en su fila). */
+export function escrituraAgrupada(
+  escribirYa: () => Promise<void>,
+  ms = 1000,
+): { cambio: () => void; vaciar: () => Promise<void> } {
   let pendiente = false;
   let temporizador: ReturnType<typeof setTimeout> | null = null;
   let enCurso: Promise<void> = Promise.resolve();
@@ -21,8 +30,7 @@ export function guardadoAgrupado(
     temporizador = null;
     if (!pendiente) return enCurso;
     pendiente = false;
-    // Se serializa al escribir, no al cambiar: así va siempre lo último.
-    enCurso = enCurso.then(() => guardar(serializar())).catch(() => {});
+    enCurso = enCurso.then(() => escribirYa()).catch(() => {});
     return enCurso;
   };
 
