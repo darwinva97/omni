@@ -13,7 +13,7 @@ import {
   ensurePlatformSchema,
   type Bus, type JobQueue, type Kv, type Subscription,
 } from "@omni/platform";
-import { createDatabase, migrate, webhookDeliveryTable, webhookEndpointTable, type DbHandle } from "@omni/db";
+import { createDatabase, migrate, runMaintenance, webhookDeliveryTable, webhookEndpointTable, type DbHandle } from "@omni/db";
 import { EngineRuntime, SecretBox } from "@omni/engine";
 import { LocalStorage, S3Storage, type Storage } from "@omni/storage";
 import { PluginRegistry } from "./plugins/registry.js";
@@ -283,6 +283,24 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
 
   const workers: Subscription[] = [];
   if (config.RUN_WORKERS_IN_API) workers.push(dispatcher.startWorker());
+  /*
+   * Sin el proceso aparte (`apps/worker`) nadie creaba las particiones de los
+   * meses siguientes de `message` ni purgaba el registro de entregas: el día que
+   * se acabaran, todas las inserciones de mensajes fallarían a la vez. Con los
+   * trabajadores en la API, el mantenimiento también va aquí (al arrancar y
+   * cada 6 h).
+   */
+  let mantenimiento: NodeJS.Timeout | null = null;
+  if (config.RUN_WORKERS_IN_API) {
+    const mantener = (): void => {
+      void runMaintenance(dbh.db).catch((err: unknown) => {
+        console.error("mantenimiento falló:", err instanceof Error ? err.message : String(err));
+      });
+    };
+    mantener();
+    mantenimiento = setInterval(mantener, 6 * 3600_000);
+    mantenimiento.unref();
+  }
 
   // Reanudar las líneas ANTES de aceptar tráfico: si no, los primeros envíos
   // tras un despliegue fallan porque su línea todavía no está conectada.
@@ -296,6 +314,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
     config, dbh, queue, kv, bus, runtime, dispatcher, sandbox, storage, drivers, plugins,
     conversaciones, automatizaciones,
     shutdown: async () => {
+      if (mantenimiento) clearInterval(mantenimiento);
       await plugins.detenerTodos().catch(() => {});
       await Promise.all(workers.map((w) => w.stop().catch(() => {})));
       await runtime.stop();
