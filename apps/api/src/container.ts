@@ -110,6 +110,7 @@ export async function buildContainer(config: Config, opts: BuildOptions = {}): P
         ...(config.S3_PUBLIC_ENDPOINT ? { publicEndpoint: config.S3_PUBLIC_ENDPOINT } : {}),
         accessKeyId: config.S3_ACCESS_KEY_ID!,
         secretAccessKey: config.S3_SECRET_ACCESS_KEY!,
+        ...(config.S3_PREFIX ? { prefix: config.S3_PREFIX } : {}),
       })
     : new LocalStorage({
         directory: config.MEDIA_DIR,

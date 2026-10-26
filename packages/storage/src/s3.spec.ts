@@ -24,4 +24,10 @@ describe("almacén S3", () => {
     expect(url.searchParams.get("X-Amz-Expires")).toBe("60");
     expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe("host");
   });
+
+  it("con carpeta, todo va dentro de ella (el bucket se comparte con otras cosas)", async () => {
+    const s = new S3Storage({ ...base, endpoint: "http://almacen.interno:9000", prefix: "/whatsapp/" });
+    const url = new URL(await s.signedUrl("org/linea/m1", 60));
+    expect(url.pathname).toBe("/medios/whatsapp/org/linea/m1");
+  });
 });

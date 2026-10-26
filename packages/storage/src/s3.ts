@@ -25,12 +25,19 @@ export class S3Storage implements Storage {
    */
   readonly #signer: S3Client;
   readonly #bucket: string;
+  /**
+   * Carpeta dentro del bucket (p. ej. `whatsapp/`): así el mismo bucket guarda también otras
+   * cosas (copias, imágenes) ordenadas. Las claves de fuera no la llevan: se pone y se quita aquí.
+   */
+  readonly #prefijo: string;
 
   constructor(opts: {
     bucket: string; region?: string; endpoint?: string; publicEndpoint?: string;
-    accessKeyId: string; secretAccessKey: string; forcePathStyle?: boolean;
+    accessKeyId: string; secretAccessKey: string; forcePathStyle?: boolean; prefix?: string;
   }) {
     this.#bucket = opts.bucket;
+    const p = (opts.prefix ?? "").replace(/^\/+|\/+$/g, "");
+    this.#prefijo = p ? `${p}/` : "";
     const client = (endpoint: string | undefined) => new S3Client({
       region: opts.region ?? "auto",
       ...(endpoint ? { endpoint } : {}),
@@ -48,7 +55,7 @@ export class S3Storage implements Storage {
       });
     }
     await this.#client.send(new PutObjectCommand({
-      Bucket: this.#bucket, Key: key, Body: bytes, ContentType: opts.mimeType,
+      Bucket: this.#bucket, Key: this.#prefijo + key, Body: bytes, ContentType: opts.mimeType,
       ...(opts.fileName ? { ContentDisposition: `attachment; filename="${opts.fileName}"` } : {}),
     }));
     return {
@@ -59,7 +66,7 @@ export class S3Storage implements Storage {
 
   async get(key: string): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
     try {
-      const out = await this.#client.send(new GetObjectCommand({ Bucket: this.#bucket, Key: key }));
+      const out = await this.#client.send(new GetObjectCommand({ Bucket: this.#bucket, Key: this.#prefijo + key }));
       const bytes = await out.Body!.transformToByteArray();
       return { bytes, mimeType: out.ContentType ?? "application/octet-stream" };
     } catch {
@@ -68,12 +75,12 @@ export class S3Storage implements Storage {
   }
 
   async delete(key: string): Promise<void> {
-    await this.#client.send(new DeleteObjectCommand({ Bucket: this.#bucket, Key: key }));
+    await this.#client.send(new DeleteObjectCommand({ Bucket: this.#bucket, Key: this.#prefijo + key }));
   }
 
   async exists(key: string): Promise<boolean> {
     try {
-      await this.#client.send(new HeadObjectCommand({ Bucket: this.#bucket, Key: key }));
+      await this.#client.send(new HeadObjectCommand({ Bucket: this.#bucket, Key: this.#prefijo + key }));
       return true;
     } catch {
       return false;
@@ -83,7 +90,7 @@ export class S3Storage implements Storage {
   async signedUrl(key: string, ttlSeconds: number): Promise<string> {
     return getSignedUrl(
       this.#signer,
-      new GetObjectCommand({ Bucket: this.#bucket, Key: key }),
+      new GetObjectCommand({ Bucket: this.#bucket, Key: this.#prefijo + key }),
       { expiresIn: ttlSeconds },
     );
   }

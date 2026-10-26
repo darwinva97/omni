@@ -124,6 +124,8 @@ export const Config = z.object({
   S3_PUBLIC_ENDPOINT: z.string().optional(),
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
+  /** Carpeta dentro del bucket (p. ej. `whatsapp`), si se comparte con otras cosas. */
+  S3_PREFIX: z.string().optional(),
 
   /**
    * Entrada con OpenID Connect (p. ej. Keycloak). Se activa con emisor, cliente
