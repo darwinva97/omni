@@ -9,6 +9,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "
 import type { LineStatus } from "@omni/channels";
 import { citadoDe, detallesDeMedio } from "@omni/channels";
 import type { LineId } from "@omni/shared";
+import { callStates, textoDeLlamada, type CallRecord } from "@omni/shared";
 import type { Container } from "./container.js";
 
 /**
@@ -198,6 +199,20 @@ const MensajeSchema = z.object({
    * qué nombre la tienes. Varios cuando se comparten de golpe.
    */
   contacts: z.array(ContactoSchema).default([]),
+  /**
+   * La llamada, cuando la entrada es una (`kind: call`): en qué quedó y
+   * cuándo. Las fechas en milisegundos; `answeredAt` y `endedAt` dicen cuánto duró.
+   */
+  call: z.object({
+    id: z.string(),
+    from: z.string(),
+    isVideo: z.boolean(),
+    isGroup: z.boolean(),
+    state: z.enum(callStates),
+    startedAt: z.number(),
+    answeredAt: z.number().nullable(),
+    endedAt: z.number().nullable(),
+  }).nullable().default(null),
 }).openapi("Mensaje");
 
 const ChatSchema = z.object({
@@ -305,7 +320,8 @@ async function ultimosMensajes(
     SELECT DISTINCT ON (chat_id)
       chat_id, kind, body, from_me, deleted_at IS NOT NULL AS retirado, mentions,
       -- La tarjeta solo de un contacto: es lo que dice a quién se compartió.
-      CASE WHEN kind = 'contact' THEN raw END AS tarjeta
+      -- Y de una llamada, en qué quedó: «perdida» es lo que se busca en la lista.
+      CASE WHEN kind IN ('contact', 'call') THEN raw END AS tarjeta
     FROM message
     WHERE line_id = ${lineId} AND chat_id = ANY(${direcciones as string[]})
     ORDER BY chat_id, timestamp DESC`;
@@ -332,6 +348,8 @@ async function ultimosMensajes(
         ? "Se eliminó este mensaje"
         : f.kind === "contact"
           ? ["Contacto", nombresDeContactos(f.tarjeta ?? f.body)].filter(Boolean).join(": ")
+          : f.kind === "call" && (f.tarjeta as { call?: CallRecord } | null)?.call
+            ? textoDeLlamada((f.tarjeta as { call: CallRecord }).call)
           : (f.body?.trim() ? conNombres(f.body.trim(), porToken) : null)
             || nombres[f.kind] || "Mensaje",
       propio: f.from_me,
@@ -1156,7 +1174,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           senderAvatarUrl: null,
           // Un estado no responde a nada ni es una encuesta: no hay hilo.
           replyTo: null,
-          poll: null,
+          poll: null, call: null,
           contacts: [],
           mentions: [],
         }))),
@@ -1503,6 +1521,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           originales, nombres, chat.value, nombresDeTokens),
         poll: r.providerMessageId ? encuestas.get(r.providerMessageId) ?? null : null,
         contacts: contactos.get(r.id) ?? [],
+        call: r.kind === "call" ? (r.raw as { call?: CallRecord } | null)?.call ?? null : null,
       })));
 
       return c.json({

@@ -25,6 +25,8 @@ export const triggers = [
   "label.added",
   "line.connected",
   "line.disconnected",
+  // Solo cuando EMPIEZA a sonar, una vez por llamada; no con cada cambio de estado.
+  "call.received",
 ] as const;
 export const Trigger = z.enum(triggers);
 export type Trigger = z.infer<typeof Trigger>;
@@ -87,6 +89,11 @@ export const Action = z.discriminatedUnion("type", [
     /** Se manda el contexto entero; sin cuerpo propio no hay que inventar formato. */
     headers: z.record(z.string(), z.string()).optional(),
   }),
+  /**
+   * Cuelga la llamada que disparó la regla. Solo tiene sentido con
+   * `call.received`; con otro disparo falla, y el fallo queda registrado.
+   */
+  z.object({ type: z.literal("reject_call") }),
   /** Corta la cadena: las reglas de menor prioridad ya no se evalúan. */
   z.object({ type: z.literal("stop") }),
 ]);
@@ -155,6 +162,8 @@ export interface RuleContext {
   readonly at: Date;
   /** Identificador del mensaje que lo originó, para poder responderle. */
   readonly messageId?: string | null;
+  /** La llamada que lo originó, cuando el disparo es `call.received`. */
+  readonly call?: { readonly id: string; readonly from: string; readonly isVideo: boolean } | null;
   /**
    * Cuántas veces ha rebotado ya esta cadena.
    *

@@ -3,7 +3,8 @@
 import {
   useCallback, useEffect, useLayoutEffect, useOptimistic, useRef, useState, startTransition,
 } from "react";
-import type { Chat, Cita as CitaDe, ContactoCompartido, Medio as TipoMedio, Mensaje } from "@/lib/api";
+import type { Chat, Cita as CitaDe, ContactoCompartido, Llamada, Medio as TipoMedio, Mensaje } from "@/lib/api";
+import { perdida, textoDeLlamada } from "@/lib/llamadas";
 import { useEventos } from "@/lib/eventos";
 import { conNombres, diaDeSeparador, hora, nombresDeContactos, trozosConMenciones } from "@/lib/formato";
 import { partirEnlaces } from "@/lib/enlaces";
@@ -26,7 +27,7 @@ import {
   IconoAdjuntar, IconoAlerta, IconoBloquear, IconoCamara, IconoCerrar, IconoCheck, IconoCopiar, IconoDescargar,
   IconoDocumento, IconoEditar, IconoEstrella, IconoImagen, IconoMicrofono, IconoPersona, IconoSonido,
   IconoBuscar, IconoEnviar, IconoInfo, IconoPapelera, IconoReenviar, IconoResponder, IconoSticker,
-  IconoVolver,
+  IconoTelefono, IconoVolver,
 } from "@/componentes/iconos";
 import { Reenviar } from "@/componentes/reenviar";
 import Link from "next/link";
@@ -252,6 +253,24 @@ export function Conversacion({
       },
     ],
   );
+
+  /*
+   * Una llamada de esta conversación: su entrada nace al sonar y cambia con
+   * cada aviso, así que se sustituye por su identificador y no se añade otra.
+   */
+  useEffect(() => suscribir((evento, data) => {
+    if (evento !== "call.received" || data["chatId"] !== chat) return;
+    const call = data["call"] as Llamada | undefined;
+    const id = data["messageId"] as string | undefined;
+    if (!call || !id) return;
+    setMensajes((prev) => prev.some((x) => x.id === id)
+      ? prev.map((x) => (x.id === id ? { ...x, call } : x))
+      : ventanaRef.current ? prev : [...prev, {
+          id, providerMessageId: null, fromMe: false, kind: "call", body: null,
+          state: "delivered", timestamp: new Date(call.startedAt).toISOString(),
+          senderAddress: call.from, call,
+        }]);
+  }), [chat, suscribir]);
 
   useEffect(() => suscribir((evento, data) => {
     if (!evento.startsWith("message.")) return;
@@ -1170,6 +1189,42 @@ export function Conversacion({
   };
 
   /**
+   * Vota en una encuesta con el voto entero. Se pinta al instante, como una
+   * reacción; si la API dice que no, vuelve como estaba y se devuelve el
+   * motivo para que la encuesta lo enseñe.
+   */
+  const votar = async (m: Mensaje, opciones: string[]): Promise<string | null> => {
+    if (!m.providerMessageId || !m.poll) return "este mensaje todavía no ha salido";
+    const antes = m.poll;
+    const poner = (poll: typeof antes) => setMensajes((prev) =>
+      prev.map((x) => (x.id === m.id ? { ...x, poll } : x)));
+
+    const yaVotaba = antes.options.some((o) => o.mine);
+    const votare = opciones.length > 0;
+    poner({
+      ...antes,
+      totalVotes: antes.totalVotes - (yaVotaba ? 1 : 0) + (votare ? 1 : 0),
+      options: antes.options.map((o) => {
+        const mia = opciones.includes(o.name);
+        return { ...o, mine: mia, votes: o.votes - (o.mine ? 1 : 0) + (mia ? 1 : 0) };
+      }),
+    });
+
+    const r = await fetch(
+      `/api/omni/v1/lines/${lineId}/chats/${encodeURIComponent(chat)}/messages/${encodeURIComponent(m.providerMessageId)}/vote`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ options: opciones }),
+      },
+    ).catch(() => null);
+    if (r?.ok) return null;
+    poner(antes);
+    const detalle = (await r?.json().catch(() => null)) as { detail?: string } | null;
+    return detalle?.detail ?? "no hay conexión con el servidor";
+  };
+
+  /**
    * Reenvía a UN chat de esta línea. Devuelve el motivo si no se pudo: el
    * diálogo lo enseña junto a ese chat, que es donde hay que leerlo.
    */
@@ -1459,7 +1514,20 @@ export function Conversacion({
 
                 {esAviso ? (
                   <div className="flex justify-center py-1.5">
-                    {m.kind === "notice" ? (
+                    {m.kind === "call" && m.call ? (
+                      <span
+                        className={`inline-flex items-center gap-1.5 rounded-full bg-(--color-panel)/70 px-3 py-1 text-[11px] ${
+                          perdida(m.call) ? "text-(--color-error)" : "text-(--color-tenue)"
+                        }`}
+                      >
+                        {m.call.isVideo
+                          ? <IconoCamara className="size-3.5" />
+                          : <IconoTelefono className="size-3.5" />}
+                        {m.call.isGroup && m.senderName ? `${m.senderName}: ` : ""}
+                        {textoDeLlamada(m.call)}
+                        <time className="text-(--color-apagado)" dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                      </span>
+                    ) : m.kind === "notice" ? (
                       // «Brenda fijó un mensaje»: quién y qué, centrado, como
                       // lo enseña WhatsApp.
                       <span className="rounded-full bg-(--color-panel)/70 px-3 py-1 text-[11px] text-(--color-tenue)">
@@ -1563,7 +1631,7 @@ export function Conversacion({
                     ) : m.poll ? (
                       // Sin `Firma`: la encuesta no es un párrafo donde quepa
                       // la hora flotando, así que va debajo como en una foto.
-                      <Encuesta datos={m.poll} />
+                      <Encuesta datos={m.poll} onVotar={(o) => votar(m, o)} />
                     ) : m.contacts?.length ? (
                       <TarjetaDeContactos lineId={lineId} contactos={m.contacts} propia={m.fromMe} />
                     ) : MEDIOS.has(m.kind) ? (

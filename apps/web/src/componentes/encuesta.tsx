@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { Encuesta as Datos } from "@/lib/api";
 
 /**
@@ -13,9 +14,29 @@ import type { Encuesta as Datos } from "@/lib/api";
  * La barra va DETRÁS del texto y no al lado: así la opción más votada se ve
  * antes de leerla, que es para lo que se mira una encuesta, y las opciones
  * largas no se parten en dos columnas.
+ *
+ * Con `onVotar`, cada opción es un botón y se vota como en WhatsApp: en una de
+ * una respuesta, pulsar elige esa y pulsar la propia la retira; en una de
+ * varias, cada pulsación marca o desmarca. Lo que se manda es el voto entero.
  */
-export function Encuesta({ datos }: { datos: Datos }) {
+export function Encuesta({ datos, onVotar }: {
+  datos: Datos;
+  /** Devuelve el motivo si no se pudo, para enseñarlo bajo la encuesta. */
+  onVotar?: (opciones: string[]) => Promise<string | null>;
+}) {
   const { question, options, totalVotes, allowMultiple } = datos;
+  const [fallo, setFallo] = useState<string | null>(null);
+
+  const pulsar = async (nombre: string): Promise<void> => {
+    if (!onVotar) return;
+    const mias = options.filter((o) => o.mine).map((o) => o.name);
+    const ya = mias.includes(nombre);
+    const voto = allowMultiple
+      ? (ya ? mias.filter((o) => o !== nombre) : [...mias, nombre])
+      : (ya ? [] : [nombre]);
+    setFallo(null);
+    setFallo(await onVotar(voto));
+  };
   // El reparto se calcula sobre el MÁXIMO, no sobre el total: con opción
   // múltiple los votos suman más que los votantes y las barras se saldrían.
   const tope = Math.max(1, ...options.map((o) => o.votes));
@@ -38,6 +59,19 @@ export function Encuesta({ datos }: { datos: Datos }) {
             key={o.name}
             className="relative overflow-hidden rounded-md border border-(--color-borde-sutil)"
           >
+            {/*
+              El botón cubre la fila entera por encima de la barra: la diana es
+              la opción, no la bolita, y en una lista de cinco se acierta sin mirar.
+            */}
+            {onVotar && (
+              <button
+                type="button"
+                aria-pressed={o.mine}
+                aria-label={`${o.mine ? "Quitar mi voto de" : "Votar"} «${o.name}»`}
+                onClick={() => void pulsar(o.name)}
+                className="absolute inset-0 z-10 cursor-pointer rounded-md transition-colors hover:bg-(--color-acento)/10 focus-visible:outline-2 focus-visible:outline-(--color-acento)"
+              />
+            )}
             <span
               aria-hidden
               className={`absolute inset-y-0 left-0 ${
@@ -68,6 +102,12 @@ export function Encuesta({ datos }: { datos: Datos }) {
           </li>
         ))}
       </ul>
+
+      {fallo && (
+        <p role="alert" className="text-[11px] text-(--color-error)">
+          No se pudo votar: {fallo}.
+        </p>
+      )}
     </div>
   );
 }

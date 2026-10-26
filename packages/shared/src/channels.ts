@@ -42,6 +42,8 @@ export const capabilities = [
   "send.reply", "send.mentions", "send.viewOnce", "send.forward",
   // ciclo de vida del mensaje
   "message.edit", "message.delete", "message.receipts",
+  // votar en una encuesta ajena o propia; crearla es `send.poll`
+  "poll.vote",
   // chats
   "chat.read", "chat.presence", "chat.typing", "chat.archive", "chat.mute", "chat.ephemeral",
   "chat.clear", "chat.delete",

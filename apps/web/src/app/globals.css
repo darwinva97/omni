@@ -270,8 +270,26 @@ body {
   border-radius: var(--radius-burbuja);
 }
 
+/*
+ * El teléfono que tiembla mientras suena una llamada. Es lo único del aviso
+ * que se mueve, y solo mientras es verdad: dice «ahora», no «hubo una».
+ */
+@keyframes llamada-sonando {
+  0%, 60%, 100% { transform: rotate(0); }
+  10%, 30%, 50% { transform: rotate(-12deg); }
+  20%, 40% { transform: rotate(12deg); }
+}
+
+.llamada-sonando {
+  animation: llamada-sonando 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mensaje-nuevo {
+    animation: none;
+  }
+
+  .llamada-sonando {
     animation: none;
   }
 

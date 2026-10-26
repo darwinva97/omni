@@ -288,6 +288,32 @@ run("automatizaciones", () => {
       .toHaveLength(antes.length);
   });
 
+  it("una llamada entrante se cuelga sola y se contesta por escrito", async () => {
+    await crearRegla({
+      name: "No atendemos llamadas",
+      trigger: "call.received",
+      actions: [
+        { type: "reject_call" },
+        { type: "send_message", text: "ahora no podemos atender llamadas, escríbenos por aquí" },
+      ],
+      priority: 5,
+    });
+
+    await container.runtime.publish("call.received", LINE, {
+      callId: "LLAMADA-CRM", from: CHAT, chatId: CHAT, status: "offer", isVideo: false,
+    });
+    await esperar(
+      async () => (await salientes()).some((b) => b.includes("no podemos atender llamadas")),
+      "la regla contestó por escrito",
+    );
+    // Y la llamada quedó como rechazada en el hilo, no «entrante» para siempre.
+    await esperar(async () => {
+      const [f] = await dbh.sql`
+        SELECT raw FROM message WHERE line_id = ${LINE} AND kind = 'call'`;
+      return (f?.["raw"] as { call?: { state?: string } } | undefined)?.call?.state === "rejected";
+    }, "la llamada quedó rechazada");
+  });
+
   it("no se responde a su propia respuesta", async () => {
     // Una regla sobre `message.sent` que envía es el bucle en su forma más
     // directa: sin el corte por profundidad crecería sin fin.

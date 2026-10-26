@@ -2,7 +2,7 @@ export * from "./port.js";
 export * from "./sandbox/driver.js";
 export { runChannelContract, type DriverUnderTest } from "./contract/suite.js";
 export {
-  BaileysDriver, BAILEYS_DESCRIPTOR, ackToState, citadoDe, descifrarEdicion, descifrarVoto, detallesDeMedio, extractSecretEdit, encuestaDe, esVacio,
+  BaileysDriver, BAILEYS_DESCRIPTOR, ackToState, citadoDe, cifrarVoto, descifrarEdicion, descifrarVoto, detallesDeMedio, extractSecretEdit, encuestaDe, esVacio,
   extractMentions, extractPollVote, extractReply, extractText, messageKind, type RegistroBaileys,
 } from "./baileys/driver.js";
 export { BlobAuthStore } from "./baileys/auth-store.js";
