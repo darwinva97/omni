@@ -24,9 +24,10 @@ type Oyente = (
  * motor y no salía de ahí.
  * `conversation.*`: quién lleva cada chat y si está resuelto.
  * `note.*`: la nota interna que deja un compañero en el chat abierto.
+ * `call.*`: una llamada que suena, y en qué queda, para el hilo y el aviso.
  */
 const DE_UNA_LINEA = [
-  "message.*", "chat.*", "session.*", "presence.*", "conversation.*", "note.*",
+  "message.*", "chat.*", "session.*", "presence.*", "conversation.*", "note.*", "call.*",
 ] as const;
 
 /**

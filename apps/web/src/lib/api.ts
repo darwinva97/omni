@@ -175,6 +175,20 @@ export interface Mensaje {
   poll?: Encuesta | null;
   /** Los contactos compartidos, ya leídos de su tarjeta, cuando el mensaje es uno. */
   contacts?: ContactoCompartido[];
+  /** La llamada, cuando la entrada es una (`kind: call`). */
+  call?: Llamada | null;
+}
+
+/** Una llamada en el hilo, en qué quedó. Fechas en milisegundos. */
+export interface Llamada {
+  id: string;
+  from: string;
+  isVideo: boolean;
+  isGroup: boolean;
+  state: "ringing" | "answered" | "ended" | "missed" | "rejected";
+  startedAt: number;
+  answeredAt: number | null;
+  endedAt: number | null;
 }
 
 /** Un contacto que alguien compartió: todo lo que traía su tarjeta. */

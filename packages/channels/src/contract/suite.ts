@@ -38,6 +38,7 @@ const METHOD_FOR: Partial<Record<Capability, keyof ChannelDriver>> = {
   "message.edit": "editMessage",
   "message.delete": "deleteMessage",
   "send.reaction": "react",
+  "poll.vote": "votePoll",
   "chat.read": "markRead",
   "chat.presence": "setPresence",
   // Escribir es una presencia más: quien declare una tiene que tener el método.

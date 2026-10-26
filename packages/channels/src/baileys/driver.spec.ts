@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { asLineId, parseAddress, type EventEnvelope } from "@omni/shared";
 import {
-  BaileysDriver, ackToState, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
+  BaileysDriver, ackToState, cifrarVoto, descifrarVoto, deterministicMessageId, encuestaDe, esVacio,
   citadoDe, descifrarEdicion, detallesDeMedio, extractMentions, extractSecretEdit, hostDeMedio, HOST_DE_MEDIOS, extractPollVote, extractReply, extractText,
   messageKind, toNewsletterMetadata,
 } from "./driver.js";
@@ -10,8 +10,10 @@ import { generateMessageIDV2 } from "baileys";
 
 const LINE = asLineId("l1");
 
-async function conectado(): Promise<{ driver: BaileysDriver; fake: FakeSocketControl; eventos: EventEnvelope[] }> {
-  const fake = createFakeSocket();
+async function conectado(
+  user?: Parameters<typeof createFakeSocket>[0],
+): Promise<{ driver: BaileysDriver; fake: FakeSocketControl; eventos: EventEnvelope[] }> {
+  const fake = createFakeSocket(user);
   const driver = new BaileysDriver({
     makeSocket: () => fake.socket,
     fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
@@ -321,6 +323,98 @@ describe("encuestas", () => {
       { pollId: v.poll.id, pollAuthor: v.poll.author, voter: v.voter, secret: e.secret! },
       e.options,
     )).toEqual([elegida]);
+  });
+});
+
+describe("votar en una encuesta", () => {
+  const secreto = Buffer.alloc(32, 7).toString("base64");
+  const opciones = ["Lunes", "Martes", "Miércoles"];
+  /** Una encuesta ajena en un grupo por LID, como la guarda el motor. */
+  const original = {
+    key: {
+      id: "ENC1", remoteJid: "120363405888628569@g.us", fromMe: false,
+      participant: "200000000000001@lid", participantAlt: "51900111222@s.whatsapp.net",
+    },
+    message: {
+      pollCreationMessageV3: {
+        name: "¿Qué día?", options: opciones.map((o) => ({ optionName: o })),
+        selectableOptionsCount: 0,
+      },
+      messageContextInfo: { messageSecret: secreto },
+    },
+  };
+
+  it("cifrar y descifrar dan las mismas opciones, también varias o ninguna", () => {
+    const ctx = { pollId: "P", pollAuthor: "a@lid", voter: "b@lid", secret: secreto };
+    for (const elegidas of [["Martes"], ["Lunes", "Miércoles"], []]) {
+      expect(descifrarVoto(cifrarVoto(elegidas, ctx), ctx, opciones)).toEqual(elegidas);
+    }
+  });
+
+  it("en un grupo por LID cifra con los dos LID, no con los teléfonos", async () => {
+    /*
+     * Es lo que decide si alguien más puede leer el voto: quien lo recibe
+     * deriva la clave con las direcciones del sobre, y en este grupo el sobre
+     * trae LID. Con el teléfono de cualquiera de los dos, no abre.
+     */
+    const { driver, fake } = await conectado({
+      id: "51999888777:4@s.whatsapp.net", lid: "300000000000009:4@lid", name: "Línea",
+    });
+    const grupo = parseAddress("120363405888628569@g.us");
+    await driver.votePoll(LINE, grupo, { messageId: "ENC1", raw: original }, ["Martes"]);
+
+    expect(fake.relayed).toHaveLength(1);
+    const { jid, message } = fake.relayed[0]! as {
+      jid: string;
+      message: { pollUpdateMessage: {
+        pollCreationMessageKey: Record<string, unknown>;
+        vote: { encPayload: Uint8Array; encIv: Uint8Array };
+      } };
+    };
+    expect(jid).toBe(grupo.value);
+    const nodo = message.pollUpdateMessage;
+    expect(nodo.pollCreationMessageKey).toMatchObject({
+      id: "ENC1", fromMe: false, participant: "200000000000001@lid",
+    });
+    const voto = {
+      encPayload: Buffer.from(nodo.vote.encPayload).toString("base64"),
+      encIv: Buffer.from(nodo.vote.encIv).toString("base64"),
+    };
+    const abrir = (pollAuthor: string, voter: string) =>
+      descifrarVoto(voto, { pollId: "ENC1", pollAuthor, voter, secret: secreto }, opciones);
+    expect(abrir("200000000000001@lid", "300000000000009@lid")).toEqual(["Martes"]);
+    expect(() => abrir("51900111222@s.whatsapp.net", "51999888777@s.whatsapp.net")).toThrow();
+  });
+
+  it("sin el original no hay secreto, y lo dice en vez de mandar un voto ilegible", async () => {
+    const { driver, fake } = await conectado();
+    const err = await driver.votePoll(
+      LINE, parseAddress("120@g.us"), { messageId: "X", raw: null }, ["Lunes"],
+    ).catch((e: unknown) => e as { code?: string });
+    expect(err).toMatchObject({ code: "validation_failed" });
+    expect(fake.relayed).toHaveLength(0);
+  });
+
+  it("al recibir un voto, ofrece de reserva las direcciones tal como vienen", () => {
+    // `getKeyAuthor` elige el teléfono; en un grupo por LID se cifró con el LID.
+    const v = extractPollVote({
+      key: {
+        id: "V", remoteJid: "120@g.us",
+        participant: "200000000000002@lid", participantAlt: "51911222333@s.whatsapp.net",
+      },
+      message: {
+        pollUpdateMessage: {
+          pollCreationMessageKey: {
+            id: "ENC1", participant: "200000000000001@lid",
+            participantAlt: "51900111222@s.whatsapp.net",
+          },
+          vote: { encPayload: "AQID", encIv: "BAU=" },
+        },
+      },
+    } as never)!;
+    expect(v.voter).toBe("51911222333@s.whatsapp.net");
+    expect(v.alternativas.voters).toContain("200000000000002@lid");
+    expect(v.alternativas.authors).toContain("200000000000001@lid");
   });
 });
 

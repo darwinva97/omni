@@ -19,6 +19,8 @@ export interface FakeSocketControl {
   emitRaw(event: string, payload: unknown): void;
   /** Todo lo enviado, para poder afirmar sobre ello. */
   readonly sent: { jid: string; content: unknown; options?: unknown }[];
+  /** Lo que salió por `relayMessage`, ya como mensaje del protocolo. */
+  readonly relayed: { jid: string; message: unknown; options?: unknown }[];
   readonly presence: { presence: string; jid: string }[];
   readonly read: string[][];
   readonly groupUpdates: { jid: string; subject?: string; description?: string }[];
@@ -35,12 +37,15 @@ export interface FakeSocketControl {
   failWith: Error | null;
 }
 
-export function createFakeSocket(user?: { id: string; name?: string }): FakeSocketControl {
+export function createFakeSocket(
+  user?: { id: string; name?: string; lid?: string },
+): FakeSocketControl {
   const ev = new EventEmitter();
   ev.setMaxListeners(100);
 
   const control: FakeSocketControl = {
     sent: [],
+    relayed: [],
     presence: [],
     read: [],
     groupUpdates: [],
@@ -84,6 +89,11 @@ export function createFakeSocket(user?: { id: string; name?: string }): FakeSock
         message: content,
         messageTimestamp: 1_800_000_000,
       };
+    },
+    relayMessage: async (jid: string, message: unknown, options?: { messageId?: string }) => {
+      if (control.failWith) throw control.failWith;
+      control.relayed.push({ jid, message, options });
+      return options?.messageId ?? `FAKE-${String(++contador).padStart(4, "0")}`;
     },
     sendPresenceUpdate: async (presence: string, jid: string) => {
       control.presence.push({ presence, jid });

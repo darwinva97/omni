@@ -61,6 +61,18 @@ export interface ChannelDriverOptional {
   editMessage?(lineId: LineId, chat: Address, providerMessageId: string, text: string): Promise<void>;
   deleteMessage?(lineId: LineId, chat: Address, providerMessageId: string): Promise<void>;
   react?(lineId: LineId, chat: Address, providerMessageId: string, emoji: string): Promise<void>;
+  /**
+   * Vota en una encuesta. `selected` es el voto ENTERO, no lo que cambia: un
+   * voto sustituye al anterior, y una lista vacía lo retira.
+   *
+   * `poll.raw` es el nodo original tal como lo guardó el motor. Hace falta
+   * porque en WhatsApp el voto va cifrado con un secreto que solo está ahí; qué
+   * sacar de él es cosa del driver, que es quien conoce el protocolo.
+   */
+  votePoll?(
+    lineId: LineId, chat: Address, poll: { messageId: string; raw: unknown },
+    selected: readonly string[],
+  ): Promise<void>;
   markRead?(lineId: LineId, chat: Address, providerMessageIds: readonly string[]): Promise<void>;
   setPresence?(lineId: LineId, chat: Address, presence: "composing" | "recording" | "paused"): Promise<void>;
   /**

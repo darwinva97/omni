@@ -398,6 +398,20 @@ export const COMMANDS: readonly Command[] = [
       { emoji: a.positional[3] ?? "" }),
   },
   {
+    name: "encuesta:votar",
+    summary: "Votar en una encuesta; sin opciones retira el voto",
+    operation: "POST /v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/vote",
+    args: [
+      { name: "linea", required: true, description: "Identificador de la línea" },
+      { name: "chat", required: true, description: "Dirección del chat" },
+      { name: "mensaje", required: true, description: "Identificador de la encuesta" },
+      { name: "opciones", required: false, description: "Las opciones elegidas, cada una un argumento" },
+    ],
+    run: (c, a) => c.request("POST",
+      `/v1/lines/${req(a, 0, "linea")}/chats/${enc(req(a, 1, "chat"))}/messages/${enc(req(a, 2, "mensaje"))}/vote`,
+      { options: a.positional.slice(3) }),
+  },
+  {
     name: "chat:leido",
     summary: "Marcar mensajes como leídos",
     operation: "POST /v1/lines/{lineId}/chats/{chatId}/read",

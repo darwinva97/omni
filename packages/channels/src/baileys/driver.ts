@@ -1,9 +1,10 @@
-import { createDecipheriv, createHash, hkdfSync } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes } from "node:crypto";
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
   type Contact as Contacto,
   Browsers, decryptPollVote, DisconnectReason, downloadMediaMessage,
-  fetchLatestBaileysVersion, getContentType, getKeyAuthor, normalizeMessageContent, proto,
+  fetchLatestBaileysVersion, generateMessageIDV2, getContentType, getKeyAuthor, isJidGroup,
+  jidNormalizedUser, normalizeMessageContent, proto,
   type WAMessage, type WASocket,
 } from "baileys";
 import {
@@ -39,7 +40,7 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
     "send.text", "send.image", "send.video", "send.audio", "send.document",
     "send.sticker", "send.location", "send.contact", "send.poll", "send.reaction",
     "send.reply", "send.mentions", "send.viewOnce", "send.forward",
-    "message.edit", "message.delete", "message.receipts",
+    "message.edit", "message.delete", "message.receipts", "poll.vote",
     "chat.read", "chat.presence", "chat.typing", "presence.watch", "chat.archive", "chat.mute", "chat.ephemeral",
     "group.read", "group.create", "group.manage", "group.invite", "group.participants",
     "chat.clear", "chat.delete",
@@ -438,10 +439,20 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       void this.emit("presence.updated", line.orgId, lineId, { chat: id, presences });
     });
 
+    /*
+     * Cada cambio de estado de una llamada, no solo la oferta: el motor arma
+     * con ellos su entrada en el hilo —perdida, rechazada, atendida— y para
+     * eso necesita saber cómo acabó. `offline` es una llamada que sonó con la
+     * línea caída y llega al reconectar: ya no se puede contestar ni colgar.
+     */
     ev.on("call", (calls) => {
       for (const c of calls) {
         void this.emit("call.received", line.orgId, lineId, {
           callId: c.id, from: c.from, isVideo: c.isVideo ?? false, status: c.status,
+          chatId: c.isGroup && c.groupJid ? c.groupJid : c.chatId || c.from,
+          isGroup: c.isGroup ?? false, offline: c.offline ?? false,
+          ...(c.callerPn ? { callerPn: c.callerPn } : {}),
+          at: c.date instanceof Date ? c.date.getTime() : Date.now(),
         });
       }
     });
@@ -712,6 +723,70 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       // Cadena vacía = retirar la reacción. Es como lo expresa el protocolo.
       react: { text: emoji, key: { id: providerMessageId, remoteJid: chat.value, fromMe: false } },
     });
+  }
+
+  /**
+   * Vota en una encuesta.
+   *
+   * Baileys no trae cómo enviar un voto, solo cómo abrirlo: se cifra aquí con
+   * la receta inversa a `decryptPollVote` y sale con `relayMessage`.
+   *
+   * Lo delicado son las dos direcciones con las que se deriva la clave —quién
+   * creó la encuesta y quién vota—. Quien la recibe las saca del sobre tal
+   * como le llega, así que tienen que estar en el MISMO espacio: en un grupo
+   * por LID las dos son LID, y en uno por teléfono las dos son teléfono. Con
+   * una de cada, el voto sale, llega, y nadie puede abrirlo.
+   */
+  async votePoll(
+    lineId: LineId, chat: Address, poll: { messageId: string; raw: unknown },
+    selected: readonly string[],
+  ): Promise<void> {
+    const { socket } = this.#require(lineId);
+    const original = poll.raw as WAMessage | null;
+    const encuesta = original ? encuestaDe(original) : null;
+    if (!encuesta?.secret) {
+      throw new OmniError(
+        "validation_failed",
+        "no tenemos el original de esa encuesta, y sin él no se puede votar: llegó antes de enlazar la línea",
+      );
+    }
+
+    const k = (original!.key ?? {}) as {
+      fromMe?: boolean | null; participant?: string | null; remoteJid?: string | null;
+      addressingMode?: string | null;
+    };
+    const enGrupo = isJidGroup(chat.value) ?? false;
+    const yo = jidNormalizedUser(socket.user?.id ?? "");
+    const yoLid = socket.user?.lid ? jidNormalizedUser(socket.user.lid) : undefined;
+
+    // Quien la creó, como lo ve el chat. Si fue esta cuenta no viene en la
+    // clave, y el espacio lo dice el chat: el grupo, o la dirección de uno a uno.
+    let autor = k.fromMe ? undefined : (enGrupo ? k.participant : k.remoteJid) ?? undefined;
+    let porLid = autor ? autor.endsWith("@lid") : chat.value.endsWith("@lid");
+    if (!autor && enGrupo) {
+      porLid = k.addressingMode === "lid"
+        || (await socket.groupMetadata(chat.value).catch(() => null))?.addressingMode === "lid";
+    }
+    const votante = porLid && yoLid ? yoLid : yo;
+    autor = autor ? jidNormalizedUser(autor) : votante;
+    if (!votante) throw new OmniError("line_not_connected", `la línea "${lineId}" no está conectada`);
+
+    const vote = cifrarVoto(selected, {
+      pollId: poll.messageId, pollAuthor: autor, voter: votante, secret: encuesta.secret,
+    });
+    await socket.relayMessage(chat.value, {
+      pollUpdateMessage: {
+        pollCreationMessageKey: {
+          remoteJid: chat.value, id: poll.messageId, fromMe: Boolean(k.fromMe),
+          ...(enGrupo && k.participant ? { participant: k.participant } : {}),
+        },
+        vote: {
+          encPayload: Buffer.from(vote.encPayload, "base64"),
+          encIv: Buffer.from(vote.encIv, "base64"),
+        },
+        senderTimestampMs: Date.now(),
+      },
+    }, { messageId: generateMessageIDV2(socket.user?.id) });
   }
 
   async markRead(lineId: LineId, chat: Address, ids: readonly string[]): Promise<void> {
@@ -1450,6 +1525,11 @@ function enBase64(v: Uint8Array | string | null | undefined): string | null {
 export function extractPollVote(m: WAMessage, propia?: string): {
   poll: { id: string; author: string };
   voter: string;
+  /**
+   * Otras formas de las mismas dos direcciones, por si la primera pareja no
+   * abre. `voter` sigue siendo la que se guarda: es con la que se cuenta.
+   */
+  alternativas: { authors: string[]; voters: string[] };
   vote: { encPayload: string; encIv: string };
   at: number;
 } | null {
@@ -1475,9 +1555,31 @@ export function extractPollVote(m: WAMessage, propia?: string): {
   const votante = getKeyAuthor(m.key as never, propia);
   if (!autor || !votante) return null;
 
+  /*
+   * Y de reserva, cada una TAL COMO VIENE en el sobre: en un grupo por LID se
+   * cifra con los LID, y `getKeyAuthor` prefiere el teléfono. Es lo mismo que
+   * dejaba sin abrir casi la mitad de las ediciones (ver `extractSecretEdit`).
+   */
+  type Clave = { participant?: string | null; participantAlt?: string | null;
+    remoteJid?: string | null; remoteJidAlt?: string | null; fromMe?: boolean | null };
+  const formas = (c: Clave, principal: string): string[] => {
+    const enGrupo = c.remoteJid?.endsWith("@g.us");
+    return [...new Set([
+      principal, c.participant, c.participantAlt,
+      ...(enGrupo ? [] : [c.remoteJid, c.remoteJidAlt]), c.fromMe ? propia : undefined,
+    ].filter((x): x is string => Boolean(x) && x !== "me" && !String(x).endsWith("@g.us"))
+      .map((j) => j.replace(/:\d+@/, "@")))].filter((j) => j !== principal);
+  };
+  // La clave de la encuesta viene sin `remoteJid` a veces: es el del sobre.
+  const claveEncuesta = { ...clave, remoteJid: clave.remoteJid || m.key.remoteJid } as Clave;
+
   return {
     poll: { id: clave.id, author: autor },
     voter: votante,
+    alternativas: {
+      authors: formas(claveEncuesta, autor),
+      voters: formas(m.key as Clave, votante),
+    },
     vote: {
       encPayload: enBase64(nodo.vote.encPayload)!,
       encIv: enBase64(nodo.vote.encIv)!,
@@ -1616,6 +1718,36 @@ export function descifrarVoto(
   return (abierto.selectedOptions ?? [])
     .map((h) => porHash.get(Buffer.from(h).toString("hex")))
     .filter((o): o is string => o !== undefined);
+}
+
+/**
+ * Cifra un voto: lo contrario de `descifrarVoto`.
+ *
+ * Lo que viaja es el SHA-256 de cada opción elegida dentro de un
+ * `PollVoteMessage`, en AES-256-GCM con la clave que deriva `decryptPollVote`
+ * —HMAC del secreto con ceros, y HMAC de eso con id, autor, votante y «Poll
+ * Vote»— y el id y el votante como dato adicional. La etiqueta GCM va pegada
+ * al final del cuerpo, que es donde Baileys la busca.
+ */
+export function cifrarVoto(
+  selected: readonly string[],
+  ctx: { pollId: string; pollAuthor: string; voter: string; secret: string },
+): { encPayload: string; encIv: string } {
+  const plano = proto.Message.PollVoteMessage.encode({
+    selectedOptions: selected.map((o) => createHash("sha256").update(o).digest()),
+  }).finish();
+  const hmac = (clave: Buffer, dato: Buffer) =>
+    createHmac("sha256", clave).update(dato).digest();
+  const clave0 = hmac(Buffer.alloc(32), Buffer.from(ctx.secret, "base64"));
+  const clave = hmac(clave0, Buffer.concat([
+    Buffer.from(ctx.pollId), Buffer.from(ctx.pollAuthor), Buffer.from(ctx.voter),
+    Buffer.from("Poll Vote"), Buffer.from([1]),
+  ]));
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", clave, iv);
+  c.setAAD(Buffer.from(`${ctx.pollId}\u0000${ctx.voter}`));
+  const cuerpo = Buffer.concat([c.update(plano), c.final(), c.getAuthTag()]);
+  return { encPayload: cuerpo.toString("base64"), encIv: iv.toString("base64") };
 }
 
 /** La pregunta y las opciones de una encuesta, de su nodo original. */

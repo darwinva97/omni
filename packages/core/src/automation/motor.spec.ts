@@ -37,6 +37,7 @@ class EfectosFalsos implements Efectos {
   readonly estados: string[] = [];
   readonly prioridades: string[] = [];
   readonly webhooks: string[] = [];
+  readonly colgadas: string[] = [];
   readonly registros: RegistroDeDisparo[] = [];
   fallarEn: Action["type"] | null = null;
 
@@ -56,6 +57,9 @@ class EfectosFalsos implements Efectos {
   async cambiarPrioridad(_c: RuleContext, p: string): Promise<void> { this.prioridades.push(p); }
   async llamarWebhook(_c: RuleContext, url: string): Promise<void> {
     this.#quizaFallar("webhook"); this.webhooks.push(url);
+  }
+  async rechazarLlamada(_c: RuleContext, l: { id: string }): Promise<void> {
+    this.colgadas.push(l.id);
   }
   async registrar(r: RegistroDeDisparo): Promise<void> { this.registros.push(r); }
 }
@@ -160,6 +164,28 @@ describe("motor", () => {
     expect(efectos.etiquetas).toEqual(["facturacion"]);
     expect(efectos.enviados[0]!.responderA).toBe("m-1");
     expect(efectos.estados).toEqual(["pending"]);
+  });
+
+  it("una llamada se cuelga y se contesta suelta, sin citar", async () => {
+    // Una llamada no es un mensaje: «responder» a ella no tiene a qué apuntar.
+    const llamada = { ...CTX, event: "call.received" as const, messageId: "CALL1",
+      call: { id: "CALL1", from: "51988777666@s.whatsapp.net", isVideo: false } };
+    const res = await motor.ejecutar([regla({
+      trigger: "call.received",
+      actions: [
+        { type: "reject_call" },
+        { type: "send_message", text: "ahora no podemos atender, escríbenos", asReply: true },
+      ],
+    })], llamada);
+    expect(res.disparadas).toEqual(["r1"]);
+    expect(efectos.colgadas).toEqual(["CALL1"]);
+    expect(efectos.enviados[0]!.responderA).toBeNull();
+  });
+
+  it("colgar sin llamada falla y queda dicho", async () => {
+    const res = await motor.ejecutar([regla({ actions: [{ type: "reject_call" }] })], CTX);
+    expect(res.fallidas).toEqual(["r1"]);
+    expect(efectos.registros.at(-1)!.reason).toContain("llamada");
   });
 
   it("el mismo evento dos veces seguidas solo actúa una", async () => {

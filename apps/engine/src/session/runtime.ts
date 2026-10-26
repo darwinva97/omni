@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   OmniError, parseAddress, tryParseAddress, resolveContent, advanceState, tokensDeMencion,
+  siguienteEstadoDeLlamada, llamadaTerminada, type CallRecord,
   type Address, type ChannelKind, type EventEnvelope, type LineId, type MessageKind,
   type SendMessageInput,
 } from "@omni/shared";
@@ -749,6 +750,8 @@ export class EngineRuntime {
         if (aplicada === null) return;
         envelope = aplicada;
       }
+      // Lo que se publica de una llamada ya lleva en qué quedó y en qué chat.
+      if (envelope.event === "call.received") envelope = await this.#registrarLlamada(envelope);
       // El mapeo LID↔teléfono se aprende ANTES de persistir: si el mensaje se
       // guarda primero y aquí falla algo, el chat queda con un LID que ya no
       // se puede atar a nadie, porque el servidor solo lo dice esta vez.
@@ -1962,6 +1965,85 @@ export class EngineRuntime {
   }
 
   /**
+   * Una llamada en el hilo: una fila que nace al sonar y cambia con cada paso.
+   *
+   * WhatsApp enseña «Llamada de voz perdida» en la conversación, y sin esto
+   * una llamada que nadie vio no dejaba ningún rastro aquí. La fila no tiene
+   * identificador de proveedor: una llamada no es un mensaje, no se cita ni se
+   * reacciona. Su identificador es el de la llamada, que repite cada aviso.
+   *
+   * Devuelve el evento con `chatId` y `call` —el estado ya reducido—, que es
+   * lo que necesitan el panel y quien reciba el webhook.
+   */
+  async #registrarLlamada(envelope: EventEnvelope): Promise<EventEnvelope> {
+    const d = envelope.data as {
+      callId?: string; from?: string; chatId?: string; status?: string;
+      isVideo?: boolean; isGroup?: boolean; offline?: boolean; at?: number; timestamp?: number;
+    };
+    if (!d.callId || !d.from) return envelope;
+    const chat = await this.#conversacionDe(envelope.lineId, parseAddress(d.chatId ?? d.from));
+    const id = `m-${envelope.lineId}-call-${d.callId}`;
+    const [fila] = await this.#deps.db
+      .select({ raw: messageTable.raw })
+      .from(messageTable)
+      .where(and(eq(messageTable.lineId, envelope.lineId), eq(messageTable.id, id)))
+      .limit(1);
+    const previa = (fila?.raw as { call?: CallRecord } | null)?.call;
+
+    const at = d.at ?? d.timestamp ?? envelope.timestamp;
+    const state = siguienteEstadoDeLlamada(previa?.state, d.status, d.offline);
+    const call: CallRecord = {
+      id: d.callId,
+      from: previa?.from ?? d.from,
+      isVideo: Boolean(previa?.isVideo || d.isVideo),
+      isGroup: Boolean(previa?.isGroup || d.isGroup),
+      state,
+      startedAt: previa?.startedAt ?? at,
+      answeredAt: previa?.answeredAt ?? (state === "answered" ? at : null),
+      endedAt: previa?.endedAt ?? (llamadaTerminada(state) ? at : null),
+    };
+
+    if (fila) {
+      await this.#deps.db.update(messageTable)
+        .set({ raw: { call } as never })
+        .where(and(eq(messageTable.lineId, envelope.lineId), eq(messageTable.id, id)));
+    } else {
+      await this.#deps.db.insert(messageTable).values({
+        id, timestamp: new Date(call.startedAt),
+        lineId: envelope.lineId, chatId: chat.value, providerMessageId: null,
+        senderAddress: d.from, fromMe: false, kind: "call", body: null,
+        state: "delivered", raw: { call } as never,
+      }).onConflictDoNothing();
+      // Una llamada entrante cuenta como pendiente, como en WhatsApp: si nadie
+      // la atendió, es lo primero que hay que ver al abrir la conversación.
+      await this.#deps.db.insert(chatTable)
+        .values({
+          id: `c-${envelope.lineId}-${chat.value}`, lineId: envelope.lineId,
+          address: chat.value, kind: chat.kind,
+          lastMessageAt: new Date(call.startedAt), unreadCount: 1,
+        })
+        .onConflictDoUpdate({
+          target: [chatTable.lineId, chatTable.address],
+          set: {
+            lastMessageAt: new Date(call.startedAt),
+            unreadCount: sql`${chatTable.unreadCount} + 1`,
+          },
+        });
+    }
+
+    // El nombre de quien llama, para el aviso: un número no dice si contestar.
+    const nombres = await nombresDe(this.#deps.db, envelope.lineId, [call.from]).catch(() => null);
+    const senderName = nombres?.get(call.from);
+    return {
+      ...envelope,
+      data: {
+        ...(envelope.data as object), chatId: chat.value, messageId: id, call,
+        ...(senderName ? { senderName } : {}),
+      },
+    };
+  }
+
+  /**
    * Guarda un voto de encuesta, descifrándolo primero.
    *
    * La clave sale de la encuesta —de su `messageSecret`, que está en el nodo
@@ -1977,6 +2059,7 @@ export class EngineRuntime {
     const d = envelope.data as {
       poll?: { id?: string; author?: string };
       voter?: string;
+      alternativas?: { authors?: string[]; voters?: string[] };
       vote?: { encPayload: string; encIv: string };
       at?: number;
     };
@@ -2007,14 +2090,25 @@ export class EngineRuntime {
     )?.secret;
     if (!secreto) return;
 
-    let elegidas: string[];
-    try {
-      elegidas = descifrarVoto(d.vote, {
-        pollId: d.poll.id, pollAuthor: d.poll.author, voter: d.voter, secret: secreto,
-      }, encuesta.options);
-    } catch {
-      return;
+    /*
+     * La primera pareja que abra. El GCM no abre a medias: con la clave
+     * equivocada lanza, así que probar no puede dar un voto falso.
+     */
+    const autores = [d.poll.author, ...(d.alternativas?.authors ?? [])];
+    const votantes = [d.voter, ...(d.alternativas?.voters ?? [])];
+    let elegidas: string[] | null = null;
+    for (const pollAuthor of autores) {
+      for (const voter of votantes) {
+        try {
+          elegidas = descifrarVoto(d.vote, {
+            pollId: d.poll.id, pollAuthor, voter, secret: secreto,
+          }, encuesta.options);
+          break;
+        } catch { /* la siguiente */ }
+      }
+      if (elegidas) break;
     }
+    if (!elegidas) return;
 
     /*
      * Se guardan ÍNDICES, no nombres.
