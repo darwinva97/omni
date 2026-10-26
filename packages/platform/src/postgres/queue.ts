@@ -17,6 +17,9 @@ interface Row {
   enqueued_at: Date | string | number;
 }
 
+const MIN_PAUSA_MS = 20;
+const MAX_PAUSA_MS = 500;
+
 function toMillis(v: Date | string | number): number {
   if (v instanceof Date) return v.getTime();
   const parsed = new Date(v).getTime();
@@ -34,6 +37,9 @@ export class PostgresJobQueue implements JobQueue {
   readonly #sql: Sql;
   readonly #leaseSeconds: number;
   readonly #timers = new Set<NodeJS.Timeout>();
+  /** Quien procesa cada cola en este proceso: encolar lo despierta sin esperar a la pausa. */
+  readonly #despiertos = new Map<string, Set<() => void>>();
+  #ultimaPurga = 0;
   #ready: Promise<void> | null = null;
   #closed = false;
 
@@ -78,7 +84,11 @@ export class PostgresJobQueue implements JobQueue {
       ON CONFLICT DO NOTHING
       RETURNING id`;
 
-    if (rows.length > 0) return rows[0]!.id;
+    if (rows.length > 0) {
+      for (const d of this.#despiertos.get(queue) ?? []) d();
+      void this.#purgar();
+      return rows[0]!.id;
+    }
 
     // El índice único rechazó el insert: ya hay un trabajo vivo con esa clave.
     const existing = await this.#sql<{ id: string }[]>`
@@ -93,35 +103,74 @@ export class PostgresJobQueue implements JobQueue {
     const concurrency = opts.concurrency ?? 4;
     let stopped = false;
     let running = 0;
+    /*
+     * Pausa entre consultas: 20 ms mientras hay trabajo y, si no encuentra
+     * nada, el doble cada vez hasta medio segundo. Antes preguntaba cada 20 ms
+     * siempre: con tres colas eran ~150 consultas por segundo a la base sin
+     * un solo mensaje (medido en producción: un 10 % de CPU constante). Lo que
+     * se encola en este proceso despierta la cola al momento (`#despertar`), así
+     * que la espera larga solo la notan los reintentos programados y lo que
+     * encole otro proceso.
+     */
+    let pausa = MIN_PAUSA_MS;
+    let timer: NodeJS.Timeout | null = null;
+    let enMarcha = false;
 
-    const tick = async (): Promise<void> => {
+    const programar = (ms: number): void => {
       if (stopped || this.#closed) return;
-      while (running < concurrency) {
-        const row = await this.#claim(queue).catch(() => null);
-        if (!row) break;
-        running++;
-        /*
-         * Sin nadie que espere esta promesa, un rechazo suyo tumba el proceso.
-         * `#run` captura lo que lance el trabajo, pero no lo que falle al
-         * APUNTAR el resultado —la base caída o cerrándose—. Ese trabajo no se
-         * pierde: su arrendamiento vence y se vuelve a reclamar.
-         */
-        void this.#run(row, handler as JobHandler<unknown>, opts)
-          .catch(() => {})
-          .finally(() => { running--; });
-      }
+      if (timer) { clearTimeout(timer); this.#timers.delete(timer); }
+      timer = setTimeout(() => { timer = null; void tick(); }, ms);
+      this.#timers.add(timer);
     };
 
-    const interval = setInterval(() => void tick(), 20);
-    this.#timers.add(interval);
-    // Si falla, el intervalo lo vuelve a intentar a los 20 ms.
-    void this.#ensure().then(() => tick()).catch(() => {});
+    const tick = async (): Promise<void> => {
+      if (stopped || this.#closed || enMarcha) return;
+      enMarcha = true;
+      let encontrados = 0;
+      try {
+        while (running < concurrency) {
+          const row = await this.#claim(queue).catch(() => null);
+          if (!row) break;
+          encontrados++;
+          running++;
+          /*
+           * Sin nadie que espere esta promesa, un rechazo suyo tumba el proceso.
+           * `#run` captura lo que lance el trabajo, pero no lo que falle al
+           * APUNTAR el resultado —la base caída o cerrándose—. Ese trabajo no se
+           * pierde: su arrendamiento vence y se vuelve a reclamar.
+           */
+          void this.#run(row, handler as JobHandler<unknown>, opts)
+            .catch(() => {})
+            .finally(() => {
+              running--;
+              // Al liberar un hueco puede haber más esperando.
+              pausa = MIN_PAUSA_MS;
+              programar(0);
+            });
+        }
+      } finally {
+        enMarcha = false;
+      }
+      pausa = encontrados > 0 || running >= concurrency ? MIN_PAUSA_MS : Math.min(pausa * 2, MAX_PAUSA_MS);
+      programar(pausa);
+    };
+
+    const despertar = (): void => {
+      pausa = MIN_PAUSA_MS;
+      if (!enMarcha) programar(0);
+    };
+    const lista = this.#despiertos.get(queue) ?? new Set<() => void>();
+    lista.add(despertar);
+    this.#despiertos.set(queue, lista);
+
+    // Si falla, se vuelve a intentar en la siguiente pausa.
+    void this.#ensure().then(() => tick()).catch(() => programar(pausa));
 
     return {
       stop: async () => {
         stopped = true;
-        clearInterval(interval);
-        this.#timers.delete(interval);
+        lista.delete(despertar);
+        if (timer) { clearTimeout(timer); this.#timers.delete(timer); }
         while (running > 0) await new Promise((r) => setTimeout(r, 10));
       },
     };
@@ -198,6 +247,18 @@ export class PostgresJobQueue implements JobQueue {
     }
   }
 
+  /**
+   * Los trabajos terminados se quedaban para siempre (cada foto o audio de
+   * WhatsApp deja uno). Una vez por hora se borran los de más de 7 días: el
+   * índice de reclamo ya los excluía, pero ocupaban disco y copias.
+   */
+  async #purgar(): Promise<void> {
+    const ahora = Date.now();
+    if (ahora - this.#ultimaPurga < 60 * 60_000) return;
+    this.#ultimaPurga = ahora;
+    await this.#sql`DELETE FROM omni_job WHERE done AND run_at < now() - interval '7 days'`.catch(() => {});
+  }
+
   async depth(queue: string): Promise<number> {
     await this.#ensure();
     const rows = await this.#sql<{ n: string }[]>`
@@ -207,7 +268,8 @@ export class PostgresJobQueue implements JobQueue {
 
   async close(): Promise<void> {
     this.#closed = true;
-    for (const t of this.#timers) clearInterval(t);
+    for (const t of this.#timers) clearTimeout(t);
+    this.#despiertos.clear();
     this.#timers.clear();
   }
 }
