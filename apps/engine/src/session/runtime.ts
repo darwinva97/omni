@@ -2097,17 +2097,24 @@ export class EngineRuntime {
     const autores = [d.poll.author, ...(d.alternativas?.authors ?? [])];
     const votantes = [d.voter, ...(d.alternativas?.voters ?? [])];
     let elegidas: string[] | null = null;
+    let pareja: { pollAuthor: string; voter: string } | null = null;
     for (const pollAuthor of autores) {
       for (const voter of votantes) {
         try {
           elegidas = descifrarVoto(d.vote, {
             pollId: d.poll.id, pollAuthor, voter, secret: secreto,
           }, encuesta.options);
+          pareja = { pollAuthor, voter };
           break;
         } catch { /* la siguiente */ }
       }
       if (elegidas) break;
     }
+    // TEMPORAL: qué pareja abrió el voto, para saber cómo cifran los clientes oficiales.
+    console.info(JSON.stringify({
+      traza: "voto-abierto", poll: d.poll.id, autores, votantes,
+      abrio: pareja, voter: d.voter, elegidas,
+    }));
     if (!elegidas) return;
 
     /*

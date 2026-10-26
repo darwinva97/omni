@@ -560,6 +560,14 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
 
     const voto = extractPollVote(m, propia);
     if (voto) {
+      // TEMPORAL: la forma de un voto real, para compararla con los que salen de aquí.
+      this.#logger?.info({
+        traza: "voto-entrante", key: m.key,
+        pollCreationMessageKey: (contenido(m)?.["pollUpdateMessage"] as { pollCreationMessageKey?: unknown })
+          ?.pollCreationMessageKey,
+        campos: Object.keys(contenido(m) ?? {}), voter: voto.voter, author: voto.poll.author,
+        alternativas: voto.alternativas,
+      }, "traza de voto");
       await this.emit("poll.vote", line.orgId, lineId, voto);
       return;
     }
@@ -771,6 +779,8 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     autor = autor ? jidNormalizedUser(autor) : votante;
     if (!votante) throw new OmniError("line_not_connected", `la línea "${lineId}" no está conectada`);
 
+    // TEMPORAL: con qué direcciones se cifra el voto que sale.
+    this.#logger?.info({ traza: "voto-saliente", autor, votante, key: original!.key }, "traza de voto");
     const vote = cifrarVoto(selected, {
       pollId: poll.messageId, pollAuthor: autor, voter: votante, secret: encuesta.secret,
     });
