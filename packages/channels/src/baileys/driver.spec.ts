@@ -372,6 +372,10 @@ describe("votar en una encuesta", () => {
       } };
     };
     expect(jid).toBe(grupo.value);
+    // Sin `polltype="vote"` el servidor lo acepta y no llega a ningún teléfono.
+    expect(fake.relayed[0]!.options).toMatchObject({
+      additionalNodes: [{ tag: "meta", attrs: { polltype: "vote" } }],
+    });
     const nodo = message.pollUpdateMessage;
     expect(nodo.pollCreationMessageKey).toMatchObject({
       id: "ENC1", fromMe: false, participant: "200000000000001@lid",

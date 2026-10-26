@@ -786,7 +786,15 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         },
         senderTimestampMs: Date.now(),
       },
-    }, { messageId: generateMessageIDV2(socket.user?.id) });
+    }, {
+      messageId: generateMessageIDV2(socket.user?.id),
+      /*
+       * El sobre dice que es un VOTO, como hace el cliente oficial (y
+       * whatsmeow). Sin esta marca el servidor acepta el envío sin quejarse y
+       * el voto no aparece en ningún teléfono: pasó en la primera prueba real.
+       */
+      additionalNodes: [{ tag: "meta", attrs: { polltype: "vote" } }],
+    });
   }
 
   async markRead(lineId: LineId, chat: Address, ids: readonly string[]): Promise<void> {
