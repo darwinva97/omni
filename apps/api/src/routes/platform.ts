@@ -164,13 +164,14 @@ export function registerPlatformRoutes(app: OpenAPIHono<any>, container: Contain
       ip: c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
       userAgent: c.req.header("user-agent") ?? null,
     });
-    setCookie(c, "omni_session", token, {
-      httpOnly: true,
-      secure: container.config.PUBLIC_URL.startsWith("https"),
-      sameSite: "Lax",
-      path: "/",
-      maxAge: segundos,
-    });
+    /* Esta entrada se usa DENTRO de la plataforma (un iframe). Con `SameSite=Lax` el navegador no
+       manda la cookie en un iframe de otro sitio (el panel de un revendedor con su dominio) ni en
+       los que aíslan las de terceros (Brave, Safari): Omni enseñaba su pantalla de contraseña, que
+       el cliente no tiene. `None` + `Partitioned` (CHIPS) la deja en el marco y sólo para ese panel. */
+    const https = container.config.PUBLIC_URL.startsWith("https");
+    if (https)
+      setCookie(c, "omni_session", token, { httpOnly: true, secure: true, sameSite: "None", partitioned: true, path: "/", maxAge: segundos });
+    else setCookie(c, "omni_session", token, { httpOnly: true, sameSite: "Lax", path: "/", maxAge: segundos });
     const q = new URLSearchParams();
     if (entrada.tema) q.set("tema", entrada.tema);
     if (entrada.acento) q.set("acento", entrada.acento);
