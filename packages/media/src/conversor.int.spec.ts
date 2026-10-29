@@ -57,7 +57,7 @@ describe("conversión con ffmpeg de verdad", () => {
       "x.webm",
     );
     const r = await conversor.convertir("audio", webm, "audio/webm;codecs=opus");
-    expect(r.mimeType).toBe("audio/ogg");
+    expect(r.mimeType).toBe("audio/ogg; codecs=opus");
 
     // El contenedor es OGG de verdad: empieza por "OggS".
     expect(Buffer.from(r.bytes.slice(0, 4)).toString()).toBe("OggS");

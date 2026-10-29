@@ -43,7 +43,9 @@ export function toBaileysContent(cmd: OutboundCommand): AnyMessageContent {
     case "audio":
       return {
         audio: media(),
-        mimetype: cmd.media?.mimeType ?? "audio/ogg; codecs=opus",
+        // WhatsApp sólo entrega un OGG si se declara con su códec: con «audio/ogg» a secas
+        // (lo que guarda una subida o la conversión) el mensaje se quedaba en «enviado».
+        mimetype: mimeDeAudio(cmd.media?.mimeType),
         // `ptt` es lo que distingue una nota de voz de un fichero de audio.
         ptt: input.ptt ?? false,
       };
@@ -106,4 +108,11 @@ export function toBaileysContent(cmd: OutboundCommand): AnyMessageContent {
     default:
       throw new OmniError("validation_failed", `tipo de contenido no soportado: ${resolved.field}`);
   }
+}
+
+/** El tipo con el que WhatsApp acepta el audio: un OGG siempre como Opus. */
+export function mimeDeAudio(mime: string | undefined): string {
+  if (!mime) return "audio/ogg; codecs=opus";
+  const tipo = mime.split(";")[0]!.trim().toLowerCase();
+  return tipo === "audio/ogg" || tipo === "audio/opus" ? "audio/ogg; codecs=opus" : mime;
 }

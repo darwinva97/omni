@@ -92,7 +92,7 @@ export class Conversor {
   async #audio(entrada: Uint8Array): Promise<Convertido> {
     const copia = await this.#correr(entrada, "entrada", "salida.ogg",
       ["-c:a", "copy", "-f", "ogg"]).catch(() => null);
-    if (copia) return { bytes: copia, mimeType: "audio/ogg" };
+    if (copia) return { bytes: copia, mimeType: "audio/ogg; codecs=opus" };
 
     const recodificado = await this.#correr(entrada, "entrada", "salida.ogg", [
       "-c:a", "libopus",
@@ -101,7 +101,7 @@ export class Conversor {
       "-b:a", "32k", "-ac", "1", "-ar", "48000",
       "-f", "ogg",
     ]);
-    return { bytes: recodificado, mimeType: "audio/ogg" };
+    return { bytes: recodificado, mimeType: "audio/ogg; codecs=opus" };
   }
 
   /** A MP4/H.264, que es lo único que reproducen todos los clientes. */
