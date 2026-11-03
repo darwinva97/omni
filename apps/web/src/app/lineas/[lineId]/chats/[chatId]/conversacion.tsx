@@ -1495,7 +1495,7 @@ export function Conversacion({
           </button>
         </header>
 
-        <ol className="scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
+        <ol className="fondo-chat scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
           {intercalar(conPendientes, notas, {
             desdeElPrincipio: !ventana && iniciales.length < 100,
             hastaElFinal: !ventana,
@@ -1607,7 +1607,7 @@ export function Conversacion({
                     className={`relative max-w-[min(32rem,75%)] ${
                       suelto
                         ? ""
-                        : `rounded-(--radius-burbuja) border px-2.5 py-1.5 ${
+                        : `rounded-(--radius-burbuja) border px-2.5 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] ${
                             m.fromMe
                               ? "border-(--color-propio-borde) bg-(--color-propio)"
                               : "border-(--color-ajeno-borde) bg-(--color-ajeno)"

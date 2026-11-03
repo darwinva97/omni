@@ -431,3 +431,50 @@ body {
     background-color: var(--color-acento-tenue);
   }
 }
+
+/*
+ * El chat con los colores de WhatsApp (2026-11-03).
+ *
+ * Quien atiende pasa el día entre este panel y WhatsApp: con otros colores
+ * tiene que pensar dónde está y qué burbuja es suya. Fondo beige, lo propio en
+ * verde claro, lo ajeno en blanco, y en oscuro el verde y el gris azulado de
+ * WhatsApp. Va al final y con `:root:root` para ganar también al acento de la
+ * plataforma: ese sigue mandando en botones, enlaces y marcas, no en burbujas.
+ */
+:root:root {
+  --color-propio: #d9fdd3;
+  --color-propio-borde: #d9fdd3;
+  --color-ajeno: #ffffff;
+  --color-ajeno-borde: #ffffff;
+  --color-cita-propia: #d1f4cc;
+  --color-cita-ajena: #f5f6f6;
+  --color-lienzo: #efeae2;
+  --color-leido: #53bdeb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:root:not([data-tema="claro"]) {
+    --color-propio: #005c4b;
+    --color-propio-borde: #005c4b;
+    --color-ajeno: #202c33;
+    --color-ajeno-borde: #202c33;
+    --color-cita-propia: #025144;
+    --color-cita-ajena: #1d282f;
+    --color-lienzo: #0b141a;
+  }
+}
+:root:root[data-tema="oscuro"] {
+  --color-propio: #005c4b;
+  --color-propio-borde: #005c4b;
+  --color-ajeno: #202c33;
+  --color-ajeno-borde: #202c33;
+  --color-cita-propia: #025144;
+  --color-cita-ajena: #1d282f;
+  --color-lienzo: #0b141a;
+}
+
+/* El papel de fondo del chat: puntos suaves, dibujados aquí (nada de la
+   ilustración de WhatsApp), para que el beige no parezca un hueco vacío. */
+.fondo-chat {
+  background-image: radial-gradient(color-mix(in oklch, currentColor 7%, transparent) 1px, transparent 1.2px);
+  background-size: 22px 22px;
+}
