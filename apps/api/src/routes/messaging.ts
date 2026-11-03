@@ -3,7 +3,7 @@ import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver } from "@omni/channels";
 import type { Capability } from "@omni/shared";
 import { authorize, route as routeOf } from "@omni/core";
-import { agendaDe, contactTable, lineTable, messageTable } from "@omni/db";
+import { agendaDe, contactTable, lineTable, messageTable, pollTable, pollVoteTable } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
 import type { ApiEnv } from "./shared.js";
@@ -142,6 +142,76 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const driver = await driverOf(lineId);
       exigir(driver, "send.reaction");
       await driver.react!(lineId as LineId, chat, messageId, emoji);
+      return c.json({ data: { ok: true } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "post", path: "/v1/lines/{lineId}/chats/{chatId}/messages/{messageId}/vote",
+      tags: ["mensajes"], summary: "Votar en una encuesta",
+      description:
+        "`options` es el voto ENTERO por nombre de opción, no lo que cambia: " +
+        "sustituye al anterior de esta línea, y una lista vacía lo retira, que es " +
+        "como lo expresa WhatsApp. En una encuesta de una sola respuesta, como " +
+        "mucho una.",
+      request: {
+        params: lineChat.extend({ messageId: z.string() }),
+        ...body(z.object({ options: z.array(z.string()).max(12) })),
+      },
+      responses: { 200: json(Ok, "votado"), ...errors },
+    }),
+    async (c) => {
+      const { lineId, chatId, messageId } = c.req.valid("param");
+      const { options } = c.req.valid("json");
+      const chat = parseAddress(decodeURIComponent(chatId));
+      await authorize(c.get("principal"), routeOf("poll.vote"), { lineId, chat });
+      const driver = await driverOf(lineId);
+      exigir(driver, "poll.vote");
+
+      const [encuesta] = await container.dbh.db
+        .select({ id: pollTable.id, options: pollTable.options, allowMultiple: pollTable.allowMultiple })
+        .from(pollTable)
+        .where(and(eq(pollTable.lineId, lineId), eq(pollTable.providerMessageId, messageId)))
+        .limit(1);
+      if (!encuesta) throw new OmniError("not_found", `no hay ninguna encuesta "${messageId}" en esta línea`);
+
+      const elegidas = [...new Set(options)];
+      const ajenas = elegidas.filter((o) => !encuesta.options.includes(o));
+      if (ajenas.length > 0) {
+        throw new OmniError("validation_failed", `la encuesta no tiene la opción «${ajenas[0]}»`);
+      }
+      if (!encuesta.allowMultiple && elegidas.length > 1) {
+        throw new OmniError("validation_failed", "esta encuesta admite una sola respuesta");
+      }
+
+      const [fila] = await container.dbh.db
+        .select({ raw: messageTable.raw })
+        .from(messageTable)
+        .where(and(eq(messageTable.lineId, lineId), eq(messageTable.providerMessageId, messageId)))
+        .limit(1);
+      await driver.votePoll!(lineId as LineId, chat, {
+        messageId, raw: (fila?.raw as { raw?: unknown } | null)?.raw ?? null,
+      }, elegidas);
+
+      /*
+       * Se apunta ya, con la dirección de la línea, que es con la que el hilo
+       * decide qué es «mío». Un voto enviado desde aquí no vuelve como evento:
+       * sin esto, la marca no aparecería hasta votar desde el teléfono.
+       */
+      const [linea] = await container.dbh.db
+        .select({ address: lineTable.address })
+        .from(lineTable).where(eq(lineTable.id, lineId)).limit(1);
+      if (linea?.address) {
+        const indices = elegidas.map((o) => encuesta.options.indexOf(o));
+        await container.dbh.db
+          .insert(pollVoteTable)
+          .values({ pollId: encuesta.id, voter: linea.address, selected: indices, at: new Date() })
+          .onConflictDoUpdate({
+            target: [pollVoteTable.pollId, pollVoteTable.voter],
+            set: { selected: indices, at: new Date() },
+          });
+      }
       return c.json({ data: { ok: true } }, 200);
     },
   );
@@ -816,6 +886,12 @@ export function registerMessagingRoutes(app: OpenAPIHono<ApiEnv>, container: Con
       const driver = await driverOf(lineId);
       exigir(driver, "call.reject");
       await driver.rejectCall!(lineId as LineId, callId, parseAddress(from));
+      /*
+       * Y se apunta como rechazada por el mismo camino que cualquier aviso de
+       * llamada: Baileys no avisa de lo que cuelga él mismo, y sin esto el
+       * hilo seguiría enseñándola como entrante hasta que sonara la siguiente.
+       */
+      await container.runtime.publish("call.received", lineId, { callId, from, status: "reject" });
       return c.json({ data: { ok: true } }, 200);
     },
   );

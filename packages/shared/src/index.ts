@@ -7,3 +7,4 @@ export * from "./messages.js";
 export * from "./automation.js";
 export * from "./nombres.js";
 export * from "./vcard.js";
+export * from "./llamadas.js";

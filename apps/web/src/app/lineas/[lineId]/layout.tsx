@@ -4,6 +4,7 @@ import { Rail } from "@/componentes/armazon";
 import { ListaChats } from "./lista-chats";
 import { PanelDerecho } from "./panel-derecho";
 import { FranjaDeLineas } from "@/componentes/franja-lineas";
+import { LlamadaEntrante } from "@/componentes/llamada-entrante";
 
 /**
  * Dos columnas: conversaciones a la izquierda, lo que se abra a la derecha.
@@ -54,6 +55,7 @@ export default async function LayoutLinea({
         <div className="shrink-0 md:overflow-hidden md:rounded-2xl empty:hidden">
           <FranjaDeLineas />
         </div>
+        <LlamadaEntrante />
         <div className="flex min-h-0 flex-1 md:gap-2">
           <ListaChats linea={linea} iniciales={chats} />
           <PanelDerecho lineId={lineId}>{children}</PanelDerecho>

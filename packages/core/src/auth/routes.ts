@@ -87,6 +87,8 @@ export const ROUTES = {
   "message.edit": { id: "message.edit", permission: "message.send", scope: "chat", chatSafe: true },
   "message.delete": { id: "message.delete", permission: "message.delete", scope: "chat", chatSafe: true },
   "message.react": { id: "message.react", permission: "message.send", scope: "chat", chatSafe: true },
+  // Votar es responder en el chat, como reaccionar: quien puede escribir ahí, vota.
+  "poll.vote": { id: "poll.vote", permission: "message.send", scope: "chat", chatSafe: true },
   /*
    * Destacar es una nota PERSONAL sobre lo que ya se puede leer: no cambia
    * nada para nadie más, así que basta con poder leer, y es seguro para una

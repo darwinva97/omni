@@ -138,6 +138,12 @@ export const messageKinds = [
    * centrado, como el separador de día.
    */
   "notice",
+  /*
+   * Una llamada, en el hilo donde ocurrió: «Llamada de voz perdida». No la
+   * escribe nadie; la arma el motor con los eventos `call.received`, y su
+   * estado cambia mientras suena.
+   */
+  "call",
 ] as const;
 export const MessageKind = z.enum(messageKinds);
 export type MessageKind = z.infer<typeof MessageKind>;

@@ -15,7 +15,7 @@
  */
 
 export type Disparador =
-  | "message.received" | "message.sent" | "line.connected" | "line.disconnected"
+  | "message.received" | "message.sent" | "line.connected" | "line.disconnected" | "call.received"
   | "conversation.opened" | "conversation.status" | "conversation.assigned" | "label.added";
 
 export type Campo =
@@ -42,6 +42,7 @@ export type Accion =
   | { type: "set_status"; status: "open" | "pending" | "snoozed" | "resolved" }
   | { type: "set_priority"; priority: "low" | "normal" | "high" | "urgent" }
   | { type: "webhook"; url: string; headers?: Record<string, string> }
+  | { type: "reject_call" }
   | { type: "stop" };
 
 export interface Regla {
@@ -76,6 +77,8 @@ export interface Diccionario {
 export const DISPARADORES: { valor: Disparador; texto: string; deMensaje: boolean }[] = [
   { valor: "message.received", texto: "llegue un mensaje", deMensaje: true },
   { valor: "message.sent", texto: "se envíe un mensaje", deMensaje: true },
+  // Al empezar a sonar. Tiene chat, así que se le puede contestar por escrito.
+  { valor: "call.received", texto: "entre una llamada", deMensaje: true },
   { valor: "line.disconnected", texto: "la línea se desconecte", deMensaje: false },
   { valor: "line.connected", texto: "la línea se conecte", deMensaje: false },
 ];
@@ -228,6 +231,7 @@ export const ACCIONES: { tipo: TipoDeAccion; texto: string; deMensaje: boolean }
   { tipo: "assign", texto: "asignar a", deMensaje: true },
   { tipo: "set_status", texto: "marcar la conversación como", deMensaje: true },
   { tipo: "set_priority", texto: "poner prioridad", deMensaje: true },
+  { tipo: "reject_call", texto: "colgar la llamada", deMensaje: true },
   // Lo único que tiene sentido cuando lo que pasa es que la línea se cae: no
   // hay chat al que contestar, pero sí alguien a quien avisar.
   { tipo: "webhook", texto: "avisar a una dirección web (webhook)", deMensaje: false },
@@ -241,6 +245,7 @@ export function accionNueva(tipo: TipoDeAccion): Accion {
     case "set_status": return { type: tipo, status: "resolved" };
     case "set_priority": return { type: tipo, priority: "urgent" };
     case "webhook": return { type: tipo, url: "" };
+    case "reject_call": return { type: tipo };
   }
 }
 
@@ -300,6 +305,7 @@ export function describirAccion(a: Accion, dic: Diccionario): string {
     case "set_status": return `marcar la conversación como ${ESTADOS_TEXTO[a.status] ?? a.status}`;
     case "set_priority": return `poner prioridad ${PRIORIDADES_TEXTO[a.priority] ?? a.priority}`;
     case "webhook": return `avisar a ${a.url}`;
+    case "reject_call": return "colgar la llamada";
     case "stop": return "no seguir con las reglas de después";
   }
 }
@@ -308,7 +314,7 @@ export function describirAccion(a: Accion, dic: Diccionario): string {
 export const ACCION_HECHA: Record<string, string> = {
   send_message: "respondió", add_label: "puso en lista", remove_label: "quitó de lista",
   assign: "asignó", set_status: "cambió el estado", set_priority: "cambió la prioridad",
-  webhook: "avisó al webhook",
+  webhook: "avisó al webhook", reject_call: "colgó",
 };
 
 /** La regla entera en una frase: «Cuando llegue un mensaje que…, → responder…». */
@@ -344,6 +350,12 @@ export function problemasDe(r: Omit<Regla, "id" | "enabled">): string[] {
     if (r.actions.some((a) => a.type !== "stop" && ACCIONES.find((x) => x.tipo === a.type)?.deMensaje)) {
       p.push("Cuando cambia la línea no hay chat al que contestar: lo único que se puede hacer es avisar a una dirección web.");
     }
+  }
+  if (r.trigger !== "call.received" && r.actions.some((a) => a.type === "reject_call")) {
+    p.push("Solo se puede colgar cuando lo que dispara la regla es una llamada.");
+  }
+  if (r.trigger === "call.received" && r.conditions.some((c) => c.field === "text")) {
+    p.push("Una llamada no trae texto: la condición sobre el texto no se cumpliría nunca.");
   }
   const usaListas = r.conditions.some((c) => c.field === "labels" && c.op !== "is_empty")
     || r.actions.some((a) => a.type === "add_label" || a.type === "remove_label");

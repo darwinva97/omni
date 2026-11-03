@@ -18,6 +18,7 @@ export interface Efectos {
   cambiarEstado(ctx: RuleContext, estado: string): Promise<void>;
   cambiarPrioridad(ctx: RuleContext, prioridad: string): Promise<void>;
   llamarWebhook(ctx: RuleContext, url: string, headers: Record<string, string>): Promise<void>;
+  rechazarLlamada(ctx: RuleContext, llamada: NonNullable<RuleContext["call"]>): Promise<void>;
   /** Deja constancia del disparo. Un fallo silencioso es el modo de fallo a evitar. */
   registrar(run: RegistroDeDisparo): Promise<void>;
 }
@@ -156,8 +157,9 @@ export class MotorDeAutomatizacion {
   async #hacer(accion: Action, ctx: RuleContext): Promise<void> {
     switch (accion.type) {
       case "send_message":
+        // Una llamada no es un mensaje al que se pueda citar: se escribe suelto.
         return this.#efectos.enviarMensaje(
-          ctx, accion.text, accion.asReply ? (ctx.messageId ?? null) : null,
+          ctx, accion.text, accion.asReply && !ctx.call ? (ctx.messageId ?? null) : null,
         );
       case "add_label": return this.#efectos.ponerEtiqueta(ctx, accion.labelId);
       case "remove_label": return this.#efectos.quitarEtiqueta(ctx, accion.labelId);
@@ -165,6 +167,9 @@ export class MotorDeAutomatizacion {
       case "set_status": return this.#efectos.cambiarEstado(ctx, accion.status);
       case "set_priority": return this.#efectos.cambiarPrioridad(ctx, accion.priority);
       case "webhook": return this.#efectos.llamarWebhook(ctx, accion.url, accion.headers ?? {});
+      case "reject_call":
+        if (!ctx.call) throw new Error("solo se puede colgar si la regla la dispara una llamada");
+        return this.#efectos.rechazarLlamada(ctx, ctx.call);
       case "stop": return;
     }
   }

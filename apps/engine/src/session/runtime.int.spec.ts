@@ -201,6 +201,42 @@ run("runtime del motor, de punta a punta", () => {
     expect(hook!.headers["x-omni-signature"]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
   });
 
+  it("una llamada deja UNA entrada en el hilo, que sigue sus pasos hasta cómo acabó", async () => {
+    /*
+     * De una llamada llegan varios avisos sueltos. En el hilo tiene que quedar
+     * una sola entrada que diga en qué quedó —aquí, perdida— y el chat tiene
+     * que contarla como pendiente, como hace WhatsApp.
+     */
+    await H.runtime.connect(LINE);
+    await H.driver.scan(asLineId(LINE), "51999888777");
+    const vistos: EventEnvelope[] = [];
+    await H.bus.subscribe(`org:${ORG}`, (e) => void vistos.push(e as EventEnvelope));
+
+    const desde = "51988777666@s.whatsapp.net";
+    for (const status of ["offer", "ringing", "terminate"]) {
+      await H.runtime.publish("call.received", LINE, {
+        callId: "LLAMADA-1", from: desde, chatId: desde, status, isVideo: false, at: 1_800_000_000_000,
+      });
+    }
+
+    const filas = await until(async () => {
+      const f = await h.db.select().from(messageTable)
+        .where(and(eq(messageTable.lineId, LINE), eq(messageTable.kind, "call")));
+      return (f[0]?.raw as { call?: { state?: string } } | null)?.call?.state === "missed" ? f : null;
+    }, "la llamada quede como perdida");
+    expect(filas).toHaveLength(1);
+    expect(filas[0]!.chatId).toBe(desde);
+    expect(filas[0]!.timestamp.getTime()).toBe(1_800_000_000_000);
+
+    const [chat] = await h.db.select().from(chatTable)
+      .where(and(eq(chatTable.lineId, LINE), eq(chatTable.address, desde)));
+    expect(chat?.unreadCount).toBe(1);
+
+    // Lo publicado ya va reducido y con su chat: el panel no rehace la cuenta.
+    const ultimo = vistos.filter((e) => e.event === "call.received").at(-1)!;
+    expect(ultimo.data).toMatchObject({ chatId: desde, call: { state: "missed", id: "LLAMADA-1" } });
+  });
+
   it("una reacción no se cuela en el hilo como si fuera un mensaje", async () => {
     /*
      * WhatsApp entrega la reacción por el mismo canal que los mensajes. Al

@@ -1,9 +1,10 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { MotorDeAutomatizacion, type Efectos, type RegistroDeDisparo } from "@omni/core";
-import { parseAddress, type EventEnvelope, type Rule, type RuleContext, type Trigger } from "@omni/shared";
+import { assertCapability } from "@omni/channels";
+import { parseAddress, type CallRecord, type EventEnvelope, type LineId, type Rule, type RuleContext, type Trigger } from "@omni/shared";
 import {
   automationRuleTable, automationRunTable,
-  labelAssignmentTable, messageTable, type Database,
+  labelAssignmentTable, lineTable, messageTable, type Database,
 } from "@omni/db";
 import type { Kv } from "@omni/platform";
 import type { EngineRuntime } from "@omni/engine";
@@ -22,6 +23,7 @@ const DISPAROS: Partial<Record<string, Trigger>> = {
   "message.sent": "message.sent",
   "session.connected": "line.connected",
   "session.disconnected": "line.disconnected",
+  "call.received": "call.received",
   // `message.upsert` NO está: acompaña a los dos anteriores y dispararía una
   // segunda vez el mismo hecho. La deduplicación lo atraparía, pero no hay que
   // apoyarse en una red de seguridad para algo que se puede no hacer.
@@ -58,6 +60,15 @@ export class Automatizaciones {
   async despachar(envelope: EventEnvelope): Promise<void> {
     const disparo = DISPAROS[envelope.event];
     if (!disparo) return;
+    /*
+     * De una llamada llegan varios avisos —oferta, timbre, transporte…— y la
+     * regla es para cuando EMPIEZA a sonar. Una que ya nació perdida (sonó con
+     * la línea caída) no se puede colgar ni tiene sentido contestarla.
+     */
+    if (disparo === "call.received") {
+      const d = envelope.data as { status?: string; call?: CallRecord };
+      if ((d.status !== undefined && d.status !== "offer") || d.call?.state !== "ringing") return;
+    }
 
     const reglas = await this.#reglasDe(envelope.orgId, disparo, envelope.lineId);
     if (reglas.length === 0) return;
@@ -109,6 +120,7 @@ export class Automatizaciones {
     const chat = (e.data as { chatId?: string }).chatId ?? data.key?.remoteJid;
     if (!chat) return null;
     const direccion = parseAddress(chat);
+    const llamada = event === "call.received" ? (e.data as { call?: CallRecord }).call : undefined;
 
     const conv = await this.#deps.conversaciones.viva(e.lineId, direccion.value);
     const etiquetas = await this.#etiquetasDe(e.lineId, direccion.value);
@@ -125,7 +137,9 @@ export class Automatizaciones {
       priority: conv?.priority ?? null,
       assignee: conv?.assigneeId ?? null,
       at: new Date(e.timestamp),
-      messageId: data.key?.id ?? null,
+      // De una llamada, su identificador: es lo que deduplica sus avisos.
+      messageId: llamada?.id ?? data.key?.id ?? null,
+      ...(llamada ? { call: { id: llamada.id, from: llamada.from, isVideo: llamada.isVideo } } : {}),
       /*
        * Profundidad heredada del mensaje que la originó.
        *
@@ -246,6 +260,20 @@ export class Automatizaciones {
         // Un webhook que responde mal es un FALLO, no un aviso: si se tragara,
         // la regla parecería funcionar mientras el otro extremo no recibe nada.
         if (!res.ok) throw new Error(`el webhook respondió ${res.status}`);
+      },
+
+      rechazarLlamada: async (ctx, llamada) => {
+        const [linea] = await db.select({ kind: lineTable.channelKind })
+          .from(lineTable).where(eq(lineTable.id, ctx.lineId)).limit(1);
+        if (!linea) throw new Error(`la línea "${ctx.lineId}" ya no existe`);
+        const driver = runtime.driverFor(linea.kind);
+        assertCapability(driver, "call.reject");
+        await driver.rejectCall!(ctx.lineId as LineId, llamada.id, parseAddress(llamada.from));
+        // Se apunta como rechazada: Baileys no avisa de lo que cuelga él mismo.
+        await runtime.publish("call.received", ctx.lineId, {
+          callId: llamada.id, from: llamada.from, status: "reject",
+          ...(ctx.chat ? { chatId: ctx.chat } : {}),
+        });
       },
 
       registrar: async (run: RegistroDeDisparo) => {
