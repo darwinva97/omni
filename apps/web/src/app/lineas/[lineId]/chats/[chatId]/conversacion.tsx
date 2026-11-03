@@ -696,6 +696,11 @@ export function Conversacion({
   const menu = useMenu();
   const [sobre, setSobre] = useState<Mensaje | null>(null);
   const [stickers, setStickers] = useState(false);
+  /* Como en WhatsApp: con el campo vacío, el botón de la derecha es el
+     micrófono; en cuanto hay texto, enviar. Y mientras se graba una nota, la
+     barra de la grabación ocupa el sitio del campo. */
+  const [hayTexto, setHayTexto] = useState(false);
+  const [grabandoNota, setGrabandoNota] = useState(false);
   const [reaccionando, setReaccionando] = useState<string | null>(null);
   const [respondiendo, setRespondiendo] = useState<Mensaje | null>(null);
   /*
@@ -720,6 +725,7 @@ export function Conversacion({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`;
+    setHayTexto(el.value.trim().length > 0);
   };
 
   /**
@@ -2152,6 +2158,17 @@ export function Conversacion({
             <Stickers
               lineId={lineId}
               onCerrar={() => setStickers(false)}
+              onEmoji={(emoji) => {
+                const el = campo.current;
+                if (!el) return;
+                // En el cursor, como en WhatsApp, y no siempre al final.
+                const ini = el.selectionStart ?? el.value.length;
+                const fin = el.selectionEnd ?? ini;
+                el.value = el.value.slice(0, ini) + emoji + el.value.slice(fin);
+                el.selectionStart = el.selectionEnd = ini + emoji.length;
+                ajustarAltura();
+                if (!editando) apuntarBorrador();
+              }}
               onElegir={async (storageKey) => {
                 const enviado = await enviarMedio("sticker", storageKey, "", "sticker.webp");
                 if (enviado) {
@@ -2173,6 +2190,8 @@ export function Conversacion({
               e.target.value = "";
             }}
           />
+          {!grabandoNota && (
+            <>
           <BotonNota
             activo={false}
             onClick={() => setModoNotaEn(chat)}
@@ -2193,7 +2212,7 @@ export function Conversacion({
             type="button"
             onClick={() => setStickers((v) => !v)}
             disabled={subiendo || editando !== null}
-            aria-label="Stickers"
+            aria-label="Emojis y stickers"
             aria-expanded={stickers}
             className={`flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 md:size-10 ${
               stickers
@@ -2204,13 +2223,6 @@ export function Conversacion({
             <IconoSticker className="size-5" />
           </button>
 
-          <Grabadora
-            tipo="audio"
-            deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
-            onError={setProblema}
-            onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
-            onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
-          />
           {/*
             El de vídeo, solo en escritorio.
             En 390 píxeles, cuatro botones y el campo de texto no caben: el
@@ -2226,9 +2238,11 @@ export function Conversacion({
               onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
             />
           </span>
-
+            </>
+          )}
           <textarea
             ref={campo}
+            hidden={grabandoNota}
             name="texto"
             rows={1}
             autoComplete="off"
@@ -2301,14 +2315,26 @@ export function Conversacion({
             className="scroll-discreto max-h-48 min-w-0 flex-1 resize-none rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm leading-5 md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
           />
 
-          <button
+          {grabandoNota || (!hayTexto && adjuntos.length === 0 && editando === null) ? (
+            <>
+              <Grabadora
+                tipo="audio"
+                deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
+                onError={setProblema}
+                onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
+                onGrabando={(activo) => { setGrabandoNota(activo); anunciar(activo ? "recording" : "paused"); }}
+              />
+            </>
+          ) : (
+            <button
             disabled={subiendo}
             aria-label={editando ? "Guardar la edición" : "Enviar"}
             title={editando ? "Guardar (Enter)" : undefined}
-            className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-(--color-acento) md:size-10 text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
+            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-(--color-acento) md:size-10 text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
           >
             {editando ? <IconoCheck className="size-5" /> : <IconoEnviar className="size-5" />}
           </button>
+          )}
         </form>
       </div>
 

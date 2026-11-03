@@ -1,5 +1,6 @@
 import type { Medio } from "@/lib/api";
 import { IconoDocumento } from "./iconos";
+import { NotaDeVoz } from "./nota-de-voz";
 import { tamano } from "@/lib/formato";
 
 /**
@@ -84,7 +85,7 @@ export function Medio({ kind, medio, error, onReintentar }: {
   }
 
   if (kind === "audio") {
-    return <audio src={medio.url} controls preload="metadata" className="w-64" />;
+    return <NotaDeVoz medio={medio} />;
   }
 
   return (
