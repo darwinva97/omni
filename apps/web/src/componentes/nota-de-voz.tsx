@@ -83,8 +83,6 @@ export function NotaDeVoz({ medio, quien, pie, reproducida = false }: {
   const [sonando, setSonando] = useState(false);
   const [velocidad, setVelocidad] = useState<(typeof VELOCIDADES)[number]>(1);
   const [escuchada, setEscuchada] = useState(false);
-  // Las notas de voz de WhatsApp son OGG/Opus; un MP3 o M4A es un fichero de audio.
-  const esNota = /ogg|opus|webm/i.test(medio.mimeType);
 
   // La onda sólo cuando la nota se ve: una conversación con cien notas no baja cien audios.
   useEffect(() => {
@@ -190,7 +188,7 @@ export function NotaDeVoz({ medio, quien, pie, reproducida = false }: {
               <IconoMicrofono className="size-6" />
             </span>
           )}
-          {esNota && quien && (
+          {quien && (
             <span
               aria-hidden
               className={`absolute -right-1 -bottom-0.5 ${micEscuchada ? "text-[#53bdeb]" : "text-(--color-acento)"}`}
