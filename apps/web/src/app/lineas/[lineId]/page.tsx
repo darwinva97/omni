@@ -1,5 +1,6 @@
 import { revalidatePath } from "next/cache";
-import { apiFetch, apiFetchAuth, type Linea } from "@/lib/api";
+import { notFound, redirect } from "next/navigation";
+import { apiFetch, apiFetchAuth, ApiError, type Linea } from "@/lib/api";
 import { Qr } from "@/componentes/qr";
 import { Aviso, Estado } from "@/componentes/piezas";
 import { IconoPersona } from "@/componentes/iconos";
@@ -13,21 +14,40 @@ import { RefrescarMientras } from "@/componentes/refrescar-mientras";
  * línea conectada se aparta y deja ver que la columna de al lado es lo que hay
  * que usar.
  */
-export default async function Linea({ params }: { params: Promise<{ lineId: string }> }) {
-  const { lineId } = await params;
+export default async function Linea({
+  params, searchParams,
+}: {
+  params: Promise<{ lineId: string }>;
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const [{ lineId }, { error }] = await Promise.all([params, searchParams]);
 
-  const [lineas, estado] = await Promise.all([
-    apiFetchAuth<Linea[]>("/v1/lines"),
-    apiFetchAuth<{ state: string; qr?: string; self?: string }>(`/v1/lines/${lineId}/status`),
-  ]);
+  const lineas = await apiFetchAuth<Linea[]>("/v1/lines");
   const linea = (lineas as Linea[]).find((l) => l.id === lineId);
+  // Una línea borrada, de otra organización o un enlace viejo: «no existe», no la página rota.
+  if (!linea) notFound();
+  /* Si el estado no se puede leer (el motor reiniciando, la línea a medio crear), se enseña
+     como desconectada con el botón de enlazar: antes la página entera se caía. */
+  const estado = await apiFetchAuth<{ state: string; qr?: string; self?: string }>(`/v1/lines/${lineId}/status`)
+    .catch((e: unknown) => {
+      if (e instanceof ApiError && e.status === 404) notFound();
+      return { state: "disconnected" } as { state: string; qr?: string; self?: string };
+    });
 
   async function conectar(): Promise<void> {
     "use server";
     // Autoriza la API, no esta función: una *server function* es alcanzable
     // por cualquiera que conozca su identificador.
-    await apiFetch(`/v1/lines/${lineId}/connect`, { method: "POST" });
+    let problema: string | null = null;
+    try {
+      await apiFetch(`/v1/lines/${lineId}/connect`, { method: "POST" });
+    } catch (err) {
+      problema = err instanceof ApiError
+        ? (err.status === 409 ? "Esta línea ya se está enlazando: espera al código QR." : err.message)
+        : "No se pudo empezar a enlazar. Vuelve a intentarlo.";
+    }
     revalidatePath(`/lineas/${lineId}`);
+    if (problema) redirect(`/lineas/${lineId}?error=${encodeURIComponent(problema)}`);
   }
 
   const noOficial = linea?.channelKind === "whatsapp.baileys"
@@ -47,6 +67,7 @@ export default async function Linea({ params }: { params: Promise<{ lineId: stri
             </div>
             <Estado estado={estado.state} />
           </div>
+          {error && <div className="mt-4"><Aviso tono="error">{error}</Aviso></div>}
 
           {/* Enlazando o conectando: se vuelve a preguntar hasta que quede conectada (y el QR,
               que caduca, se renueva). */}

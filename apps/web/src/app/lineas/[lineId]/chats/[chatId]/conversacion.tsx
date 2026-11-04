@@ -1536,6 +1536,8 @@ export function Conversacion({
             const esAviso = esAvisoDe(m);
             // Hay texto donde meter la hora: el cuerpo, o el aviso de retirado.
             const conTexto = m.deleted || Boolean(m.body);
+            // Una nota de voz lleva la hora dentro, junto a la duración, como en WhatsApp.
+            const notaSola = m.kind === "audio" && m.media != null && !m.body && !m.deleted;
 
             return (
               <li
@@ -1678,6 +1680,19 @@ export function Conversacion({
                         <Medio
                           kind={m.kind} medio={m.media} error={m.mediaError}
                           onReintentar={() => void reintentarMedio(m)}
+                          quien={m.fromMe
+                            ? { nombre: "Tú", direccion: lineId }
+                            : esGrupo
+                              ? { nombre: m.senderName ?? "?", direccion: m.senderAddress ?? m.id, url: m.senderAvatarUrl ?? null }
+                              : { nombre, direccion: chat, url: info?.avatarUrl ?? null }}
+                          reproducida={m.fromMe && m.state === "played"}
+                          pie={notaSola ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-(--color-apagado)">
+                              {m.starred && <Destacado />}
+                              <time dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                              {m.fromMe && <Acuse estado={m.state} />}
+                            </span>
+                          ) : undefined}
                         />
                         {/* El pie, cuando lo trae: en WhatsApp una foto puede
                             venir con texto y perderlo es perder medio mensaje. */}
@@ -1741,7 +1756,7 @@ export function Conversacion({
                       Cuando no hay texto donde meter la hora —una foto sola, un
                       sticker— va debajo, que es lo único que queda.
                     */}
-                    {(!conTexto || suelto) && (
+                    {(!conTexto || suelto) && !notaSola && (
                       <span
                         className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] text-(--color-apagado) ${
                           suelto ? "pr-1" : ""
@@ -2223,21 +2238,6 @@ export function Conversacion({
             <IconoSticker className="size-5" />
           </button>
 
-          {/*
-            El de vídeo, solo en escritorio.
-            En 390 píxeles, cuatro botones y el campo de texto no caben: el
-            campo se queda en «Escribe un mer». Grabar vídeo es lo menos
-            frecuente de los cuatro y un vídeo se puede adjuntar igual.
-          */}
-          <span className="hidden md:contents">
-            <Grabadora
-              tipo="video"
-              deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
-              onError={setProblema}
-              onGrabado={async (file) => { await mandarFichero(file, "video", ""); }}
-              onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
-            />
-          </span>
             </>
           )}
           <textarea

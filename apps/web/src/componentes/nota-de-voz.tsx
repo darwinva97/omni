@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Medio } from "@/lib/api";
 import { IconoMicrofono } from "./iconos";
+import { Avatar } from "./piezas";
 
 /**
  * Una nota de voz como en WhatsApp: botón redondo, la onda del audio que se
@@ -63,7 +64,15 @@ function reloj(s: number): string {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
 }
 
-export function NotaDeVoz({ medio }: { medio: Medio }) {
+export function NotaDeVoz({ medio, quien, pie, reproducida = false }: {
+  medio: Medio;
+  /** De quién es: su foto va a la izquierda con el micrófono encima, como en WhatsApp. */
+  quien?: { nombre: string; direccion: string; url?: string | null } | undefined;
+  /** La hora y los checks, en la misma fila que la duración (sin otra línea debajo). */
+  pie?: React.ReactNode;
+  /** El otro ya la escuchó (acuse «played»): micrófono azul. */
+  reproducida?: boolean;
+}) {
   const audio = useRef<HTMLAudioElement>(null);
   const caja = useRef<HTMLDivElement>(null);
   // La clave es la dirección sin la firma: la firma cambia y la nota no.
@@ -140,8 +149,10 @@ export function NotaDeVoz({ medio }: { medio: Medio }) {
   const total = duracion ?? 0;
   const avance = total > 0 ? Math.min(1, actual / total) : 0;
 
+  // Micrófono como en WhatsApp: verde sin escuchar, azul ya escuchada.
+  const micEscuchada = reproducida || escuchada;
   return (
-    <div ref={caja} className="flex w-72 max-w-full items-center gap-2.5 py-1 pr-1">
+    <div ref={caja} className="flex w-[19rem] max-w-full items-center gap-2 py-0.5">
       <audio
         ref={audio}
         src={medio.url}
@@ -156,46 +167,58 @@ export function NotaDeVoz({ medio }: { medio: Medio }) {
         onEnded={(e) => { setSonando(false); setActual(0); e.currentTarget.currentTime = 0; }}
       />
 
-      {/* Como en WhatsApp: el micrófono a la izquierda mientras no suena, la
-          velocidad en su sitio mientras suena. */}
+      {/* Mientras suena, la velocidad ocupa el sitio de la foto (como en WhatsApp). */}
       {sonando || velocidad !== 1 ? (
         <button
           type="button"
           onClick={cambiarVelocidad}
           aria-label={`Velocidad ${velocidad}×`}
-          className="flex h-6 w-10 shrink-0 items-center justify-center rounded-full bg-black/10 text-xs font-semibold tabular-nums dark:bg-white/15"
+          className="flex size-12 shrink-0 items-center justify-center"
         >
-          {String(velocidad).replace(".", ",")}×
+          <span className="rounded-full bg-black/10 px-2.5 py-1 text-xs font-semibold tabular-nums dark:bg-white/15">
+            {String(velocidad).replace(".", ",")}×
+          </span>
         </button>
-      ) : esNota ? (
-        <span
-          aria-hidden
-          className={`flex size-10 shrink-0 items-center justify-center rounded-full ${
-            escuchada ? "bg-(--color-acento) text-(--color-sobre-acento)" : "bg-black/10 text-(--color-tenue) dark:bg-white/15"
-          }`}
-        >
-          <IconoMicrofono className="size-5" />
+      ) : (
+        <span className="relative size-12 shrink-0">
+          {quien ? (
+            <span className="block size-12 overflow-hidden rounded-full [&>*]:size-12! [&>*]:text-sm!">
+              <Avatar nombre={quien.nombre} direccion={quien.direccion} kind="pn" tamano="md" url={quien.url ?? null} />
+            </span>
+          ) : (
+            <span className="flex size-12 items-center justify-center rounded-full bg-black/10 text-(--color-tenue) dark:bg-white/15">
+              <IconoMicrofono className="size-6" />
+            </span>
+          )}
+          {esNota && quien && (
+            <span
+              aria-hidden
+              className={`absolute -right-1 -bottom-0.5 ${micEscuchada ? "text-[#53bdeb]" : "text-(--color-acento)"}`}
+            >
+              <IconoMicrofono className="size-5 drop-shadow-[0_0_1.5px_var(--color-panel)]" />
+            </span>
+          )}
         </span>
-      ) : null}
+      )}
 
       <button
         type="button"
         onClick={alternar}
         aria-label={sonando ? "Pausar" : "Reproducir"}
-        className="flex size-9 shrink-0 items-center justify-center rounded-full text-(--color-texto) hover:bg-black/5 dark:hover:bg-white/10"
+        className="flex size-9 shrink-0 items-center justify-center rounded-full text-(--color-tenue) hover:text-(--color-texto)"
       >
         {sonando ? (
-          <svg viewBox="0 0 24 24" className="size-6" fill="currentColor" aria-hidden>
+          <svg viewBox="0 0 24 24" className="size-7" fill="currentColor" aria-hidden>
             <rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" />
           </svg>
         ) : (
-          <svg viewBox="0 0 24 24" className="size-6 translate-x-0.5" fill="currentColor" aria-hidden>
+          <svg viewBox="0 0 24 24" className="size-7 translate-x-0.5" fill="currentColor" aria-hidden>
             <path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5Z" />
           </svg>
         )}
       </button>
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 pt-3">
         <div
           role="slider"
           tabIndex={0}
@@ -205,26 +228,33 @@ export function NotaDeVoz({ medio }: { medio: Medio }) {
           aria-valuenow={Math.round(actual)}
           onClick={saltar}
           onKeyDown={saltar}
-          className="relative flex h-7 cursor-pointer items-center gap-[2px] outline-none focus-visible:ring-2 focus-visible:ring-(--color-acento)"
+          className="relative flex h-6 cursor-pointer items-center gap-[2px] outline-none focus-visible:ring-2 focus-visible:ring-(--color-acento)"
         >
           {onda.map((h, i) => (
             <span
               key={i}
               className={`w-[3px] shrink-0 grow rounded-full transition-colors duration-100 ${
-                (i + 0.5) / onda.length <= avance ? "bg-(--color-acento)" : "bg-current opacity-30"
+                (i + 0.5) / onda.length <= avance
+                  ? micEscuchada ? "bg-[#53bdeb]" : "bg-(--color-acento)"
+                  : "bg-current opacity-30"
               }`}
               style={{ height: `${Math.round(h * 100)}%` }}
             />
           ))}
           <span
             aria-hidden
-            className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-(--color-acento) shadow"
-            style={{ left: `${avance * 100}%` }}
+            className={`pointer-events-none absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow ${
+              micEscuchada ? "bg-[#53bdeb]" : "bg-(--color-acento)"
+            }`}
+            style={{ left: `${Math.max(2, Math.min(98, avance * 100))}%` }}
           />
         </div>
-        <span className="block text-[11px] text-(--color-tenue) tabular-nums">
-          {sonando || actual > 0 ? reloj(actual) : duracion ? reloj(duracion) : "--:--"}
-        </span>
+        <div className="mt-0.5 flex items-center justify-between gap-2">
+          <span className="text-[11px] text-(--color-tenue) tabular-nums">
+            {sonando || actual > 0 ? reloj(actual) : duracion ? reloj(duracion) : "--:--"}
+          </span>
+          {pie}
+        </div>
       </div>
     </div>
   );

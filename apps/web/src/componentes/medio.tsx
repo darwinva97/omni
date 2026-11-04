@@ -11,12 +11,16 @@ import { tamano } from "@/lib/formato";
  * caché y serviría contenido privado desde su propia ruta, además de romperse
  * en cuanto la firma venciera. Aquí no hay nada que optimizar que compense eso.
  */
-export function Medio({ kind, medio, error, onReintentar }: {
+export function Medio({ kind, medio, error, onReintentar, quien, pie, reproducida }: {
   kind: string;
   medio: Medio | null | undefined;
   error: string | null | undefined;
   /** Vuelve a pedir el fichero. Sin esto, un fallo era para siempre. */
   onReintentar?: (() => void) | undefined;
+  /** Para las notas de voz: de quién es, la hora/checks y si ya se escuchó. */
+  quien?: { nombre: string; direccion: string; url?: string | null } | undefined;
+  pie?: React.ReactNode;
+  reproducida?: boolean;
 }) {
   if (!medio) {
     // Sin fichero: o falló, o aún está bajando. Son dos cosas distintas y el
@@ -85,7 +89,7 @@ export function Medio({ kind, medio, error, onReintentar }: {
   }
 
   if (kind === "audio") {
-    return <NotaDeVoz medio={medio} />;
+    return <NotaDeVoz medio={medio} quien={quien} pie={pie} reproducida={reproducida ?? false} />;
   }
 
   return (
