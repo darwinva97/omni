@@ -226,7 +226,7 @@ export function NotaDeVoz({ medio, quien, pie, reproducida = false }: {
           aria-valuenow={Math.round(actual)}
           onClick={saltar}
           onKeyDown={saltar}
-          className="relative flex h-6 cursor-pointer items-center gap-[1.5px] overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-(--color-acento)"
+          className="relative flex h-6 cursor-pointer items-center gap-[1.5px] pl-1.5 outline-none focus-visible:ring-2 focus-visible:ring-(--color-acento)"
         >
           {onda.map((h, i) => (
             <span
