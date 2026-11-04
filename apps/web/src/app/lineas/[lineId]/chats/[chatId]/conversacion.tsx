@@ -701,6 +701,16 @@ export function Conversacion({
      barra de la grabación ocupa el sitio del campo. */
   const [hayTexto, setHayTexto] = useState(false);
   const [grabandoNota, setGrabandoNota] = useState(false);
+  /* La foto del propio número, para las notas de voz propias (sin ella salía una «T» de «Tú»). */
+  const [fotoPropia, setFotoPropia] = useState<string | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    void fetch(`/api/omni/v1/lines/${encodeURIComponent(lineId)}/avatar`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { data?: { url?: string | null } } | null) => { if (vivo) setFotoPropia(j?.data?.url ?? null); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [lineId]);
   const [reaccionando, setReaccionando] = useState<string | null>(null);
   const [respondiendo, setRespondiendo] = useState<Mensaje | null>(null);
   /*
@@ -1681,7 +1691,7 @@ export function Conversacion({
                           kind={m.kind} medio={m.media} error={m.mediaError}
                           onReintentar={() => void reintentarMedio(m)}
                           quien={m.fromMe
-                            ? { nombre: "Tú", direccion: lineId }
+                            ? { nombre: "Tú", direccion: lineId, url: fotoPropia }
                             : esGrupo
                               ? { nombre: m.senderName ?? "?", direccion: m.senderAddress ?? m.id, url: m.senderAvatarUrl ?? null }
                               : { nombre, direccion: chat, url: info?.avatarUrl ?? null }}

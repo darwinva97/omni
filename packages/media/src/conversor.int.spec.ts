@@ -75,6 +75,28 @@ describe("conversión con ffmpeg de verdad", () => {
     await rm(dir, { recursive: true, force: true });
   }, 60_000);
 
+  it("una nota de voz se recodifica SIEMPRE a Opus mono 48 kHz, aunque ya sea ogg estéreo", async () => {
+    if (!hay) return;
+    // Un ogg/opus «raro»: estéreo, 24 kHz de origen y a 96 kbps, como sale de algunos grabadores.
+    const ogg = await fabricar(
+      ["-f", "lavfi", "-i", "sine=frequency=300:duration=2", "-ac", "2", "-ar", "24000",
+       "-c:a", "libopus", "-b:a", "96k", "-f", "ogg"],
+      "x.ogg",
+    );
+    const r = await conversor.convertir("audio", ogg, "audio/ogg", { notaDeVoz: true });
+    expect(r.mimeType).toBe("audio/ogg; codecs=opus");
+    const dir = await mkdtemp(join(tmpdir(), "omni-chk-"));
+    const f = join(dir, "y.ogg");
+    await (await import("node:fs/promises")).writeFile(f, r.bytes);
+    const { stdout } = await ejecutar(
+      FFMPEG.replace(/ffmpeg$/, "ffprobe"),
+      ["-hide_banner", "-loglevel", "error", "-show_entries", "stream=codec_name,channels,sample_rate",
+       "-of", "default=nw=1:nk=1", f],
+    );
+    expect(stdout.trim().split("\n")).toEqual(["opus", "48000", "1"]);
+    await rm(dir, { recursive: true, force: true });
+  }, 60_000);
+
   it("un vídeo webm pasa a mp4 con H.264 y el índice delante", async () => {
     if (!hay) return;
     const webm = await fabricar(

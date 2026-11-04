@@ -307,6 +307,42 @@ export class EngineRuntime {
     return this.driverFor(line.channelKind).status(lineId as LineId);
   }
 
+  /** Foto de perfil del PROPIO número, ya guardada: clave del almacén y cuándo se pidió. */
+  readonly #fotosPropias = new Map<string, { clave: string | null; en: number }>();
+
+  /**
+   * La foto de perfil del propio número (2026-11-04): las notas de voz y los mensajes propios
+   * salían con una «T» de «Tú» porque sólo se guardaban las fotos de los contactos. Se pide a
+   * WhatsApp como mucho cada 6 h por línea y se guarda en el almacén; sin foto, `null`.
+   */
+  async fotoPropia(lineId: string): Promise<string | null> {
+    const hay = this.#fotosPropias.get(lineId);
+    if (hay && this.#now() - hay.en < 6 * 3600_000) return hay.clave;
+    const line = await this.#line(lineId);
+    const driver = this.driverFor(line.channelKind);
+    let clave: string | null = null;
+    try {
+      const self = (await driver.status(lineId as LineId) as { self?: string }).self;
+      const url = self && driver.profilePictureUrl
+        ? await driver.profilePictureUrl(lineId as LineId, parseAddress(self))
+        : null;
+      if (url) {
+        const res = await (this.#deps.fetchImpl ?? fetch)(url);
+        const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : new Uint8Array();
+        if (bytes.byteLength > 0) {
+          const k = mediaKey({ orgId: line.orgId, lineId, messageId: "avatar-propio", fileName: "avatar.jpg" });
+          clave = (await this.#deps.storage.put(k, bytes, {
+            mimeType: res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg",
+          })).key;
+        }
+      }
+    } catch {
+      clave = hay?.clave ?? null;
+    }
+    this.#fotosPropias.set(lineId, { clave, en: this.#now() });
+    return clave;
+  }
+
   async #setStatus(lineId: string, state: string): Promise<void> {
     await this.#deps.db
       .update(lineTable)
@@ -436,10 +472,12 @@ export class EngineRuntime {
      * recibiría un 202 y el fallo aparecería un minuto después donde nadie
      * mira. Aquí se puede decir que no con el motivo.
      */
+    // Una nota de voz se recodifica siempre (ver Conversor#notaDeVoz); el resto, sólo si hace falta.
+    const notaDeVoz = content.field === "audio" && (input as { ptt?: boolean }).ptt === true;
     const convertido = media && this.#deps.conversor
-      && necesitaConversion(content.field, media.mimeType)
+      && (notaDeVoz || necesitaConversion(content.field, media.mimeType))
       ? await this.#convertirMedio(
-          content.field, media, { orgId: line.orgId, lineId, messageId },
+          content.field, media, { orgId: line.orgId, lineId, messageId }, notaDeVoz,
         )
       : media;
 
@@ -1120,8 +1158,9 @@ export class EngineRuntime {
     campo: string,
     medio: NonNullable<Awaited<ReturnType<typeof resolveMedia>>>,
     ctx: { orgId: string; lineId: string; messageId: string },
+    notaDeVoz = false,
   ): Promise<NonNullable<Awaited<ReturnType<typeof resolveMedia>>>> {
-    const r = await this.#deps.conversor!.convertir(campo, medio.bytes, medio.mimeType);
+    const r = await this.#deps.conversor!.convertir(campo, medio.bytes, medio.mimeType, { notaDeVoz });
     const extension = r.mimeType === "audio/ogg" ? "ogg"
       : r.mimeType === "video/mp4" ? "mp4"
       : r.mimeType === "image/webp" ? "webp" : "bin";

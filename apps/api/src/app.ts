@@ -892,6 +892,21 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
 
   app.openapi(
     createRoute({
+      method: "get", path: "/v1/lines/{lineId}/avatar", tags: ["líneas"],
+      summary: "Foto de perfil del propio número",
+      request: { params: z.object({ lineId: z.string() }) },
+      responses: { 200: json(z.object({ data: z.object({ url: z.string().nullable() }) }), "ok"), ...errors },
+    }),
+    async (c) => {
+      const principal = c.get("principal");
+      const { lineId } = c.req.valid("param");
+      await authorize(principal, routeOf("line.status"), { lineId });
+      return c.json({ data: { url: await urlDeAvatar(container, await container.runtime.fotoPropia(lineId)) } }, 200);
+    },
+  );
+
+  app.openapi(
+    createRoute({
       method: "get", path: "/v1/lines/{lineId}/status", tags: ["líneas"],
       summary: "Estado de conexión de una línea",
       request: { params: z.object({ lineId: z.string() }) },
