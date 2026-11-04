@@ -226,12 +226,12 @@ export function NotaDeVoz({ medio, quien, pie, reproducida = false }: {
           aria-valuenow={Math.round(actual)}
           onClick={saltar}
           onKeyDown={saltar}
-          className="relative flex h-6 cursor-pointer items-center gap-[2px] outline-none focus-visible:ring-2 focus-visible:ring-(--color-acento)"
+          className="relative flex h-6 cursor-pointer items-center gap-[1.5px] overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-(--color-acento)"
         >
           {onda.map((h, i) => (
             <span
               key={i}
-              className={`w-[3px] shrink-0 grow rounded-full transition-colors duration-100 ${
+              className={`min-w-px max-w-[3px] flex-1 rounded-full transition-colors duration-100 ${
                 (i + 0.5) / onda.length <= avance
                   ? micEscuchada ? "bg-[#53bdeb]" : "bg-(--color-acento)"
                   : "bg-current opacity-30"
