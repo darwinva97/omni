@@ -322,8 +322,12 @@ export class EngineRuntime {
     const driver = this.driverFor(line.channelKind);
     let clave: string | null = null;
     try {
-      const self = (await driver.status(lineId as LineId) as { self?: string }).self;
-      const url = self && driver.profilePictureUrl
+      // `self` es una dirección ({ value }), y puede traer el dispositivo («549…:5@s.whatsapp.net»):
+      // WhatsApp sólo da la foto del número, sin él.
+      const crudo = (await driver.status(lineId as LineId) as { self?: string | { value?: string } }).self;
+      const valor = typeof crudo === "string" ? crudo : crudo?.value;
+      const self = valor ? valor.replace(/:\d+@/, "@") : null;
+      const url = self && !self.startsWith("0@") && driver.profilePictureUrl
         ? await driver.profilePictureUrl(lineId as LineId, parseAddress(self))
         : null;
       if (url) {
