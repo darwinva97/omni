@@ -398,6 +398,32 @@ export class EngineRuntime {
     input: SendMessageInput,
     actor: { userId?: string; connectorId?: string } = {},
   ): Promise<SendAccepted> {
+    /*
+     * Vigía de envíos lentos (2026-11-05). Aceptar un envío son unas pocas consultas y, si lleva
+     * medio, leerlo y convertirlo: décimas de segundo. Dos notas de voz desde la app se quedaron
+     * más de 20 s aquí dentro sin dejar rastro de en qué paso. Si vuelve a pasar, el registro dice
+     * cuál es, cada 5 s mientras dure.
+     */
+    const estado = { paso: "inicio", t0: Date.now() };
+    const vigia = setInterval(() => {
+      console.warn(JSON.stringify({
+        evento: "envio-lento", lineId, paso: estado.paso, ms: Date.now() - estado.t0,
+      }));
+    }, 5000);
+    try {
+      return await this.#send(lineId, input, actor, (paso) => { estado.paso = paso; });
+    } finally {
+      clearInterval(vigia);
+    }
+  }
+
+  async #send(
+    lineId: string,
+    input: SendMessageInput,
+    actor: { userId?: string; connectorId?: string },
+    paso: (p: string) => void,
+  ): Promise<SendAccepted> {
+    paso("linea");
     const line = await this.#line(lineId);
     const driver = this.driverFor(line.channelKind);
 
@@ -435,6 +461,7 @@ export class EngineRuntime {
      * entre peticiones simultáneas, y una consulta a la tabla cubre el caso de
      * que el KV se haya perdido o caducado.
      */
+    paso("idempotencia");
     const existing = await this.#findByClientId(lineId, clientMessageId);
     if (existing) return { clientMessageId, messageId: existing, state: "queued" };
 
@@ -447,6 +474,7 @@ export class EngineRuntime {
      * siguiente envío con ese mismo identificador se tragaba en silencio: ni se
      * insertaba ni se encolaba, y el cliente recibía un 202 por nada.
      */
+    paso("reserva");
     const reserved = await this.#deps.kv.setIfAbsent(
       `idem:${lineId}:${clientMessageId}`, messageId, IDEMPOTENCY_RESERVE_SECONDS,
     );
@@ -465,6 +493,7 @@ export class EngineRuntime {
      * Y el envío deja de depender de que el servidor ajeno siga en pie cuando
      * al trabajo le toque el turno.
      */
+    paso("leer-medio");
     const media = await resolveMedia(input, { orgId: line.orgId, lineId, messageId }, {
       storage: this.#deps.storage,
     });
@@ -477,6 +506,7 @@ export class EngineRuntime {
      * mira. Aquí se puede decir que no con el motivo.
      */
     // Una nota de voz se recodifica siempre (ver Conversor#notaDeVoz); el resto, sólo si hace falta.
+    paso("convertir");
     const notaDeVoz = content.field === "audio" && (input as { ptt?: boolean }).ptt === true;
     const convertido = media && this.#deps.conversor
       && (notaDeVoz || necesitaConversion(content.field, media.mimeType))
@@ -493,8 +523,10 @@ export class EngineRuntime {
      * de alguien cuyo chat está abierto por su LID creaba un segundo chat con
      * la misma persona, con ese único mensaje dentro.
      */
+    paso("conversacion");
     const enChat = await this.#conversacionDe(lineId, to);
 
+    paso("guardar");
     const inserted = await this.#deps.db
       .insert(messageTable)
       .values({
@@ -546,6 +578,7 @@ export class EngineRuntime {
         set: { lastMessageAt: new Date(this.#now()), unreadCount: 0 },
       });
 
+    paso("encolar");
     await this.#deps.queue.enqueue<OutboundJob>(
       OUTBOUND_QUEUE,
       {
