@@ -1,12 +1,12 @@
 # Despliegue
 
-Omni corre en el clúster **k3s** de bezenti, gestionado por **ArgoCD** desde
-`darwinva97/bezenti-gitops` (`apps/omni`), en https://omni.bezenti.com.
+Omni corre en el clúster **k3s** de bezenti en Contabo, gestionado por **ArgoCD** desde
+`darwinva97/infra-contabo` (`manifiestos/omni`), en https://omni.bezenti.com.
 
 ```
-push a main ─▶ CI (runner k3s-omni) ─▶ verde ─▶ k3s image: docker build del mismo commit
+push a main ─▶ CI (GitHub Actions) ─▶ verde ─▶ k3s image: docker build del mismo commit
                                    │                (pnpm test dentro) ─▶ ghcr.io/darwinva97/omni:sha-xxxxxxx
-                                   │             └▶ anota el tag en bezenti-gitops ─▶ ArgoCD lo despliega
+                                   │             └▶ anota el tag en infra-contabo ─▶ ArgoCD lo despliega
                                    └▶ rojo ─▶ no se construye nada, no sale nada
 ```
 
@@ -23,9 +23,9 @@ la API conviene subirlos en horas tranquilas.
 |---|---|
 | API (`node apps/api/dist/main.js`) | Deployment `omni-api`, **1 réplica, `Recreate`**: dos procesos a la vez pelearían por las mismas sesiones de WhatsApp. Escucha en `0.0.0.0` (`HOST`). |
 | Panel (`next start`) | Deployment `omni-web` |
-| Postgres | `pg-shared` compartido, base y rol `omni`. Las migraciones se aplican al arrancar la API. |
-| Medios | RustFS, bucket `omni-media`. Los bytes van por la red interna (`S3_ENDPOINT`); las URLs de descarga se firman contra `S3_PUBLIC_ENDPOINT` (`https://s3.bezenti.com`). |
-| Secretos | OpenBao: `omni/master-key`, `omni/oidc`, `databases/pg-shared/omni`, `s3/omni` |
+| Postgres | Instancia compartida de aplicaciones `datos/pg-apps`, base y rol `omni` (Secret `pg-omni`). Las migraciones se aplican al arrancar la API. |
+| Medios | Garage, bucket `omni-media`. Los bytes van por la red interna (`S3_ENDPOINT`); las URLs de descarga se firman contra `S3_PUBLIC_ENDPOINT` (`https://s3.bezenti.com`). |
+| Secretos | Secrets de Kubernetes generados en el clúster: `omni-master` (clave maestra), `omni-oidc`, `pg-omni`, `omni-s3` |
 | Rutas | Un solo nombre: `/v1`, `/health`, `/docs`, `/openapi.json`, `/compat` y `/mcp` van a la API; el resto, al panel |
 
 Una sola imagen sirve para las dos piezas; cambia el comando:
