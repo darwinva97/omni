@@ -1136,3 +1136,133 @@ describe("reenviar", () => {
     )).rejects.toThrow(/whatsapp\.web/);
   });
 });
+
+describe("volcado del historial", () => {
+  const pn = (i: number): string => `5197${String(i).padStart(7, "0")}@s.whatsapp.net`;
+  const lid = (i: number): string => `${8000000 + i}@lid`;
+
+  /** El volcado tal como lo arma Baileys: miles de chats con sus mensajes. */
+  function volcado(contactos: number, mensajesPorChat = 5): Record<string, unknown> {
+    const contacts = [];
+    const lidPnMappings = [];
+    const messages = [];
+    for (let c = 0; c < contactos; c++) {
+      contacts.push({ id: pn(c), name: `Contacto ${c}`, lid: lid(c), phoneNumber: pn(c) });
+      // La misma pareja que ya trae el contacto, dos veces: así llega.
+      lidPnMappings.push({ lid: lid(c), pn: pn(c) }, { lid: lid(c), pn: pn(c) });
+      for (let m = 0; m < mensajesPorChat; m++) {
+        messages.push({
+          key: { remoteJid: pn(c), fromMe: m % 2 === 0, id: `V${c}-${m}` },
+          messageTimestamp: 1_700_000_000 + m,
+          message: { conversation: `viejo ${m}` },
+        });
+      }
+    }
+    // Y parejas que solo vienen sueltas, sin contacto que las traiga.
+    for (let c = contactos; c < contactos + 500; c++) lidPnMappings.push({ lid: lid(c), pn: pn(c) });
+    return { chats: [], contacts, messages, lidPnMappings, syncType: 2, progress: 100, isLatest: true };
+  }
+
+  async function hasta(cond: () => boolean, ms = 20_000): Promise<void> {
+    const limite = Date.now() + ms;
+    while (!cond()) {
+      if (Date.now() > limite) throw new Error("no terminó a tiempo");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  it("se ingiere por lotes, cediendo el turno, sin perder ni repetir nada", async () => {
+    const { driver, fake } = await conectado();
+    const CONTACTOS = 20_000;
+    const payload = volcado(CONTACTOS);
+
+    /*
+     * Un suscriptor que no espera a nada es el peor caso: sin lotes, los
+     * cuarenta mil eventos correrían de un tirón. Cuenta cuántos llegan entre
+     * dos turnos del event loop y cuántos están en vuelo a la vez.
+     */
+    const porDireccion = new Map<string, number>();
+    let enVuelo = 0;
+    let maxEnVuelo = 0;
+    let desdeElTurno = 0;
+    let maxEntreTurnos = 0;
+    let mensajes = 0;
+    driver.subscribe(async (e) => {
+      if (e.event.startsWith("message.")) mensajes++;
+      if (e.event !== "contact.updated") return;
+      enVuelo++;
+      maxEnVuelo = Math.max(maxEnVuelo, enVuelo);
+      desdeElTurno++;
+      const d = e.data as { address: string; lid?: string };
+      const clave = `${d.address}|${d.lid ?? ""}`;
+      porDireccion.set(clave, (porDireccion.get(clave) ?? 0) + 1);
+      await Promise.resolve();
+      enVuelo--;
+    });
+    let midiendo = true;
+    const turno = (): void => {
+      maxEntreTurnos = Math.max(maxEntreTurnos, desdeElTurno);
+      desdeElTurno = 0;
+      if (midiendo) setImmediate(turno);
+    };
+    setImmediate(turno);
+
+    const t0 = performance.now();
+    fake.emitRaw("messaging-history.set", payload);
+    const sincrono = performance.now() - t0;
+    // El oyente de Baileys solo encola: nada se ingiere dentro del `emit`.
+    expect(porDireccion.size).toBe(0);
+    expect(sincrono).toBeLessThan(100);
+
+    const esperados = CONTACTOS + 500;
+    await hasta(() => porDireccion.size >= esperados);
+    await new Promise((r) => setTimeout(r, 50));
+    midiendo = false;
+
+    // Cada contacto y cada pareja suelta, una vez; las repetidas, ninguna más.
+    expect(porDireccion.size).toBe(esperados);
+    expect([...porDireccion.values()].every((n) => n === 1)).toBe(true);
+    expect(porDireccion.get(`${pn(CONTACTOS + 10)}|${lid(CONTACTOS + 10)}`)).toBe(1);
+    // Los mensajes del volcado siguen sin ingerirse como si fueran nuevos.
+    expect(mensajes).toBe(0);
+    expect(maxEnVuelo).toBeLessThanOrEqual(4);
+    expect(maxEntreTurnos).toBeLessThanOrEqual(100);
+  });
+
+  it("un cambio que llega durante el volcado no se adelanta a él", async () => {
+    const { driver, fake } = await conectado();
+    const nombres: string[] = [];
+    driver.subscribe((e) => {
+      const d = e.data as { address?: string; savedName?: string | null };
+      if (e.event === "contact.updated" && d.address === pn(4999) && d.savedName) nombres.push(d.savedName);
+    });
+
+    fake.emitRaw("messaging-history.set", volcado(5000, 0));
+    fake.emitRaw("contacts.update", [{ id: pn(4999), name: "Nombre nuevo" }]);
+
+    await hasta(() => nombres.length >= 2);
+    // El del volcado es más viejo: si llegara el último, pisaría al nuevo.
+    expect(nombres).toEqual(["Contacto 4999", "Nombre nuevo"]);
+  });
+
+  it("los cambios de chat en bloque también van por lotes, uno por chat", async () => {
+    const { driver, fake } = await conectado();
+    const porChat = new Map<string, Record<string, unknown>[]>();
+    driver.subscribe((e) => {
+      if (e.event !== "chat.updated") return;
+      const d = e.data as { chat: string };
+      porChat.set(d.chat, [...(porChat.get(d.chat) ?? []), d]);
+    });
+
+    const cambios = Array.from({ length: 3000 }, (_, i) => ({ id: pn(i), archived: true }));
+    // El mismo chat dos veces en el mismo bloque: se funde, el último gana.
+    cambios.push({ id: pn(0), muteEndTime: 0 } as never);
+    fake.emitRaw("chats.update", cambios);
+    expect(porChat.size).toBe(0);
+
+    await hasta(() => porChat.size >= 3000);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(porChat.get(pn(0))).toEqual([{ chat: pn(0), archived: true, mutedUntil: null }]);
+    expect([...porChat.values()].every((v) => v.length === 1)).toBe(true);
+  });
+});
