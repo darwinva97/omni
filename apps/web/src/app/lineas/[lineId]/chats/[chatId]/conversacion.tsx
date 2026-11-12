@@ -696,6 +696,21 @@ export function Conversacion({
   const menu = useMenu();
   const [sobre, setSobre] = useState<Mensaje | null>(null);
   const [stickers, setStickers] = useState(false);
+  /* Como en WhatsApp: con el campo vacío, el botón de la derecha es el
+     micrófono; en cuanto hay texto, enviar. Y mientras se graba una nota, la
+     barra de la grabación ocupa el sitio del campo. */
+  const [hayTexto, setHayTexto] = useState(false);
+  const [grabandoNota, setGrabandoNota] = useState(false);
+  /* La foto del propio número, para las notas de voz propias (sin ella salía una «T» de «Tú»). */
+  const [fotoPropia, setFotoPropia] = useState<string | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    void fetch(`/api/omni/v1/lines/${encodeURIComponent(lineId)}/avatar`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { data?: { url?: string | null } } | null) => { if (vivo) setFotoPropia(j?.data?.url ?? null); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [lineId]);
   const [reaccionando, setReaccionando] = useState<string | null>(null);
   const [respondiendo, setRespondiendo] = useState<Mensaje | null>(null);
   /*
@@ -720,6 +735,7 @@ export function Conversacion({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`;
+    setHayTexto(el.value.trim().length > 0);
   };
 
   /**
@@ -1355,6 +1371,39 @@ export function Conversacion({
 
   const esGrupo = info?.kind === "group";
   const nombre = info?.displayName ?? chat;
+
+  /*
+   * Dentro de una plataforma (BePanel abre este panel en un iframe con su asistente IA al lado):
+   * se le dice qué chat está abierto, para que la IA sepa de cuál le hablan, y se acepta un texto
+   * suyo en la caja de mensaje — la IA propone, la persona lo revisa y pulsa enviar. Sólo de la
+   * ventana que aloja el panel, y nunca se envía solo.
+   */
+  useEffect(() => {
+    if (window.parent === window) return;
+    window.parent.postMessage({ tipo: "omni-chat", linea: lineId, chat, nombre, grupo: esGrupo }, "*");
+  }, [lineId, chat, nombre, esGrupo]);
+  useEffect(() => {
+    if (window.parent === window) return;
+    const alMensaje = (e: MessageEvent) => {
+      if (e.source !== window.parent || !e.data || e.data.tipo !== "bepanel-borrador") return;
+      const texto = typeof e.data.texto === "string" ? e.data.texto.slice(0, 4096) : "";
+      const c = campo.current;
+      if (!texto || !c || editando) return;
+      c.value = texto;
+      ajustarAltura();
+      apuntarBorrador();
+      c.focus();
+      c.setSelectionRange(texto.length, texto.length);
+    };
+    window.addEventListener("message", alMensaje);
+    return () => window.removeEventListener("message", alMensaje);
+  });
+  useEffect(
+    () => () => {
+      if (window.parent !== window) window.parent.postMessage({ tipo: "omni-chat", linea: lineId, chat: null }, "*");
+    },
+    [lineId, chat],
+  );
   const detalleFijo = info?.phone
     ? `+${info.phone.split("@")[0]}`
     : info?.kind === "group" ? "Grupo" : chat;
@@ -1456,7 +1505,7 @@ export function Conversacion({
           </button>
         </header>
 
-        <ol className="scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
+        <ol className="fondo-chat scroll-discreto flex-1 space-y-0.5 overflow-y-auto bg-(--color-lienzo) px-4 py-4 md:px-10">
           {intercalar(conPendientes, notas, {
             desdeElPrincipio: !ventana && iniciales.length < 100,
             hastaElFinal: !ventana,
@@ -1497,6 +1546,8 @@ export function Conversacion({
             const esAviso = esAvisoDe(m);
             // Hay texto donde meter la hora: el cuerpo, o el aviso de retirado.
             const conTexto = m.deleted || Boolean(m.body);
+            // Una nota de voz lleva la hora dentro, junto a la duración, como en WhatsApp.
+            const notaSola = m.kind === "audio" && m.media != null && !m.body && !m.deleted;
 
             return (
               <li
@@ -1568,7 +1619,7 @@ export function Conversacion({
                     className={`relative max-w-[min(32rem,75%)] ${
                       suelto
                         ? ""
-                        : `rounded-(--radius-burbuja) border px-2.5 py-1.5 ${
+                        : `rounded-(--radius-burbuja) border px-2.5 py-1.5 shadow-[0_1px_0.5px_rgba(11,20,26,0.13)] ${
                             m.fromMe
                               ? "border-(--color-propio-borde) bg-(--color-propio)"
                               : "border-(--color-ajeno-borde) bg-(--color-ajeno)"
@@ -1639,6 +1690,19 @@ export function Conversacion({
                         <Medio
                           kind={m.kind} medio={m.media} error={m.mediaError}
                           onReintentar={() => void reintentarMedio(m)}
+                          quien={m.fromMe
+                            ? { nombre: "Tú", direccion: lineId, url: fotoPropia }
+                            : esGrupo
+                              ? { nombre: m.senderName ?? "?", direccion: m.senderAddress ?? m.id, url: m.senderAvatarUrl ?? null }
+                              : { nombre, direccion: chat, url: info?.avatarUrl ?? null }}
+                          reproducida={m.fromMe && m.state === "played"}
+                          pie={notaSola ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-(--color-apagado)">
+                              {m.starred && <Destacado />}
+                              <time dateTime={m.timestamp}>{hora(m.timestamp)}</time>
+                              {m.fromMe && <Acuse estado={m.state} />}
+                            </span>
+                          ) : undefined}
                         />
                         {/* El pie, cuando lo trae: en WhatsApp una foto puede
                             venir con texto y perderlo es perder medio mensaje. */}
@@ -1702,7 +1766,7 @@ export function Conversacion({
                       Cuando no hay texto donde meter la hora —una foto sola, un
                       sticker— va debajo, que es lo único que queda.
                     */}
-                    {(!conTexto || suelto) && (
+                    {(!conTexto || suelto) && !notaSola && (
                       <span
                         className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] text-(--color-apagado) ${
                           suelto ? "pr-1" : ""
@@ -2119,6 +2183,17 @@ export function Conversacion({
             <Stickers
               lineId={lineId}
               onCerrar={() => setStickers(false)}
+              onEmoji={(emoji) => {
+                const el = campo.current;
+                if (!el) return;
+                // En el cursor, como en WhatsApp, y no siempre al final.
+                const ini = el.selectionStart ?? el.value.length;
+                const fin = el.selectionEnd ?? ini;
+                el.value = el.value.slice(0, ini) + emoji + el.value.slice(fin);
+                el.selectionStart = el.selectionEnd = ini + emoji.length;
+                ajustarAltura();
+                if (!editando) apuntarBorrador();
+              }}
               onElegir={async (storageKey) => {
                 const enviado = await enviarMedio("sticker", storageKey, "", "sticker.webp");
                 if (enviado) {
@@ -2140,6 +2215,8 @@ export function Conversacion({
               e.target.value = "";
             }}
           />
+          {!grabandoNota && (
+            <>
           <BotonNota
             activo={false}
             onClick={() => setModoNotaEn(chat)}
@@ -2160,7 +2237,7 @@ export function Conversacion({
             type="button"
             onClick={() => setStickers((v) => !v)}
             disabled={subiendo || editando !== null}
-            aria-label="Stickers"
+            aria-label="Emojis y stickers"
             aria-expanded={stickers}
             className={`flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 md:size-10 ${
               stickers
@@ -2171,31 +2248,11 @@ export function Conversacion({
             <IconoSticker className="size-5" />
           </button>
 
-          <Grabadora
-            tipo="audio"
-            deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
-            onError={setProblema}
-            onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
-            onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
-          />
-          {/*
-            El de vídeo, solo en escritorio.
-            En 390 píxeles, cuatro botones y el campo de texto no caben: el
-            campo se queda en «Escribe un mer». Grabar vídeo es lo menos
-            frecuente de los cuatro y un vídeo se puede adjuntar igual.
-          */}
-          <span className="hidden md:contents">
-            <Grabadora
-              tipo="video"
-              deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
-              onError={setProblema}
-              onGrabado={async (file) => { await mandarFichero(file, "video", ""); }}
-              onGrabando={(activo) => anunciar(activo ? "recording" : "paused")}
-            />
-          </span>
-
+            </>
+          )}
           <textarea
             ref={campo}
+            hidden={grabandoNota}
             name="texto"
             rows={1}
             autoComplete="off"
@@ -2268,14 +2325,26 @@ export function Conversacion({
             className="scroll-discreto max-h-48 min-w-0 flex-1 resize-none rounded-xl bg-(--color-hundido) px-3.5 py-2.5 text-sm leading-5 md:px-4 outline-none placeholder:text-(--color-apagado) focus:ring-2 focus:ring-(--color-acento)"
           />
 
-          <button
+          {grabandoNota || (!hayTexto && adjuntos.length === 0 && editando === null) ? (
+            <>
+              <Grabadora
+                tipo="audio"
+                deshabilitado={subiendo || adjuntos.length > 0 || editando !== null}
+                onError={setProblema}
+                onGrabado={async (file) => { await mandarFichero(file, "audio", "", { ptt: true }); }}
+                onGrabando={(activo) => { setGrabandoNota(activo); anunciar(activo ? "recording" : "paused"); }}
+              />
+            </>
+          ) : (
+            <button
             disabled={subiendo}
             aria-label={editando ? "Guardar la edición" : "Enviar"}
             title={editando ? "Guardar (Enter)" : undefined}
-            className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-(--color-acento) md:size-10 text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
+            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-(--color-acento) md:size-10 text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90 disabled:opacity-40"
           >
             {editando ? <IconoCheck className="size-5" /> : <IconoEnviar className="size-5" />}
           </button>
+          )}
         </form>
       </div>
 

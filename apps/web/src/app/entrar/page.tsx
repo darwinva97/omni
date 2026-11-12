@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { API_URL, SESSION_COOKIE } from "@/lib/config";
+import { SinSesionEmbebido } from "@/componentes/sin-sesion-embebido";
 
 /**
  * Entrada.
@@ -67,6 +68,7 @@ export default async function Entrar({
   const errorSso = error ? MENSAJES_SSO[error] : undefined;
 
   return (
+    <SinSesionEmbebido>
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-6">
       <h1 className="text-xl font-semibold tracking-tight">omni</h1>
       <p className="mt-1 text-sm text-(--color-tenue)">Entra con tu cuenta.</p>
@@ -126,5 +128,6 @@ export default async function Entrar({
         </p>
       )}
     </main>
+    </SinSesionEmbebido>
   );
 }

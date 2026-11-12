@@ -1,5 +1,6 @@
 import { revalidatePath } from "next/cache";
-import { apiFetch, apiFetchAuth } from "@/lib/api";
+import { apiFetch, apiFetchAuth, ApiError } from "@/lib/api";
+import { Aviso } from "@/componentes/piezas";
 import { Boton, Campo, SecretoUnaVez, Tabla } from "@/lib/ui-nav";
 import { Pagina } from "@/componentes/armazon";
 
@@ -12,9 +13,9 @@ interface Clave {
 export default async function Claves({
   searchParams,
 }: {
-  searchParams: Promise<{ nueva?: string }>;
+  searchParams: Promise<{ nueva?: string; error?: string }>;
 }) {
-  const [{ nueva }, claves] = await Promise.all([
+  const [{ nueva, error }, claves] = await Promise.all([
     searchParams,
     apiFetchAuth<Clave[]>("/v1/api-keys"),
   ]);
@@ -24,32 +25,44 @@ export default async function Claves({
     const lista = (v: FormDataEntryValue | null): string[] =>
       String(v ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
-    const res = await apiFetch<{ apiKey: string }>("/v1/api-keys", {
-      method: "POST",
-      body: JSON.stringify({
-        name: String(formData.get("nombre") ?? ""),
-        role: String(formData.get("rol") ?? "operator"),
-        allowedLines: lista(formData.get("lineas")),
-        allowedChats: lista(formData.get("chats")),
-      }),
-    });
+    const { redirect } = await import("next/navigation");
+    let res: { apiKey: string } | null = null;
+    try {
+      res = await apiFetch<{ apiKey: string }>("/v1/api-keys", {
+        method: "POST",
+        body: JSON.stringify({
+          name: String(formData.get("nombre") ?? ""),
+          role: String(formData.get("rol") ?? "operator"),
+          allowedLines: lista(formData.get("lineas")),
+          allowedChats: lista(formData.get("chats")),
+        }),
+      });
+    } catch (err) {
+      const m = err instanceof ApiError ? (err.status === 422 ? "Revisa los datos: falta el nombre o una línea no es válida." : err.message) : "No se pudo crear la clave.";
+      redirect(`/claves?error=${encodeURIComponent(m)}`);
+    }
     // El secreto viaja por la URL una sola vez y no se guarda en ningún sitio.
     revalidatePath("/claves");
-    const { redirect } = await import("next/navigation");
-    redirect(`/claves?nueva=${encodeURIComponent(res.apiKey)}`);
+    if (res) redirect(`/claves?nueva=${encodeURIComponent(res.apiKey)}`);
   }
 
   async function revocar(formData: FormData): Promise<void> {
     "use server";
-    await apiFetch(`/v1/api-keys/${encodeURIComponent(String(formData.get("id")))}`, {
-      method: "DELETE",
-    });
+    try {
+      await apiFetch(`/v1/api-keys/${encodeURIComponent(String(formData.get("id")))}`, {
+        method: "DELETE",
+      });
+    } catch (err) {
+      const { redirect } = await import("next/navigation");
+      redirect(`/claves?error=${encodeURIComponent(err instanceof ApiError ? err.message : "No se pudo revocar la clave.")}`);
+    }
     revalidatePath("/claves");
   }
 
   return (
     <Pagina actual="/claves" titulo="Claves de API" descripcion="Cada clave lleva su propio alcance: a qué líneas llega y, si hace falta, a qué conversaciones. El secreto se enseña una sola vez.">
       <div className="space-y-5">
+        {error && <Aviso tono="error">{error}</Aviso>}
         {nueva && <SecretoUnaVez etiqueta="Clave creada" valor={nueva} />}
 
         <section className="rounded-xl border border-(--color-borde) bg-(--color-panel) p-5">

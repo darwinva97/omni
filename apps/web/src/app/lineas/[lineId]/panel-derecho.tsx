@@ -18,7 +18,7 @@ export function PanelDerecho({ lineId, children }: { lineId: string; children: R
     <section
       className={`${
         hayAlgoAbierto ? "flex" : "hidden md:flex"
-      } min-w-0 flex-1 flex-col`}
+      } min-w-0 flex-1 flex-col md:overflow-hidden md:rounded-2xl md:border md:border-(--color-borde) md:bg-(--color-panel) md:shadow-sm`}
     >
       {children}
     </section>

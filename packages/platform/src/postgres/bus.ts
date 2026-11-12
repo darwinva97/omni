@@ -8,6 +8,28 @@ import type { Bus } from "../ports/bus.port.js";
  * Límite real de `NOTIFY`: la carga útil no puede pasar de 8000 bytes. En vez
  * de fallar con un error críptico de Postgres, lo decimos aquí.
  */
+/**
+ * Un evento sin lo que no cabe en `NOTIFY`: sin `data.raw` (el mensaje original del canal) y,
+ * si aún no cabe, con los textos largos recortados y sin los objetos anidados grandes. Lo marca
+ * con `data.recortado`. Lo que no es un sobre con `data`, tal cual.
+ */
+export function aligerar<T>(payload: T): T {
+  if (!payload || typeof payload !== "object" || !("data" in payload)) return payload;
+  const sobre = payload as T & { data: unknown };
+  if (!sobre.data || typeof sobre.data !== "object" || Array.isArray(sobre.data)) return payload;
+  const { raw: _raw, ...data } = sobre.data as Record<string, unknown>;
+  let ligero = { ...sobre, data } as T;
+  if (Buffer.byteLength(JSON.stringify(ligero), "utf8") <= PostgresBus.MAX_PAYLOAD_BYTES) return ligero;
+  const recorte: Record<string, unknown> = { recortado: true };
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === "string") recorte[k] = v.length > 1000 ? v.slice(0, 1000) + "…" : v;
+    else if (v === null || typeof v !== "object") recorte[k] = v;
+    else if (JSON.stringify(v).length <= 500) recorte[k] = v;
+  }
+  ligero = { ...sobre, data: recorte } as T;
+  return ligero;
+}
+
 export class PostgresBus implements Bus {
   static readonly MAX_PAYLOAD_BYTES = 7900;
   readonly #sql: Sql;
@@ -21,7 +43,13 @@ export class PostgresBus implements Bus {
   }
 
   async publish<T>(topic: string, payload: T): Promise<void> {
-    const body = JSON.stringify(payload);
+    let body = JSON.stringify(payload);
+    if (Buffer.byteLength(body, "utf8") > PostgresBus.MAX_PAYLOAD_BYTES) {
+      // Un mensaje de WhatsApp con foto, vídeo o vista previa de enlace pasaba del límite por el
+      // mensaje original (`raw`, con miniaturas) y el aviso se PERDÍA: no llegaba al panel. Se
+      // publica aligerado; quien necesite el cuerpo entero lo lee de la base.
+      body = JSON.stringify(aligerar(payload));
+    }
     if (Buffer.byteLength(body, "utf8") > PostgresBus.MAX_PAYLOAD_BYTES) {
       throw new Error(
         `la carga de "${topic}" supera el límite de NOTIFY (${PostgresBus.MAX_PAYLOAD_BYTES} bytes); ` +

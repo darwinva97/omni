@@ -64,6 +64,18 @@ export const authStateTable = pgTable(
   },
 );
 
+/** Cada clave de la sesión de WhatsApp, sellada (0014_claves_de_sesion.sql). */
+export const authKeyTable = pgTable(
+  "auth_key",
+  {
+    lineId: text("line_id").notNull().references(() => lineTable.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    keyId: text("key_id").notNull(),
+    sealed: text("sealed").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.lineId, t.type, t.keyId] })],
+);
+
 export const contactTable = pgTable(
   "contact",
   {

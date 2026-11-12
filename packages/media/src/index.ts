@@ -69,13 +69,15 @@ export class Conversor {
     }
   }
 
-  async convertir(campo: string, entrada: Uint8Array, mimeType: string): Promise<Convertido> {
+  async convertir(
+    campo: string, entrada: Uint8Array, mimeType: string, opciones: { notaDeVoz?: boolean } = {},
+  ): Promise<Convertido> {
     if (entrada.byteLength > this.#maxBytes) {
       throw new OmniError("validation_failed", "el fichero es demasiado grande para convertirlo");
     }
 
     switch (campo) {
-      case "audio": return this.#audio(entrada);
+      case "audio": return opciones.notaDeVoz ? this.#notaDeVoz(entrada) : this.#audio(entrada);
       case "video": return this.#video(entrada);
       case "sticker": return this.#sticker(entrada);
       default:
@@ -92,7 +94,7 @@ export class Conversor {
   async #audio(entrada: Uint8Array): Promise<Convertido> {
     const copia = await this.#correr(entrada, "entrada", "salida.ogg",
       ["-c:a", "copy", "-f", "ogg"]).catch(() => null);
-    if (copia) return { bytes: copia, mimeType: "audio/ogg" };
+    if (copia) return { bytes: copia, mimeType: "audio/ogg; codecs=opus" };
 
     const recodificado = await this.#correr(entrada, "entrada", "salida.ogg", [
       "-c:a", "libopus",
@@ -101,7 +103,26 @@ export class Conversor {
       "-b:a", "32k", "-ac", "1", "-ar", "48000",
       "-f", "ogg",
     ]);
-    return { bytes: recodificado, mimeType: "audio/ogg" };
+    return { bytes: recodificado, mimeType: "audio/ogg; codecs=opus" };
+  }
+
+  /**
+   * Una nota de voz, SIEMPRE recodificada a lo que graba WhatsApp: Opus mono 48 kHz a 32 kbps
+   * en modo voz, en un OGG nuevo.
+   *
+   * No basta con que ya sea OGG/Opus (2026-11-04): lo que graban Chrome, Firefox o el
+   * MediaRecorder de Android es OGG/Opus válido pero empaquetado a su manera, y el otro
+   * teléfono —sobre todo un iPhone— lo recibía, lo marcaba como escuchado y no lo
+   * reproducía ni lo descargaba. Recodificar unos segundos de voz no cuesta nada.
+   */
+  async #notaDeVoz(entrada: Uint8Array): Promise<Convertido> {
+    const bytes = await this.#correr(entrada, "entrada", "salida.ogg", [
+      "-vn", "-map_metadata", "-1",
+      "-c:a", "libopus", "-b:a", "32k", "-ac", "1", "-ar", "48000",
+      "-application", "voip", "-frame_duration", "20",
+      "-f", "ogg",
+    ]);
+    return { bytes, mimeType: "audio/ogg; codecs=opus" };
   }
 
   /** A MP4/H.264, que es lo único que reproducen todos los clientes. */

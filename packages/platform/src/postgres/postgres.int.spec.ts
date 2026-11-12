@@ -52,6 +52,23 @@ run("bus de Postgres (LISTEN/NOTIFY)", () => {
     await bus.close();
     await own.end({ timeout: 5 });
   });
+
+  it("un mensaje con foto (raw enorme) llega aligerado en vez de perderse", async () => {
+    const own = testSql();
+    const bus = new PostgresBus(own);
+    const got: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const off = await bus.subscribe<{ event: string; data: Record<string, unknown> }>("t_foto", (p) => void got.push(p));
+    await new Promise((r) => setTimeout(r, 150));
+    await bus.publish("t_foto", { event: "message.received", data: { id: "m1", text: "hola", raw: { jpegThumbnail: "x".repeat(20000) } } });
+    await bus.publish("t_foto", { event: "message.received", data: { id: "m2", text: "y".repeat(12000), raw: {} } });
+    await new Promise((r) => setTimeout(r, 500));
+    await off();
+    await bus.close();
+    await own.end({ timeout: 5 });
+    expect(got[0]).toEqual({ event: "message.received", data: { id: "m1", text: "hola" } });
+    expect(got[1]!.data.recortado).toBe(true);
+    expect(String(got[1]!.data.text).length).toBeLessThan(1100);
+  });
 });
 
 run("cola de Postgres con la base cerrándose", () => {

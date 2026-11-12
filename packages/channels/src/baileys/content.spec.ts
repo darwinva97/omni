@@ -40,6 +40,13 @@ describe("traducción a contenido de Baileys", () => {
     expect(fichero).toMatchObject({ ptt: false });
   });
 
+  it("un OGG va siempre como Opus (si no, WhatsApp no lo entrega)", () => {
+    const r = toBaileysContent(cmd({ audio: { url: "https://e.com/a.ogg" }, ptt: true }, { ...bytes, mimeType: "audio/ogg" }));
+    expect(r).toMatchObject({ mimetype: "audio/ogg; codecs=opus" });
+    const mp3 = toBaileysContent(cmd({ audio: { url: "https://e.com/a.mp3" } }, { ...bytes, mimeType: "audio/mpeg" }));
+    expect(mp3).toMatchObject({ mimetype: "audio/mpeg" });
+  });
+
   it("documento con su nombre", () => {
     const r = toBaileysContent(cmd(
       { document: { url: "https://e.com/a.pdf" }, fileName: "factura.pdf" },

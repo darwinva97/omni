@@ -643,7 +643,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
     <aside
       className={`${
         abierto || enEstados || enCanales ? "hidden md:flex" : "flex"
-      } w-full shrink-0 flex-col border-r border-(--color-borde) bg-(--color-panel) md:w-[22rem]`}
+      } w-full shrink-0 flex-col border-r border-(--color-borde) bg-(--color-panel) md:w-[18rem] md:overflow-hidden md:rounded-2xl md:border md:shadow-sm lg:w-[22rem]`}
     >
       <header className="border-b border-(--color-borde) px-4 py-3">
         <div className="flex items-center justify-between gap-2">

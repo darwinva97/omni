@@ -15,11 +15,12 @@ import {
   EventEmitterBase, PRESENCIA_ALQUILER_MS,
   type ChannelDriver, type ConnectRequest, type ConnectResult,
   type ChatAnchorMessage, type Collection, type CommunityMetadata, type ContactProfile,
-  type DownloadedMedia, type ForwardSource, type GroupMetadata, type GroupPatch,
+  type DownloadedMedia, type DownloadedMediaStream, type ForwardSource, type GroupMetadata, type GroupPatch,
   type LineStatus, type NewsletterMetadata, type OrderDetails, type Product, type ProductInput, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
+import { escrituraAgrupada, guardadoAgrupado } from "./guardado.js";
 
 /**
  * Driver de WhatsApp sobre Baileys.
@@ -55,12 +56,16 @@ export const BAILEYS_DESCRIPTOR: ChannelDescriptor = {
   ),
 };
 
+/** Lo más grande que se descarga de un medio (OMNI_MEDIA_MAX_MB, 64 por defecto). */
+const MAX_MEDIO_BYTES = (Number(process.env["OMNI_MEDIA_MAX_MB"]) || 64) * 1024 * 1024;
+
 interface LineRuntime {
   socket: WASocket | null;
   status: LineStatus;
   readonly orgId: string;
   readonly store: BlobAuthStore;
   readonly save: (b: Uint8Array) => Promise<void>;
+  readonly guardado: { cambio: () => void; vaciar: () => Promise<void> };
   /** Reintentos de reconexión consumidos, para el retardo creciente. */
   attempts: number;
   closing: boolean;
@@ -163,9 +168,33 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const existente = this.#lines.get(req.lineId);
     if (existente?.status.state === "connected") return { status: existente.status };
 
-    const store = BlobAuthStore.from(req.credentials, () => {
-      void req.saveCredentials(store.serialize());
-    });
+    // Agrupado (guardado.ts): antes cada clave nueva reescribía la sesión entera. Con `keys`,
+    // además, sólo se escriben las claves que cambiaron, cada una en su fila.
+    const filas = req.keys;
+    const guardado = filas
+      ? escrituraAgrupada(async () => {
+          const { claves, creds } = store.tomarCambios();
+          try {
+            // Primero las claves y después el blob ya sin ellas: si algo se corta a medias, al
+            // volver se juntan las dos cosas y no se pierde nada.
+            if (claves.length) await filas.guardar(claves);
+            if (creds) await req.saveCredentials(creds);
+          } catch (e) {
+            store.devolver(claves, !!creds);
+            throw e;
+          }
+        })
+      : guardadoAgrupado(() => store.serialize(), req.saveCredentials);
+    const store = BlobAuthStore.from(req.credentials, () => guardado.cambio());
+    if (filas) {
+      const legado = store.clavesEnBlob;
+      store.mezclar(await filas.cargar());
+      // Una sesión del formato antiguo pasa a filas una vez.
+      if (legado) {
+        store.marcarTodo();
+        guardado.cambio();
+      }
+    }
 
     const line: LineRuntime = {
       socket: null,
@@ -173,6 +202,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       orgId,
       store,
       save: req.saveCredentials,
+      guardado,
       attempts: 0,
       closing: false,
       recent: new Map(),
@@ -620,6 +650,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const line = this.#lines.get(lineId);
     if (!line) return;
     line.closing = true;
+    await line.guardado.vaciar(); // que la sesión quede guardada tal como está
     if (line.enLinea) clearTimeout(line.enLinea.temporizador);
     line.enLinea = null;
     try {
@@ -1071,6 +1102,21 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   }
 
   async downloadMedia(lineId: LineId, raw: unknown): Promise<DownloadedMedia | null> {
+    const r = await this.#medio(lineId, raw, "buffer");
+    return r ? { bytes: r.datos as Uint8Array, mimeType: r.mimeType, ...(r.fileName ? { fileName: r.fileName } : {}) } : null;
+  }
+
+  /** Igual, pero por trozos: el fichero no pasa entero por la memoria (se guarda según llega). */
+  async downloadMediaStream(lineId: LineId, raw: unknown): Promise<DownloadedMediaStream | null> {
+    const r = await this.#medio(lineId, raw, "stream");
+    return r ? { stream: r.datos as AsyncIterable<Uint8Array>, mimeType: r.mimeType, ...(r.fileName ? { fileName: r.fileName } : {}) } : null;
+  }
+
+  async #medio(
+    lineId: LineId,
+    raw: unknown,
+    modo: "buffer" | "stream",
+  ): Promise<{ datos: Uint8Array | AsyncIterable<Uint8Array>; mimeType: string; fileName?: string } | null> {
     const { socket } = this.#require(lineId);
     const mensaje = raw as WAMessage | { raw?: WAMessage } | null;
     // La ingesta guarda el sobre entero; el mensaje de Baileys va dentro.
@@ -1083,16 +1129,29 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const nodo = nodoDeMedio(m);
 
     /*
+     * Tope de tamaño ANTES de bajar nada: el fichero entero vive en memoria
+     * mientras se guarda, y cuatro vídeos de 100 MB a la vez se comían casi un
+     * giga de un servidor que comparte con webs de clientes. Lo que pasa del
+     * tope se queda sin guardar (como un medio que ya no está en WhatsApp).
+     */
+    const declarado = Number((normalizeMessageContent(m.message) as Record<string, { fileLength?: unknown } | undefined> | undefined)
+      ?.[`${tipo}Message`]?.fileLength ?? 0);
+    if (declarado > MAX_MEDIO_BYTES) return null;
+
+    /*
      * Un canal no cifra sus ficheros: no hay `mediaKey`, y Baileys se niega a
      * descargar sin ella («Cannot derive from empty media key»). Se piden tal
      * cual al servidor de medios. Eran las 35 fotos del canal que salían como
      * «No se pudo descargar».
      */
-    let bytes: Uint8Array;
+    let bytes: Uint8Array | AsyncIterable<Uint8Array>;
     if (nodo && !nodo.mediaKey && nodo.directPath) {
       const res = await fetch(`https://${HOST_DE_MEDIOS}${nodo.directPath}`);
       if (!res.ok) throw new Error(`el servidor de medios respondió ${res.status}`);
-      bytes = new Uint8Array(await res.arrayBuffer());
+      if (Number(res.headers.get("content-length") ?? 0) > MAX_MEDIO_BYTES) return null;
+      bytes = modo === "stream" && res.body
+        ? (res.body as unknown as AsyncIterable<Uint8Array>)
+        : new Uint8Array(await res.arrayBuffer());
     } else {
       /*
        * El servidor de donde bajar el fichero.
@@ -1105,7 +1164,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
        * URL completa; si no, el de siempre, con la ruta de `directPath`.
        */
       const host = hostDeMedio(nodo?.url);
-      const bajar = (h: string) => downloadMediaMessage(m, "buffer", { host: h }, {
+      const bajar = (h: string): Promise<Uint8Array | AsyncIterable<Uint8Array>> => downloadMediaMessage(m, modo as "buffer", { host: h }, {
         // Baileys escribe por aquí; sin un registro mudo saca ruido por consola
         // en cada medio que llega.
         logger: REGISTRO_MUDO,
@@ -1117,7 +1176,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         reuploadRequest: socket.updateMediaMessage,
       });
       try {
-        bytes = new Uint8Array(await bajar(host));
+        bytes = await bajar(host); // ya es un Uint8Array (Buffer): sin otra copia en memoria
       } catch (e) {
         /*
          * Y si falla la RED —no una respuesta del servidor— con un servidor
@@ -1128,7 +1187,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         const respondio = typeof (e as { status?: unknown })?.status === "number"
           || typeof (e as { output?: { statusCode?: unknown } })?.output?.statusCode === "number";
         if (respondio || host === HOST_DE_MEDIOS) throw e;
-        bytes = new Uint8Array(await bajar(HOST_DE_MEDIOS));
+        bytes = await bajar(HOST_DE_MEDIOS);
       }
     }
 
@@ -1137,7 +1196,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       contenido.imageMessage ?? contenido.videoMessage ?? contenido.audioMessage ??
       contenido.documentMessage ?? contenido.stickerMessage;
     return {
-      bytes,
+      datos: bytes,
       mimeType: info?.mimetype ?? "application/octet-stream",
       ...(contenido.documentMessage?.fileName
         ? { fileName: contenido.documentMessage.fileName }

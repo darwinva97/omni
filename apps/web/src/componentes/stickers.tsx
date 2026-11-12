@@ -21,13 +21,27 @@ interface StickerGuardado {
  * Se envían por su clave del almacén, así que reenviar uno no vuelve a subir
  * nada.
  */
+/*
+ * Emojis por grupos, como el panel de WhatsApp. Lista propia y corta (los que
+ * se usan de verdad en un chat de negocio) en vez de una librería de 300 kB.
+ */
+const EMOJIS: { grupo: string; lista: string[] }[] = [
+  { grupo: "Caras", lista: "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😗 😙 😚 😋 😛 😝 😜 🤪 🤨 🧐 🤓 😎 🤩 🥳 😏 😒 😞 😔 😟 😕 🙁 😣 😖 😫 😩 🥺 😢 😭 😤 😠 😡 🤯 😳 🥵 🥶 😱 😨 😰 😥 😓 🤗 🤔 🤭 🤫 🤥 😶 😐 😑 😬 🙄 😯 😦 😧 😮 😲 🥱 😴 🤤 😪 😵 🤐 🥴 🤢 🤮 🤧 😷 🤒 🤕 🤑 🤠 😈 👻 💀 🤡 💩".split(" ") },
+  { grupo: "Gestos", lista: "👍 👎 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 👏 🙌 👐 🤲 🤝 🙏 ✍️ 💪 🫶 👀 🧠".split(" ") },
+  { grupo: "Corazones", lista: "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💯 ✨ 🔥 ⭐ 🌟 🎉 🎊 🎁 🎂".split(" ") },
+  { grupo: "Objetos", lista: "✅ ❌ ⚠️ ❓ ❗ 📌 📍 📎 📞 📱 💻 📷 🎥 📦 🛒 💳 💰 💵 🧾 📅 ⏰ ⏳ 🚚 🏠 🏪 🍕 🍔 ☕ 🍺 🚗 ✈️ 🌞 🌧️ 🌈 🐶 🐱 🌹 🌻".split(" ") },
+];
+
 export function Stickers({
-  lineId, onElegir, onCerrar,
+  lineId, onElegir, onCerrar, onEmoji,
 }: {
   lineId: string;
   onElegir: (storageKey: string) => void | Promise<void>;
   onCerrar: () => void;
+  /** Escribe el emoji en el campo. El panel no se cierra: se suelen poner varios. */
+  onEmoji?: (emoji: string) => void;
 }) {
+  const [pestana, setPestana] = useState<"emojis" | "stickers">(onEmoji ? "emojis" : "stickers");
   const [lista, setLista] = useState<StickerGuardado[] | null>(null);
   const caja = useRef<HTMLDivElement>(null);
 
@@ -58,8 +72,25 @@ export function Stickers({
       ref={caja}
       className="absolute bottom-16 left-3 z-30 w-80 overflow-hidden rounded-xl border border-(--color-borde) bg-(--color-panel) shadow-[0_12px_32px_rgba(0,0,0,0.22)]"
     >
-      <header className="flex items-center justify-between border-b border-(--color-borde) px-3 py-2">
-        <h2 className="text-sm font-semibold">Stickers</h2>
+      <header className="flex items-center justify-between border-b border-(--color-borde) px-2 py-1.5">
+        <div role="tablist" className="flex gap-1">
+          {(onEmoji ? (["emojis", "stickers"] as const) : (["stickers"] as const)).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={pestana === t}
+              onClick={() => setPestana(t)}
+              className={`rounded-full px-3 py-1 text-sm font-medium transition-colors duration-150 ${
+                pestana === t
+                  ? "bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+                  : "text-(--color-tenue) hover:bg-(--color-hundido)"
+              }`}
+            >
+              {t === "emojis" ? "Emojis" : "Stickers"}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           onClick={onCerrar}
@@ -70,6 +101,29 @@ export function Stickers({
         </button>
       </header>
 
+      {pestana === "emojis" && onEmoji ? (
+        <div className="scroll-discreto max-h-72 overflow-y-auto p-2">
+          {EMOJIS.map((g) => (
+            <section key={g.grupo} className="mb-2">
+              <h3 className="px-1 pb-1 text-[11px] font-medium text-(--color-apagado)">{g.grupo}</h3>
+              <div className="grid grid-cols-8 gap-0.5">
+                {g.lista.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => onEmoji(e)}
+                    aria-label={e}
+                    className="flex aspect-square items-center justify-center rounded-lg text-xl transition-transform duration-100 hover:scale-110 hover:bg-(--color-hundido)"
+                  >
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+      <>
       <div className="scroll-discreto max-h-72 overflow-y-auto p-2">
         {lista === null ? (
           // Esqueleto y no un giro: ocupa el sitio que va a ocupar el
@@ -105,6 +159,8 @@ export function Stickers({
         Los que han pasado por esta línea. WhatsApp no deja leer los paquetes
         del teléfono.
       </p>
+      </>
+      )}
     </div>
   );
 }

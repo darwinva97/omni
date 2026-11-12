@@ -1,6 +1,6 @@
 import { lt, sql } from "drizzle-orm";
-import type { Database } from "@omni/db";
-import { messageTable, webhookDeliveryTable } from "@omni/db";
+import type { Database } from "./client.js";
+import { messageTable, webhookDeliveryTable } from "./schema/index.js";
 
 /**
  * Mantenimiento periódico.

@@ -28,6 +28,9 @@ export interface PutOptions {
 export interface Storage {
   readonly kind: "local" | "s3";
   put(key: string, bytes: Uint8Array, opts: PutOptions): Promise<StoredObject>;
+  /** Guardar según llega, sin tener el objeto entero en memoria (opcional). Rechaza al pasar
+   *  de `max` bytes sin dejar nada a medias. */
+  putStream?(key: string, trozos: AsyncIterable<Uint8Array>, opts: PutOptions & { max?: number }): Promise<StoredObject>;
   get(key: string): Promise<{ bytes: Uint8Array; mimeType: string } | null>;
   delete(key: string): Promise<void>;
   exists(key: string): Promise<boolean>;

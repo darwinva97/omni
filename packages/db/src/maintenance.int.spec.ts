@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createDatabase, migrate, orgTable, lineTable, webhookEndpointTable, webhookDeliveryTable, messageTable, type DbHandle } from "@omni/db";
+import { createDatabase, migrate, orgTable, lineTable, webhookEndpointTable, webhookDeliveryTable, messageTable, type DbHandle } from "./index.js";
 import { eq } from "drizzle-orm";
 import { runMaintenance } from "./maintenance.js";
 

@@ -10,7 +10,7 @@ import { assertCapability, descifrarEdicion, descifrarVoto, encuestaDe, extractT
 import type { JobQueue, Kv, Subscription } from "@omni/platform";
 import type { Bus } from "@omni/platform";
 import type { Database } from "@omni/db";
-import { authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, contactosDeLinea, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
+import { authKeyTable, authStateTable, chatTable, contactTable, groupInfoTable, identityMapTable, lineTable, messageTable, contactosDeLinea, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable } from "@omni/db";
 import type { WebhookDispatcher } from "@omni/core";
 import { mediaKey, resolveMedia, type Storage } from "@omni/storage";
 import { Conversor, necesitaConversion } from "@omni/media";
@@ -242,6 +242,34 @@ export class EngineRuntime {
       lineId: lineId as LineId,
       credentials: sealed ? this.#deps.box.open(sealed) : null,
       saveCredentials: async (blob) => { await this.#persistCredentials(lineId, blob); },
+      keys: {
+        cargar: async () => {
+          const filas = await this.#deps.db.select().from(authKeyTable).where(eq(authKeyTable.lineId, lineId));
+          return filas.map((f) => ({ type: f.type, id: f.keyId, value: this.#deps.box.open(f.sealed) }));
+        },
+        guardar: async (cambios) => {
+          const poner = cambios.filter((c) => c.value !== null);
+          const quitar = cambios.filter((c) => c.value === null);
+          await this.#deps.db.transaction(async (tx) => {
+            for (let i = 0; i < poner.length; i += 200) {
+              await tx
+                .insert(authKeyTable)
+                .values(poner.slice(i, i + 200).map((c) => ({
+                  lineId, type: c.type, keyId: c.id, sealed: this.#deps.box.seal(c.value!),
+                })))
+                .onConflictDoUpdate({
+                  target: [authKeyTable.lineId, authKeyTable.type, authKeyTable.keyId],
+                  set: { sealed: sql`excluded.sealed` },
+                });
+            }
+            for (const c of quitar) {
+              await tx.delete(authKeyTable).where(and(
+                eq(authKeyTable.lineId, lineId), eq(authKeyTable.type, c.type), eq(authKeyTable.keyId, c.id),
+              ));
+            }
+          });
+        },
+      },
       config: { ...(line.driverConfig ?? {}), orgId: line.orgId },
     });
 
@@ -270,12 +298,53 @@ export class EngineRuntime {
   async logout(lineId: string): Promise<void> {
     await this.disconnect(lineId).catch(() => {});
     await this.#deps.db.delete(authStateTable).where(eq(authStateTable.lineId, lineId));
+    await this.#deps.db.delete(authKeyTable).where(eq(authKeyTable.lineId, lineId));
     await this.#setStatus(lineId, "logged-out");
   }
 
   async status(lineId: string): Promise<LineStatus> {
     const line = await this.#line(lineId);
     return this.driverFor(line.channelKind).status(lineId as LineId);
+  }
+
+  /** Foto de perfil del PROPIO número, ya guardada: clave del almacén y cuándo se pidió. */
+  readonly #fotosPropias = new Map<string, { clave: string | null; en: number }>();
+
+  /**
+   * La foto de perfil del propio número (2026-11-04): las notas de voz y los mensajes propios
+   * salían con una «T» de «Tú» porque sólo se guardaban las fotos de los contactos. Se pide a
+   * WhatsApp como mucho cada 6 h por línea y se guarda en el almacén; sin foto, `null`.
+   */
+  async fotoPropia(lineId: string): Promise<string | null> {
+    const hay = this.#fotosPropias.get(lineId);
+    if (hay && this.#now() - hay.en < 6 * 3600_000) return hay.clave;
+    const line = await this.#line(lineId);
+    const driver = this.driverFor(line.channelKind);
+    let clave: string | null = null;
+    try {
+      // `self` es una dirección ({ value }), y puede traer el dispositivo («549…:5@s.whatsapp.net»):
+      // WhatsApp sólo da la foto del número, sin él.
+      const crudo = (await driver.status(lineId as LineId) as { self?: string | { value?: string } }).self;
+      const valor = typeof crudo === "string" ? crudo : crudo?.value;
+      const self = valor ? valor.replace(/:\d+@/, "@") : null;
+      const url = self && !self.startsWith("0@") && driver.profilePictureUrl
+        ? await driver.profilePictureUrl(lineId as LineId, parseAddress(self))
+        : null;
+      if (url) {
+        const res = await (this.#deps.fetchImpl ?? fetch)(url);
+        const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : new Uint8Array();
+        if (bytes.byteLength > 0) {
+          const k = mediaKey({ orgId: line.orgId, lineId, messageId: "avatar-propio", fileName: "avatar.jpg" });
+          clave = (await this.#deps.storage.put(k, bytes, {
+            mimeType: res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg",
+          })).key;
+        }
+      }
+    } catch {
+      clave = hay?.clave ?? null;
+    }
+    this.#fotosPropias.set(lineId, { clave, en: this.#now() });
+    return clave;
   }
 
   async #setStatus(lineId: string, state: string): Promise<void> {
@@ -329,6 +398,32 @@ export class EngineRuntime {
     input: SendMessageInput,
     actor: { userId?: string; connectorId?: string } = {},
   ): Promise<SendAccepted> {
+    /*
+     * Vigía de envíos lentos (2026-11-05). Aceptar un envío son unas pocas consultas y, si lleva
+     * medio, leerlo y convertirlo: décimas de segundo. Dos notas de voz desde la app se quedaron
+     * más de 20 s aquí dentro sin dejar rastro de en qué paso. Si vuelve a pasar, el registro dice
+     * cuál es, cada 5 s mientras dure.
+     */
+    const estado = { paso: "inicio", t0: Date.now() };
+    const vigia = setInterval(() => {
+      console.warn(JSON.stringify({
+        evento: "envio-lento", lineId, paso: estado.paso, ms: Date.now() - estado.t0,
+      }));
+    }, 5000);
+    try {
+      return await this.#send(lineId, input, actor, (paso) => { estado.paso = paso; });
+    } finally {
+      clearInterval(vigia);
+    }
+  }
+
+  async #send(
+    lineId: string,
+    input: SendMessageInput,
+    actor: { userId?: string; connectorId?: string },
+    paso: (p: string) => void,
+  ): Promise<SendAccepted> {
+    paso("linea");
     const line = await this.#line(lineId);
     const driver = this.driverFor(line.channelKind);
 
@@ -366,6 +461,7 @@ export class EngineRuntime {
      * entre peticiones simultáneas, y una consulta a la tabla cubre el caso de
      * que el KV se haya perdido o caducado.
      */
+    paso("idempotencia");
     const existing = await this.#findByClientId(lineId, clientMessageId);
     if (existing) return { clientMessageId, messageId: existing, state: "queued" };
 
@@ -378,6 +474,7 @@ export class EngineRuntime {
      * siguiente envío con ese mismo identificador se tragaba en silencio: ni se
      * insertaba ni se encolaba, y el cliente recibía un 202 por nada.
      */
+    paso("reserva");
     const reserved = await this.#deps.kv.setIfAbsent(
       `idem:${lineId}:${clientMessageId}`, messageId, IDEMPOTENCY_RESERVE_SECONDS,
     );
@@ -396,6 +493,7 @@ export class EngineRuntime {
      * Y el envío deja de depender de que el servidor ajeno siga en pie cuando
      * al trabajo le toque el turno.
      */
+    paso("leer-medio");
     const media = await resolveMedia(input, { orgId: line.orgId, lineId, messageId }, {
       storage: this.#deps.storage,
     });
@@ -407,10 +505,13 @@ export class EngineRuntime {
      * recibiría un 202 y el fallo aparecería un minuto después donde nadie
      * mira. Aquí se puede decir que no con el motivo.
      */
+    // Una nota de voz se recodifica siempre (ver Conversor#notaDeVoz); el resto, sólo si hace falta.
+    paso("convertir");
+    const notaDeVoz = content.field === "audio" && (input as { ptt?: boolean }).ptt === true;
     const convertido = media && this.#deps.conversor
-      && necesitaConversion(content.field, media.mimeType)
+      && (notaDeVoz || necesitaConversion(content.field, media.mimeType))
       ? await this.#convertirMedio(
-          content.field, media, { orgId: line.orgId, lineId, messageId },
+          content.field, media, { orgId: line.orgId, lineId, messageId }, notaDeVoz,
         )
       : media;
 
@@ -422,8 +523,10 @@ export class EngineRuntime {
      * de alguien cuyo chat está abierto por su LID creaba un segundo chat con
      * la misma persona, con ese único mensaje dentro.
      */
+    paso("conversacion");
     const enChat = await this.#conversacionDe(lineId, to);
 
+    paso("guardar");
     const inserted = await this.#deps.db
       .insert(messageTable)
       .values({
@@ -475,6 +578,7 @@ export class EngineRuntime {
         set: { lastMessageAt: new Date(this.#now()), unreadCount: 0 },
       });
 
+    paso("encolar");
     await this.#deps.queue.enqueue<OutboundJob>(
       OUTBOUND_QUEUE,
       {
@@ -755,7 +859,14 @@ export class EngineRuntime {
       // El mapeo LID↔teléfono se aprende ANTES de persistir: si el mensaje se
       // guarda primero y aquí falla algo, el chat queda con un LID que ya no
       // se puede atar a nadie, porque el servidor solo lo dice esta vez.
-      await this.#aprenderIdentidad(envelope);
+      /*
+       * `message.upsert` acompaña SIEMPRE a un `message.received`/`sent` del mismo
+       * mensaje: lo que se aprende de él ya se aprendió con el otro, y el panel lo
+       * ignora. Antes pasaba por todo de nuevo —identidad, nombre, aviso al panel—
+       * y cada mensaje costaba el doble de consultas. Sólo sigue a los webhooks.
+       */
+      const eco = envelope.event === "message.upsert";
+      if (!eco) await this.#aprenderIdentidad(envelope);
       /*
        * Se guardan los entrantes Y los que salen del TELÉFONO.
        *
@@ -775,7 +886,7 @@ export class EngineRuntime {
        * `#persistInbound`: hacerlo antes dejaba el primer mensaje de cada
        * conversación nueva sin nombre, que es justo el que lo trae.
        */
-      await this.#aprenderNombre(envelope);
+      if (!eco) await this.#aprenderNombre(envelope);
       if (envelope.event === "message.receipt") await this.#applyReceipt(envelope);
       if (envelope.event === "message.reaction") await this.#aplicarReaccion(envelope);
       if (envelope.event === "poll.vote") await this.#aplicarVoto(envelope);
@@ -849,7 +960,8 @@ export class EngineRuntime {
        * Postgres eso son otras tantas conexiones `LISTEN` a la base.
        */
       const publicado = await this.#conNombres(envelope);
-      await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado);
+      // Que el panel no reciba el aviso no puede dejar sin webhook, conversación ni automatización.
+      if (!eco) await this.#deps.bus.publish(`org:${envelope.orgId}`, publicado).catch(() => {});
       await this.#deps.dispatcher.dispatch(publicado);
 
       for (const oyente of this.#oyentes) {
@@ -1083,8 +1195,9 @@ export class EngineRuntime {
     campo: string,
     medio: NonNullable<Awaited<ReturnType<typeof resolveMedia>>>,
     ctx: { orgId: string; lineId: string; messageId: string },
+    notaDeVoz = false,
   ): Promise<NonNullable<Awaited<ReturnType<typeof resolveMedia>>>> {
-    const r = await this.#deps.conversor!.convertir(campo, medio.bytes, medio.mimeType);
+    const r = await this.#deps.conversor!.convertir(campo, medio.bytes, medio.mimeType, { notaDeVoz });
     const extension = r.mimeType === "audio/ogg" ? "ogg"
       : r.mimeType === "video/mp4" ? "mp4"
       : r.mimeType === "image/webp" ? "webp" : "bin";
@@ -1352,17 +1465,25 @@ export class EngineRuntime {
       return;
     }
 
-    const medio = await driver.downloadMedia(job.lineId as LineId, job.raw);
+    /*
+     * Por trozos cuando el canal y el almacén saben: el fichero se guarda según llega y no pasa
+     * entero por la memoria (cuatro vídeos a la vez eran cientos de MB en un servidor que
+     * comparte con webs de clientes). Si no, como siempre.
+     */
+    const storage = this.#deps.storage;
+    const medio = driver.downloadMediaStream && storage.putStream
+      ? await driver.downloadMediaStream(job.lineId as LineId, job.raw)
+      : await driver.downloadMedia(job.lineId as LineId, job.raw);
     if (!medio) return;
 
     const key = mediaKey({
       orgId: job.orgId, lineId: job.lineId, messageId: job.providerMessageId,
       ...(medio.fileName ? { fileName: medio.fileName } : {}),
     });
-    const guardado = await this.#deps.storage.put(key, medio.bytes, {
-      mimeType: medio.mimeType,
-      ...(medio.fileName ? { fileName: medio.fileName } : {}),
-    });
+    const opciones = { mimeType: medio.mimeType, ...(medio.fileName ? { fileName: medio.fileName } : {}) };
+    const guardado = "stream" in medio
+      ? await storage.putStream!(key, medio.stream, opciones)
+      : await storage.put(key, medio.bytes, opciones);
 
     await this.#deps.db
       .update(messageTable)
