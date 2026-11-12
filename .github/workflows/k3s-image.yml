@@ -1,6 +1,8 @@
 # Despliegue: cuando CI termina en verde sobre main, se construye la imagen de
-# ESE commit y se anota en bezenti-gitops (apps/omni); ArgoCD la lleva al
-# clúster. Un CI en rojo no construye nada, así que no sale nada.
+# ESE commit y se anota en darwinva97/infra-contabo (manifiestos/omni/workloads.yaml);
+# ArgoCD la lleva al clúster de Contabo. Un CI en rojo no construye nada, así que no sale nada.
+#
+# INFRA_DEPLOY_KEY: clave SSH de despliegue con escritura SOLO sobre infra-contabo.
 name: k3s image
 
 on:
@@ -24,7 +26,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
-    runs-on: k3s-omni
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -59,17 +61,19 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: k3s-omni
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: darwinva97/bezenti-gitops
-          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+          repository: darwinva97/infra-contabo
+          ssh-key: ${{ secrets.INFRA_DEPLOY_KEY }}
 
       - name: Actualizar el tag de la imagen
         run: |
-          sed -i -E "s|(image: ghcr.io/darwinva97/omni:)[^ ]*( # omni-image)|\1${{ needs.build.outputs.tag }}\2|" apps/omni/workloads.yaml
+          sed -i -E "s|(image: ghcr.io/darwinva97/omni:)[^ ]*( # omni-image)|\1${{ needs.build.outputs.tag }}\2|" manifiestos/omni/workloads.yaml
           git diff --stat
+          # Las dos piezas (API y panel) deben quedar con la misma imagen
+          test "$(grep -c "omni:${{ needs.build.outputs.tag }} # omni-image" manifiestos/omni/workloads.yaml)" = 2
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "omni: ${{ needs.build.outputs.tag }}" || echo "sin cambios"

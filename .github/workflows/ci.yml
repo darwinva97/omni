@@ -4,8 +4,8 @@ name: CI
 # verde se construye la imagen (k3s-image.yml) y ArgoCD la lleva al clúster (ver
 # despliegue/README.md). Un rojo aquí es un despliegue que no ocurre.
 #
-# Corre en el runner del clúster (k3s-omni): los runners de GitHub no están
-# disponibles para esta cuenta.
+# Corre en los runners de GitHub (gratis en repos públicos). El runner propio que
+# había en el servidor prestado (k3s-omni) ya no existe.
 on:
   push: { branches: [main] }
   pull_request:
@@ -23,7 +23,7 @@ permissions:
 jobs:
   node:
     name: Tipos, build y pruebas
-    runs-on: k3s-omni
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
       postgres:
@@ -45,8 +45,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      # Node primero: el runner del clúster no trae Node en el sistema, y
-      # pnpm/action-setup lo necesita para instalarse (salía con 127).
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -75,7 +73,7 @@ jobs:
 
   sdk-python:
     name: SDK de Python
-    runs-on: k3s-omni
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -88,7 +86,7 @@ jobs:
 
   sdk-go:
     name: SDK de Go
-    runs-on: k3s-omni
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
