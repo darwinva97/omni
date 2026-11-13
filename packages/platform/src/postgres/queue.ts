@@ -23,23 +23,70 @@ function toMillis(v: Date | string | number): number {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+/** Canal de `NOTIFY` por el que se avisa de un trabajo nuevo; la carga es el nombre de la cola. */
+const WAKE_CHANNEL = "omni.job";
+
+export interface PostgresJobQueueOptions {
+  /** Duración del arrendamiento de un trabajo reclamado. */
+  readonly leaseSeconds?: number;
+  /** Primera espera tras encontrar la cola vacía. Se duplica en cada vuelta sin trabajo. */
+  readonly idleMinMs?: number;
+  /**
+   * Tope de la espera sin trabajo. Es la red de seguridad: si se pierde un
+   * aviso, ningún trabajo tarda más que esto en recogerse.
+   */
+  readonly idleMaxMs?: number;
+  /**
+   * Avisar entre procesos con `LISTEN`/`NOTIFY`. Ocupa una conexión dedicada
+   * por proceso (la de `listen` de postgres.js), no una por cola.
+   */
+  readonly notifications?: boolean;
+}
+
+/** Un consumidor despierta ya (`0`) o dentro de `delayMs`, lo que llegue antes. */
+type Waker = (delayMs: number) => void;
+
 /**
  * Cola sobre Postgres. Es lo que permite el perfil "sin más dependencias":
  * ni Redis ni broker, solo la base de datos que ya hace falta.
  *
  * El reclamo usa `FOR UPDATE SKIP LOCKED`, que es la forma correcta de que N
  * trabajadores compitan sin bloquearse ni repartirse el mismo trabajo.
+ *
+ * Cuándo se reclama:
+ *
+ * - Con trabajo, sin pausa: se reclama hasta llenar `concurrency` y cada
+ *   trabajo que termina vuelve a reclamar.
+ * - Sin trabajo, la espera crece de `idleMinMs` a `idleMaxMs` duplicándose.
+ *   Antes era un `setInterval` de 20 ms por cola: con Omni ocioso, cien o
+ *   doscientas consultas por segundo contra `omni_job` y un tercio de núcleo
+ *   en la API y otro tanto en Postgres, sin hacer nada.
+ * - Encolar despierta: en el mismo proceso, directamente; entre procesos
+ *   (API y worker separados), con `NOTIFY`. Si el `LISTEN` se cae, el tope de
+ *   la espera garantiza que el trabajo se recoge igual, solo que más tarde.
  */
 export class PostgresJobQueue implements JobQueue {
   readonly #sql: Sql;
   readonly #leaseSeconds: number;
-  readonly #timers = new Set<NodeJS.Timeout>();
+  readonly #idleMinMs: number;
+  readonly #idleMaxMs: number;
+  readonly #notifications: boolean;
+  /** Consumidores vivos de cada cola en este proceso. */
+  readonly #wakers = new Map<string, Set<Waker>>();
+  /** Cierre de cada suscripción viva, para que `close()` no deje temporizadores. */
+  readonly #halts = new Set<() => void>();
   #ready: Promise<void> | null = null;
+  #listener: Promise<{ unlisten(): Promise<void> } | null> | null = null;
+  /** Una consulta de reclamo falló: al volver la base se rehace el `LISTEN`. */
+  #dbTrouble = false;
   #closed = false;
 
-  constructor(sql: Sql, opts: { leaseSeconds?: number } = {}) {
+  constructor(sql: Sql, opts: PostgresJobQueueOptions = {}) {
     this.#sql = sql;
     this.#leaseSeconds = opts.leaseSeconds ?? 60;
+    this.#idleMinMs = Math.max(1, opts.idleMinMs ?? 20);
+    this.#idleMaxMs = Math.max(this.#idleMinMs, opts.idleMaxMs ?? 1000);
+    this.#notifications = opts.notifications ?? true;
   }
 
   #ensure(): Promise<void> {
@@ -50,6 +97,47 @@ export class PostgresJobQueue implements JobQueue {
       throw err;
     });
     return this.#ready;
+  }
+
+  /** Despierta a los consumidores de `queue` en este proceso. */
+  #wake(queue: string, delayMs = 0): void {
+    for (const w of this.#wakers.get(queue) ?? []) w(delayMs);
+  }
+
+  #wakeAll(): void {
+    for (const ws of this.#wakers.values()) for (const w of ws) w(0);
+  }
+
+  /**
+   * Arranca (o rehace) el `LISTEN`. Nunca rechaza: si no se puede escuchar, la
+   * cola sigue funcionando por sondeo y se reintenta cuando la base responda.
+   *
+   * postgres.js ya reconecta solo la conexión de `listen` y vuelve a llamar a
+   * `onlisten`; aquí se despierta a todos en ese momento, porque mientras no
+   * se escuchaba se pudo perder algún aviso.
+   */
+  #listen(): void {
+    if (!this.#notifications || this.#closed) return;
+    const previous = this.#listener;
+    this.#listener = (async () => {
+      const old = await previous;
+      await old?.unlisten().catch(() => {});
+      try {
+        const l = await this.#sql.listen(WAKE_CHANNEL, (queue) => this.#wake(queue), () => this.#wakeAll());
+        if (this.#closed) { await l.unlisten().catch(() => {}); return null; }
+        return l;
+      } catch {
+        this.#dbTrouble = true;
+        return null;
+      }
+    })();
+  }
+
+  /** Tras un reclamo que fue bien: si el `LISTEN` está caído o es sospechoso, se rehace. */
+  #keepListening(): void {
+    if (!this.#dbTrouble) return;
+    this.#dbTrouble = false;
+    this.#listen();
   }
 
   async enqueue<T>(queue: string, payload: T, opts: EnqueueOptions = {}): Promise<JobId> {
@@ -78,7 +166,20 @@ export class PostgresJobQueue implements JobQueue {
       ON CONFLICT DO NOTHING
       RETURNING id`;
 
-    if (rows.length > 0) return rows[0]!.id;
+    if (rows.length > 0) {
+      /*
+       * Avisar a quien consuma. Un trabajo diferido no avisa a otros procesos
+       * (despertarían para no encontrar nada): lo recogen al vencer su espera,
+       * como mucho `idleMaxMs` tarde. En este proceso sí se programa el
+       * despertar a su hora. El aviso no hace fallar el encolado: el trabajo ya
+       * está guardado y el sondeo lo encontrará igual.
+       */
+      this.#wake(queue, delayMs);
+      if (this.#notifications && delayMs === 0) {
+        await this.#sql.notify(WAKE_CHANNEL, queue).catch(() => {});
+      }
+      return rows[0]!.id;
+    }
 
     // El índice único rechazó el insert: ya hay un trabajo vivo con esa clave.
     const existing = await this.#sql<{ id: string }[]>`
@@ -93,35 +194,116 @@ export class PostgresJobQueue implements JobQueue {
     const concurrency = opts.concurrency ?? 4;
     let stopped = false;
     let running = 0;
+    let idleMs = this.#idleMinMs;
+    let timer: NodeJS.Timeout | null = null;
+    let timerDue = 0;
+    let ticking: Promise<void> | null = null;
+    /** Llegó un despertar mientras se reclamaba: hay que volver a mirar. */
+    let again = false;
+    /**
+     * Hora del despertar diferido más próximo (reintento o `runAt` encolado en
+     * este proceso). Un despertar inmediato no debe borrarlo.
+     */
+    let deferredDue = Number.POSITIVE_INFINITY;
 
-    const tick = async (): Promise<void> => {
-      if (stopped || this.#closed) return;
-      while (running < concurrency) {
-        const row = await this.#claim(queue).catch(() => null);
-        if (!row) break;
-        running++;
-        /*
-         * Sin nadie que espere esta promesa, un rechazo suyo tumba el proceso.
-         * `#run` captura lo que lance el trabajo, pero no lo que falle al
-         * APUNTAR el resultado —la base caída o cerrándose—. Ese trabajo no se
-         * pierde: su arrendamiento vence y se vuelve a reclamar.
-         */
-        void this.#run(row, handler as JobHandler<unknown>, opts)
-          .catch(() => {})
-          .finally(() => { running--; });
-      }
+    const clearTimer = (): void => {
+      if (timer) clearTimeout(timer);
+      timer = null;
     };
 
-    const interval = setInterval(() => void tick(), 20);
-    this.#timers.add(interval);
-    // Si falla, el intervalo lo vuelve a intentar a los 20 ms.
-    void this.#ensure().then(() => tick()).catch(() => {});
+    /** Programa la próxima vuelta; si ya hay una antes, gana la más temprana. */
+    const schedule = (delayMs: number): void => {
+      if (stopped || this.#closed) return;
+      const due = Date.now() + delayMs;
+      if (timer && timerDue <= due) return;
+      clearTimer();
+      timerDue = due;
+      timer = setTimeout(() => { timer = null; void tick(); }, delayMs);
+    };
+
+    const wake: Waker = (delayMs) => {
+      if (stopped || this.#closed) return;
+      // Un despertar diferido más allá del tope no aporta: el sondeo llega antes.
+      if (delayMs > this.#idleMaxMs) return;
+      if (delayMs > 0) deferredDue = Math.min(deferredDue, Date.now() + delayMs);
+      if (delayMs <= 0 && ticking) { again = true; return; }
+      schedule(Math.max(0, delayMs));
+    };
+
+    const claimLoop = async (): Promise<void> => {
+      let claimedAny = false;
+      let failed = false;
+      try {
+        await this.#ensure();
+        while (!stopped && !this.#closed && running < concurrency) {
+          const row = await this.#claim(queue).catch(() => { failed = true; return null; });
+          if (!row) break;
+          claimedAny = true;
+          running++;
+          /*
+           * Sin nadie que espere esta promesa, un rechazo suyo tumba el
+           * proceso. `#run` captura lo que lance el trabajo, pero no lo que
+           * falle al APUNTAR el resultado —la base caída o cerrándose—. Ese
+           * trabajo no se pierde: su arrendamiento vence y se vuelve a reclamar.
+           *
+           * Al terminar, se vuelve a reclamar enseguida: puede haber más
+           * trabajo, o el siguiente de la misma partición acaba de quedar libre.
+           * Si salió a reintentar, se despierta a la hora del reintento.
+           */
+          void this.#run(row, handler as JobHandler<unknown>, opts)
+            .then((retryInMs) => { if (retryInMs !== null) wake(retryInMs); })
+            .catch(() => {})
+            .finally(() => { running--; wake(0); });
+        }
+      } catch {
+        failed = true; // el esquema no está listo: se reintenta tras la espera
+      }
+
+      if (failed) this.#dbTrouble = true;
+      else this.#keepListening();
+
+      if (stopped || this.#closed) return;
+      if (again) { again = false; schedule(0); return; }
+      // Lleno: no hace falta temporizador, cada trabajo que termina despierta.
+      if (running >= concurrency) return;
+      if (claimedAny) idleMs = this.#idleMinMs;
+      let wait = idleMs;
+      const untilDeferred = deferredDue - Date.now();
+      if (untilDeferred > 0) wait = Math.min(wait, untilDeferred);
+      else deferredDue = Number.POSITIVE_INFINITY;
+      schedule(wait);
+      idleMs = Math.min(idleMs * 2, this.#idleMaxMs);
+    };
+
+    const tick = (): Promise<void> => {
+      if (stopped || this.#closed) return Promise.resolve();
+      if (ticking) { again = true; return ticking; }
+      clearTimer();
+      ticking = claimLoop().finally(() => { ticking = null; });
+      return ticking;
+    };
+
+    const halt = (): void => {
+      stopped = true;
+      clearTimer();
+      this.#wakers.get(queue)?.delete(wake);
+      if (this.#wakers.get(queue)?.size === 0) this.#wakers.delete(queue);
+      this.#halts.delete(halt);
+    };
+
+    let ws = this.#wakers.get(queue);
+    if (!ws) this.#wakers.set(queue, (ws = new Set()));
+    ws.add(wake);
+    this.#halts.add(halt);
+    if (this.#listener === null) this.#listen();
+    void tick();
 
     return {
       stop: async () => {
-        stopped = true;
-        clearInterval(interval);
-        this.#timers.delete(interval);
+        halt();
+        // Un reclamo en vuelo puede traer un trabajo: se espera a que arranque
+        // y a que termine, como antes.
+        await ticking?.catch(() => {});
         while (running > 0) await new Promise((r) => setTimeout(r, 10));
       },
     };
@@ -166,7 +348,8 @@ export class PostgresJobQueue implements JobQueue {
     return rows[0] ?? null;
   }
 
-  async #run(row: Row, handler: JobHandler<unknown>, opts: ProcessOptions): Promise<void> {
+  /** Ejecuta un trabajo. Devuelve en cuántos ms toca reintentarlo, o `null` si no se reintenta. */
+  async #run(row: Row, handler: JobHandler<unknown>, opts: ProcessOptions): Promise<number | null> {
     /*
      * TODO lo que pueda lanzar va DENTRO del try.
      *
@@ -180,6 +363,7 @@ export class PostgresJobQueue implements JobQueue {
       ctx = { ...ctx, enqueuedAt: toMillis(row.enqueued_at) };
       await handler(row.payload, ctx);
       await this.#sql`UPDATE omni_job SET done = true, claimed_until = NULL WHERE id = ${row.id}`;
+      return null;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       if (row.attempt >= row.max_attempts) {
@@ -187,6 +371,7 @@ export class PostgresJobQueue implements JobQueue {
           UPDATE omni_job SET done = true, claimed_until = NULL, last_error = ${error.message}
           WHERE id = ${row.id}`;
         await opts.onDead?.(row.payload, ctx, error);
+        return null;
       } else {
         const delayMs = backoffDelay(row.attempt, row.backoff_ms);
         await this.#sql`
@@ -194,6 +379,7 @@ export class PostgresJobQueue implements JobQueue {
             run_at = now() + ${delayMs}::bigint * interval '1 millisecond',
             claimed_until = NULL, last_error = ${error.message}
           WHERE id = ${row.id}`;
+        return delayMs;
       }
     }
   }
@@ -207,7 +393,10 @@ export class PostgresJobQueue implements JobQueue {
 
   async close(): Promise<void> {
     this.#closed = true;
-    for (const t of this.#timers) clearInterval(t);
-    this.#timers.clear();
+    for (const halt of [...this.#halts]) halt();
+    const listener = this.#listener;
+    this.#listener = null;
+    const l = await listener?.catch(() => null);
+    await l?.unlisten().catch(() => {});
   }
 }
