@@ -20,6 +20,7 @@ import {
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { toBaileysContent } from "./content.js";
+import { ColaEnSerie, fundirPorClave, procesarPorLotes } from "./por-lotes.js";
 
 /**
  * Driver de WhatsApp sobre Baileys.
@@ -98,6 +99,14 @@ interface LineRuntime {
    * el mensaje otra vez. Esto lo corta dentro del proceso.
    */
   readonly recent: Map<string, SendReceipt>;
+  /**
+   * Lo que llega en bloque, en serie y por lotes: la agenda —contactos y
+   * parejas LID ↔ teléfono, con el volcado del historial— y los cambios de
+   * chat. Ver `por-lotes.ts`. Viven con la línea y no con el socket: un trozo
+   * a medias sigue valiendo aunque el socket se reconecte.
+   */
+  readonly agenda: ColaEnSerie;
+  readonly chats: ColaEnSerie;
 }
 
 export type SocketFactory = (opts: Parameters<typeof makeWASocket>[0]) => WASocket;
@@ -180,6 +189,8 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       porProveedor: new Map(),
       enLinea: null,
       seguidas: new Map(),
+      agenda: existente?.agenda ?? new ColaEnSerie(),
+      chats: existente?.chats ?? new ColaEnSerie(),
     };
     this.#lines.set(req.lineId, line);
 
@@ -338,48 +349,33 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * enlazada se queda sin un solo nombre de agenda hasta que alguien se
      * renombre.
      */
-    const anotarContactos = (contacts: readonly Partial<Contacto>[]): void => {
-      for (const c of contacts) {
-        if (!c.id) continue;
-        void this.emit("contact.updated", line.orgId, lineId, {
-          address: c.id,
-          // `name` es el que TÚ le pusiste en tu agenda; `notify` el que esa
-          // persona se puso a sí misma. Son dos datos distintos y los dos
-          // valen: el tuyo manda al enseñarlo, el suyo es el recambio.
-          savedName: c.name ?? null,
-          /*
-           * El nombre verificado de una empresa va con el que la persona se
-           * puso, no con el de agenda: lo eligió ella, no tú. Mezclado con
-           * el de agenda ganaba a todo, y una empresa que tienes guardada
-           * como «Banco» salía con su nombre comercial.
-           */
-          pushName: c.notify ?? c.verifiedName ?? null,
-          // El @usuario de WhatsApp, cuando lo tiene: tercero en el orden.
-          ...(c.username ? { username: c.username } : {}),
-          /*
-           * Sus DOS direcciones, cuando vienen.
-           *
-           * La agenda guarda a la gente por su teléfono y los chats se abren
-           * con su LID: sin saber que son la misma persona, el nombre que le
-           * pusiste no llega a la conversación. Esto se tiraba.
-           */
-          ...(c.lid ? { lid: c.lid } : {}),
-          ...(c.phoneNumber ? { phone: c.phoneNumber } : {}),
-          ...(c.imgUrl !== undefined ? { imgUrl: c.imgUrl } : {}),
-        });
-      }
-    };
+    const fichaDe = (c: Partial<Contacto> & { id: string }) => ({
+      address: c.id,
+      // `name` es el que TÚ le pusiste en tu agenda; `notify` el que esa
+      // persona se puso a sí misma. Son dos datos distintos y los dos
+      // valen: el tuyo manda al enseñarlo, el suyo es el recambio.
+      savedName: c.name ?? null,
+      /*
+       * El nombre verificado de una empresa va con el que la persona se
+       * puso, no con el de agenda: lo eligió ella, no tú. Mezclado con
+       * el de agenda ganaba a todo, y una empresa que tienes guardada
+       * como «Banco» salía con su nombre comercial.
+       */
+      pushName: c.notify ?? c.verifiedName ?? null,
+      // El @usuario de WhatsApp, cuando lo tiene: tercero en el orden.
+      ...(c.username ? { username: c.username } : {}),
+      /*
+       * Sus DOS direcciones, cuando vienen.
+       *
+       * La agenda guarda a la gente por su teléfono y los chats se abren
+       * con su LID: sin saber que son la misma persona, el nombre que le
+       * pusiste no llega a la conversación. Esto se tiraba.
+       */
+      ...(c.lid ? { lid: c.lid } : {}),
+      ...(c.phoneNumber ? { phone: c.phoneNumber } : {}),
+      ...(c.imgUrl !== undefined ? { imgUrl: c.imgUrl } : {}),
+    });
 
-    ev.on("contacts.upsert", anotarContactos);
-    ev.on("contacts.update", anotarContactos);
-    /*
-     * Y el volcado del historial, que es de donde sale la AGENDA.
-     *
-     * Los nombres que uno guarda no viajan en los mensajes ni en la
-     * sincronización de estado: llegan aquí, con el volcado inicial. Sin
-     * escuchar esto, una cuenta puede tener ciento sesenta contactos conocidos
-     * y ni un solo nombre de los que su dueño les puso.
-     */
     /*
      * Las parejas LID ↔ teléfono que WhatsApp va revelando.
      *
@@ -388,33 +384,89 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
      * Salen como `contact.updated` sin nombres: el motor aprende la pareja y
      * no toca ninguna ficha.
      */
-    const anotarParejas = (parejas: readonly { lid?: string; pn?: string }[]): void => {
-      for (const p of parejas) {
-        if (!p.lid || !p.pn) continue;
-        void this.emit("contact.updated", line.orgId, lineId, {
-          address: p.pn, lid: p.lid, phone: p.pn,
-        });
-      }
-    };
-    ev.on("lid-mapping.update", (pareja) => anotarParejas([pareja]));
+    type Pareja = { lid?: string; pn?: string };
 
+    /*
+     * Todo lo de la agenda pasa por UNA cola por línea, en serie y por lotes.
+     *
+     * Al enlazar, el volcado trae miles de contactos y de parejas de golpe, y
+     * cada uno acaba en consultas a la base. Lanzarlos todos a la vez dejaba
+     * el pool de Postgres con miles de consultas en cola delante de `/health`
+     * y del panel: la sonda caducaba durante minutos aunque el proceso
+     * estuviera vivo. Ver `por-lotes.ts`.
+     *
+     * En serie también por el orden: un cambio suelto que llega mientras se
+     * ingiere el volcado no puede adelantarse a él y quedar pisado por un
+     * dato más viejo.
+     */
+    const anotarAgenda = (
+      contactos: readonly Partial<Contacto>[] = [], parejas: readonly Pareja[] = [],
+    ): void => {
+      if (contactos.length === 0 && parejas.length === 0) return;
+      void line.agenda.encolar(async () => {
+        // Lo repetido se funde: el mismo contacto llega por varios caminos
+        // dentro del mismo volcado, y cada repetición eran consultas de más.
+        const fichas = fundirPorClave(
+          contactos.filter((c): c is Partial<Contacto> & { id: string } => Boolean(c.id)),
+          (c) => c.id,
+        );
+        /*
+         * Una pareja que ya trae el propio contacto no se anuncia otra vez:
+         * el motor la aprende de la ficha (dirección y LID o teléfono).
+         */
+        const dichas = new Set(fichas.map((c) => `${c.lid ?? c.id}|${c.phoneNumber ?? c.id}`));
+        const nuevas = fundirPorClave(
+          parejas.filter((p): p is Required<Pareja> => Boolean(p.lid && p.pn)),
+          (p) => p.lid,
+        ).filter((p) => !dichas.has(`${p.lid}|${p.pn}`));
+
+        await procesarPorLotes(fichas, (c) => this.emit("contact.updated", line.orgId, lineId, fichaDe(c)));
+        await procesarPorLotes(nuevas, (p) => this.emit("contact.updated", line.orgId, lineId, {
+          address: p.pn, lid: p.lid, phone: p.pn,
+        }));
+      });
+    };
+
+    ev.on("contacts.upsert", (contactos) => anotarAgenda(contactos));
+    ev.on("contacts.update", (contactos) => anotarAgenda(contactos));
+    ev.on("lid-mapping.update", (pareja) => anotarAgenda([], [pareja]));
+    /*
+     * Y el volcado del historial, que es de donde sale la AGENDA.
+     *
+     * Los nombres que uno guarda no viajan en los mensajes ni en la
+     * sincronización de estado: llegan aquí, con el volcado inicial. Sin
+     * escuchar esto, una cuenta puede tener ciento sesenta contactos conocidos
+     * y ni un solo nombre de los que su dueño les puso.
+     *
+     * Los MENSAJES del volcado no se ingieren, y así se queda: son
+     * conversaciones viejas, y pasarlas por la ingesta las subiría en la
+     * lista, las marcaría sin leer y dispararía automatizaciones y webhooks
+     * como si acabaran de llegar.
+     */
     ev.on("messaging-history.set", ({ contacts, lidPnMappings }) => {
-      if (contacts?.length) anotarContactos(contacts);
-      if (lidPnMappings?.length) anotarParejas(lidPnMappings);
+      anotarAgenda(contacts ?? [], lidPnMappings ?? []);
     });
 
+    /*
+     * Los cambios de chat también llegan en bloque —la sincronización de
+     * estado al enlazar trae los de cada chat archivado, fijado o silenciado—
+     * y van por su propia cola, por lotes. Propia para que un volcado de
+     * agenda no retrase un «archivado» que acaba de hacerse en el teléfono.
+     */
     ev.on("chats.update", (chats) => {
-      for (const c of chats) {
-        /*
-         * Se emite lo que CAMBIÓ, no lo que falta.
-         *
-         * WhatsApp manda una actualización con solo los campos tocados, así
-         * que un `?? null` convertía «esto no cambió» en «esto se puso a
-         * nada»: silenciar desde el teléfono llegaba aquí como un chat
-         * archivado y sin pendientes. `undefined` se omite, y quien lo reciba
-         * sabe distinguir ambas cosas.
-         */
-        void this.emit("chat.updated", line.orgId, lineId, {
+      if (chats.length === 0) return;
+      void line.chats.encolar(() => procesarPorLotes(
+        fundirPorClave(chats.filter((c): c is typeof c & { id: string } => Boolean(c.id)), (c) => c.id),
+        (c) => this.emit("chat.updated", line.orgId, lineId, {
+          /*
+           * Se emite lo que CAMBIÓ, no lo que falta.
+           *
+           * WhatsApp manda una actualización con solo los campos tocados, así
+           * que un `?? null` convertía «esto no cambió» en «esto se puso a
+           * nada»: silenciar desde el teléfono llegaba aquí como un chat
+           * archivado y sin pendientes. `undefined` se omite, y quien lo reciba
+           * sabe distinguir ambas cosas.
+           */
           chat: c.id,
           ...(c.unreadCount !== undefined ? { unreadCount: c.unreadCount } : {}),
           ...(c.archived !== undefined ? { archived: c.archived } : {}),
@@ -431,8 +483,8 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
           ...(c.ephemeralExpiration !== undefined
             ? { ephemeral: Number(c.ephemeralExpiration ?? 0) }
             : {}),
-        });
-      }
+        }),
+      ));
     });
 
     ev.on("presence.update", ({ id, presences }) => {
