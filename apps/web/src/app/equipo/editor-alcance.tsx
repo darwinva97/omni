@@ -37,13 +37,26 @@ const corta = (address: string): string => {
   return sufijo === "s.whatsapp.net" ? `+${local}` : address;
 };
 
+/** Los únicos roles que admiten acceso limitado: gestionar algo exige verlo entero. */
+const LIMITABLES = new Set(["agent", "viewer"]);
+
 export function EditorAlcance({
   lineas, inicial = { restricted: false, allowedLines: [], allowedChats: [], canCreateLines: false },
+  roles, rolInicial = "agent",
 }: {
   lineas: readonly LineaElegible[];
   inicial?: Alcance;
+  /**
+   * Si se pasan, el editor pinta también el selector de rol (`name="rol"`).
+   * Van juntos porque se condicionan: limitar solo vale con agent o viewer, y
+   * enterarse al enviar —con el formulario ya vacío— no sirve de nada.
+   */
+  roles?: readonly string[];
+  rolInicial?: string;
 }) {
   const [modo, setModo] = useState<Modo>(modoDe(inicial));
+  const [rol, setRol] = useState(rolInicial);
+  const limitable = !roles || LIMITABLES.has(rol);
   const [lineasSel, setLineasSel] = useState<Set<string>>(new Set(inicial.allowedLines));
   const [chatsSel, setChatsSel] = useState<Set<string>>(new Set(inicial.allowedChats));
   const [crea, setCrea] = useState(inicial.canCreateLines);
@@ -112,33 +125,69 @@ export function EditorAlcance({
 
   return (
     <fieldset className="space-y-3">
-      <legend className="text-sm font-medium">Acceso</legend>
+      <legend className="sr-only">Rol y acceso</legend>
       {/* Vacío cuando falta algo: el servidor lo rechaza con un motivo en vez
           de guardar, sin querer, «toda la línea» donde se pedían unos chats. */}
       <input type="hidden" name="alcance" value={sinLineas || sinChats ? "" : JSON.stringify(alcance)} />
 
+      {roles && (
+        <label className="block">
+          <span className="text-sm font-medium">Rol</span>
+          <select
+            name="rol" value={rol} onChange={(e) => setRol(e.target.value)}
+            className="mt-1.5 w-full rounded-lg border border-(--color-borde) bg-(--color-panel) px-3 py-2 text-sm outline-none transition-colors duration-150 focus:border-(--color-acento) focus:ring-2 focus:ring-(--color-acento)/25"
+          >
+            {roles.map((r) => (
+              <option key={r} value={r} disabled={modo !== "todo" && !LIMITABLES.has(r)}>
+                {r}{modo !== "todo" && !LIMITABLES.has(r) ? " — no con acceso limitado" : ""}
+              </option>
+            ))}
+          </select>
+          <span className="mt-1.5 block text-xs text-(--color-tenue)">
+            {rol === "viewer" && "Solo lee."}
+            {rol === "agent" && "Lee y escribe."}
+            {rol === "manager" && "Gestiona líneas, etiquetas, claves y automatizaciones de toda la organización."}
+            {rol === "owner" && "Todo, también el equipo y la facturación."}
+          </span>
+        </label>
+      )}
+
+      <p className="text-sm font-medium">Acceso</p>
       <div role="radiogroup" className="flex flex-wrap gap-2">
         {([
           ["todo", "Todo"],
           ["lineas", "Solo unas líneas"],
           ["chats", "Solo unos chats"],
-        ] as const).map(([valor, texto]) => (
-          <label
-            key={valor}
-            className={`cursor-pointer rounded-lg border px-3 py-1.5 text-sm transition-colors duration-150 ${
-              modo === valor
-                ? "border-(--color-acento) bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
-                : "border-(--color-borde) hover:bg-(--color-hundido)"
-            }`}
-          >
-            <input
-              type="radio" name="alcance_modo" value={valor} checked={modo === valor}
-              onChange={() => setModo(valor)} className="sr-only"
-            />
-            {texto}
-          </label>
-        ))}
+        ] as const).map(([valor, texto]) => {
+          const bloqueado = valor !== "todo" && !limitable;
+          return (
+            <label
+              key={valor}
+              className={`rounded-lg border px-3 py-1.5 text-sm transition-colors duration-150 ${
+                bloqueado
+                  ? "cursor-not-allowed border-(--color-borde) opacity-40"
+                  : modo === valor
+                    ? "cursor-pointer border-(--color-acento) bg-(--color-acento-tenue) text-(--color-acento-fuerte)"
+                    : "cursor-pointer border-(--color-borde) hover:bg-(--color-hundido)"
+              }`}
+            >
+              <input
+                type="radio" name="alcance_modo" value={valor} checked={modo === valor}
+                disabled={bloqueado}
+                onChange={() => setModo(valor)} className="sr-only"
+              />
+              {texto}
+            </label>
+          );
+        })}
       </div>
+      {!limitable && (
+        <p className="text-xs text-(--color-tenue)">
+          Un {rol} ve toda la organización, así que su acceso no se puede limitar. Para que solo vea
+          unas líneas o unos chats, elige <strong>agent</strong> o <strong>viewer</strong>; si además
+          tiene que dar de alta las suyas, marca abajo «Puede dar de alta líneas».
+        </p>
+      )}
 
       <p className="text-xs text-(--color-tenue)">
         {modo === "todo" && "Ve todas las líneas y conversaciones, también las que se creen después."}
