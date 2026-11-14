@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { OmniError, parseAddress, SendMessageInput } from "@omni/shared";
-import { authorize, route as routeOf } from "@omni/core";
+import { authorize, filterChats, filterLines, route as routeOf } from "@omni/core";
 import { lineTable } from "@omni/db";
 import { and, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
@@ -33,9 +33,7 @@ export function wasenderCompat(container: Container): Hono {
       .from(lineTable)
       .where(and(eq(lineTable.orgId, principal.orgId), eq(lineTable.enabled, true)));
 
-    const alcance = principal.kind === "api-key" && principal.allowedLines.length > 0
-      ? lineas.filter((l) => principal.allowedLines.includes(l.id))
-      : lineas;
+    const alcance = filterLines(principal, lineas, (l) => l.id);
 
     if (alcance.length === 0) throw new OmniError("not_found", "la credencial no alcanza ninguna línea");
     if (alcance.length > 1) {
@@ -121,7 +119,8 @@ export function wasenderCompat(container: Container): Hono {
       .where(eq(groupInfoTable.lineId, lineId));
     return c.json({
       success: true,
-      data: filas.map((g) => ({ jid: g.address, name: g.subject, size: g.size })),
+      data: filterChats(principal, filas, (g) => g.address)
+        .map((g) => ({ jid: g.address, name: g.subject, size: g.size })),
     });
   });
 

@@ -14,8 +14,13 @@ const key = (over: Partial<Extract<Principal, { kind: "api-key" }>> = {}): Princ
   allowedLines: [], allowedChats: [], ...over,
 });
 
-const user = (role: "owner" | "manager" | "agent" | "viewer", lineRoles = new Map()): Principal => ({
+const user = (
+  role: "owner" | "manager" | "agent" | "viewer",
+  lineRoles = new Map(),
+  alcance: { allowedLines?: string[]; allowedChats?: string[] } = {},
+): Principal => ({
   kind: "user", userId: "u1", orgId: "o1", orgRole: role, lineRoles,
+  allowedLines: alcance.allowedLines ?? [], allowedChats: alcance.allowedChats ?? [],
 });
 
 const ok = (p: Promise<void>) => expect(p).resolves.toBeUndefined();
@@ -36,6 +41,17 @@ describe("alcance por línea", () => {
 
   it("una clave limitada a líneas no opera sobre la organización", async () => {
     await denied(authorize(key({ allowedLines: ["l1"] }), route("apikey.list")), 403);
+  });
+
+  it("pero sí lista líneas: el listado se filtra en vez de negarse", async () => {
+    await ok(authorize(key({ allowedLines: ["l1"] }), route("line.list")));
+  });
+
+  it("solo los listados de organización marcados chatSafe pasan con alcance de línea", () => {
+    // Si alguien marca chatSafe una ruta de organización, tiene que filtrar su salida.
+    const deOrg = (Object.values(ROUTES) as RouteDescriptor[])
+      .filter((r) => r.scope === "org" && r.chatSafe === true).map((r) => r.id);
+    expect(deOrg).toEqual(["line.list"]);
   });
 });
 
@@ -147,6 +163,56 @@ describe("filtrado de listados", () => {
     const lines = [{ id: "l1" }, { id: "l2" }];
     expect(filterLines(key({ allowedLines: ["l1"] }), lines, (l) => l.id)).toEqual([{ id: "l1" }]);
     expect(filterLines(key(), lines, (l) => l.id)).toEqual(lines);
+  });
+});
+
+describe("alcance de una PERSONA", () => {
+  // Las mismas reglas que una clave: compartir unos chats con alguien del
+  // equipo no puede abrirle más de lo que abriría una clave igual de acotada.
+  const acotada = (role: "agent" | "viewer" = "agent") =>
+    user(role, new Map(), { allowedLines: ["l1"], allowedChats: [CHAT_A.value] });
+
+  it("escribe en sus chats y no en otros", async () => {
+    await ok(authorize(acotada(), route("message.send"), { lineId: "l1", chat: CHAT_A }));
+    await denied(authorize(acotada(), route("message.send"), { lineId: "l1", chat: CHAT_B }), 403);
+  });
+
+  it("como viewer lee sus chats pero no escribe en ellos", async () => {
+    await ok(authorize(acotada("viewer"), route("message.list"), { lineId: "l1", chat: CHAT_A }));
+    await denied(authorize(acotada("viewer"), route("message.send"), { lineId: "l1", chat: CHAT_A }), 403);
+  });
+
+  it("una línea ajena da 401, como a una clave", async () => {
+    await denied(authorize(acotada(), route("chat.list"), { lineId: "l2" }), 401);
+  });
+
+  it("PROPIEDAD: toda ruta no marcada chatSafe se le deniega, también las futuras", async () => {
+    // Con el rol más alto que se le pueda dar acotada a chats no basta para
+    // pasar: lo que la frena es el alcance, no la falta de permiso.
+    const p = user("owner", new Map(), { allowedLines: ["l1"], allowedChats: [CHAT_A.value] });
+    for (const r of Object.values(ROUTES) as RouteDescriptor[]) {
+      if (r.chatSafe === true) continue;
+      await denied(authorize(p, r, { lineId: "l1", chat: CHAT_A }), 403);
+    }
+  });
+
+  it("no ve el equipo ni las respuestas de la organización", async () => {
+    await denied(authorize(acotada(), route("org.members.list")), 403);
+    await denied(authorize(acotada(), route("quickreply.list")), 403);
+    await denied(authorize(user("agent", new Map(), { allowedLines: ["l1"] }), route("org.members.list")), 403);
+  });
+
+  it("puede listar líneas: la lista se filtra a las suyas", async () => {
+    await ok(authorize(acotada(), route("line.list")));
+    const lines = [{ id: "l1" }, { id: "l2" }];
+    expect(filterLines(acotada(), lines, (l) => l.id)).toEqual([{ id: "l1" }]);
+    expect(filterChats(acotada(), [{ a: CHAT_A.value }, { a: CHAT_B.value }], (c) => c.a))
+      .toEqual([{ a: CHAT_A.value }]);
+  });
+
+  it("sin alcance, una persona sigue viéndolo todo", async () => {
+    await ok(authorize(user("agent"), route("note.list"), { lineId: "l9", chat: CHAT_B }));
+    expect(filterLines(user("agent"), [{ id: "l1" }, { id: "l2" }], (l) => l.id)).toHaveLength(2);
   });
 });
 

@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { OmniError, parseAddress, SendMessageInput } from "@omni/shared";
-import { authorize, route as routeOf } from "@omni/core";
+import { authorize, filterChats, route as routeOf } from "@omni/core";
 import { chatTable, lineTable } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
@@ -116,7 +116,7 @@ export function evolutionCompat(container: Container): Hono {
     const filas = await container.dbh.db.select().from(chatTable)
       .where(eq(chatTable.lineId, lineId))
       .orderBy(desc(chatTable.lastMessageAt)).limit(200);
-    return c.json(filas.map((f) => ({
+    return c.json(filterChats(principal, filas, (f) => f.address).map((f) => ({
       id: f.address, name: f.title, unreadCount: f.unreadCount,
       updatedAt: f.lastMessageAt?.toISOString() ?? null,
     })));

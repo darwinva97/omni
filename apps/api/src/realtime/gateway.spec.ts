@@ -119,13 +119,15 @@ describe("reparto", () => {
     // Con doscientas pestañas abiertas, doscientas suscripciones a Postgres
     // serían doscientas conexiones LISTEN contra la base.
     const bus = new MemoryBus();
-    let suscripciones = 0;
+    const temas: string[] = [];
     const original = bus.subscribe.bind(bus);
-    bus.subscribe = (async (t: string, h: never) => { suscripciones++; return original(t, h); }) as typeof bus.subscribe;
+    bus.subscribe = (async (t: string, h: never) => { temas.push(t); return original(t, h); }) as typeof bus.subscribe;
 
     const gateway = new RealtimeGateway(bus);
     for (const id of ["a", "b", "c"]) await gateway.añadir(id, billete(), () => {});
-    expect(suscripciones).toBe(1);
+    // Dos temas por organización —sus eventos y los cambios de acceso de su
+    // gente—, y los mismos dos con tres conexiones que con una.
+    expect(temas).toEqual(["org:org1", "acceso:org1"]);
     expect(gateway.conexionesAbiertas).toBe(3);
   });
 

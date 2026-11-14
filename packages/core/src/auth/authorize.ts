@@ -1,6 +1,6 @@
 import { OmniError } from "@omni/shared";
 import type { Address } from "@omni/shared";
-import { isChatScoped, type Principal } from "./principal.js";
+import { isChatScoped, isLineScoped, type Principal } from "./principal.js";
 import { keyRoleHas, roleHas, type Role } from "./rbac.js";
 import type { RouteDescriptor } from "./routes.js";
 
@@ -44,15 +44,20 @@ export async function authorize(
   target: AuthorizeTarget = {},
   opts: AuthorizeOptions = {},
 ): Promise<void> {
-  // 1 ── línea
-  if (principal.kind === "api-key" && principal.allowedLines.length > 0) {
+  // 1 ── línea. Igual para una persona que para una clave.
+  if (isLineScoped(principal)) {
     if (target.lineId && !principal.allowedLines.includes(target.lineId)) {
-      throw new OmniError("unauthenticated", "la clave no alcanza esa línea");
+      throw new OmniError("unauthenticated", "la credencial no alcanza esa línea");
     }
-    // Las rutas que no nombran línea alguna (gestión de claves, panel de colas)
-    // quedan fuera del alcance de una clave limitada.
-    if (!target.lineId && descriptor.scope === "org") {
-      throw new OmniError("forbidden", "una clave limitada a líneas no puede operar sobre la organización");
+    /*
+     * Las rutas que no nombran línea alguna (gestión de claves, equipo, panel
+     * de colas) quedan fuera del alcance de una credencial limitada. La única
+     * excepción son las marcadas `chatSafe`: son listados que se FILTRAN por el
+     * alcance —la lista de líneas— y negarlas dejaría a quien tiene una línea
+     * sin forma de saber cuál es.
+     */
+    if (!target.lineId && descriptor.scope === "org" && descriptor.chatSafe !== true) {
+      throw new OmniError("forbidden", "una credencial limitada a líneas no puede operar sobre la organización");
     }
   }
 
@@ -67,14 +72,13 @@ export async function authorize(
     });
   }
 
-  // 3 ── chat, con denegación por defecto
+  // 3 ── chat, con denegación por defecto. Igual para una persona que para una clave.
   if (!isChatScoped(principal)) return;
-  if (principal.kind !== "api-key") return;
 
   if (descriptor.chatSafe !== true) {
     throw new OmniError(
       "forbidden",
-      `la ruta "${descriptor.id}" no está permitida a una clave limitada a chats`,
+      `la ruta "${descriptor.id}" no está permitida a una credencial limitada a chats`,
       { route: descriptor.id },
     );
   }
@@ -91,29 +95,29 @@ export async function authorize(
   const aliases = (await opts.resolveIdentity?.(target.lineId ?? "", target.chat)) ?? null;
   if (aliases && aliases.some((a) => principal.allowedChats.includes(a))) return;
 
-  throw new OmniError("forbidden", "el chat está fuera del alcance de la clave", {
+  throw new OmniError("forbidden", "el chat está fuera del alcance de la credencial", {
     chat: target.chat.value,
   });
 }
 
-/** Filtra una lista de chats a los que la clave alcanza. Para rutas de listado. */
+/** Filtra una lista de chats a los que la credencial alcanza. Para rutas de listado. */
 export function filterChats<T>(
   principal: Principal,
   items: readonly T[],
   addressOf: (item: T) => string,
 ): readonly T[] {
-  if (!isChatScoped(principal) || principal.kind !== "api-key") return items;
+  if (!isChatScoped(principal)) return items;
   const allowed = new Set(principal.allowedChats);
   return items.filter((i) => allowed.has(addressOf(i)));
 }
 
-/** Filtra líneas al alcance de la clave. Vacío significa todas. */
+/** Filtra líneas al alcance de la credencial. Vacío significa todas. */
 export function filterLines<T>(
   principal: Principal,
   items: readonly T[],
   idOf: (item: T) => string,
 ): readonly T[] {
-  if (principal.kind !== "api-key" || principal.allowedLines.length === 0) return items;
+  if (!isLineScoped(principal)) return items;
   const allowed = new Set(principal.allowedLines);
   return items.filter((i) => allowed.has(idOf(i)));
 }

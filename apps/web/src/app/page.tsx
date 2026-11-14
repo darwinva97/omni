@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { apiFetchAuth, type Linea, type Yo } from "@/lib/api";
+import { acotado, apiFetchAuth, type Linea, type Yo } from "@/lib/api";
 import { Pagina } from "@/componentes/armazon";
 import { Aviso, Avatar, Estado, Vacio } from "@/componentes/piezas";
 import { IconoCanal } from "@/componentes/iconos";
@@ -22,20 +22,23 @@ export default async function Lineas() {
     (l) => l.channelKind.startsWith("whatsapp.") && l.channelKind !== "whatsapp.cloud",
   );
   const caidas = lineas.filter((l) => l.status !== "connected" && l.enabled);
+  // A quien le compartieron unos chats no se le ofrece crear ni tocar líneas:
+  // la API se lo negaría, y la portada es su puerta a las conversaciones.
+  const compartido = acotado(yo);
 
   return (
     <Pagina
       actual="/"
       titulo="Líneas"
-      descripcion={`${yo.name}${yo.role ? ` · ${yo.role}` : ""}`}
-      acciones={
+      descripcion={`${yo.name}${yo.role ? ` · ${yo.role}` : ""}${compartido ? " · acceso compartido" : ""}`}
+      acciones={compartido ? undefined : (
         <Link
           href="/lineas/nueva"
           className="rounded-lg bg-(--color-acento) px-3.5 py-2 text-sm font-medium text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90"
         >
           Nueva línea
         </Link>
-      }
+      )}
     >
       <div className="space-y-5">
         {caidas.length > 0 && (
@@ -62,7 +65,12 @@ export default async function Lineas() {
           </Aviso>
         )}
 
-        {lineas.length === 0 ? (
+        {lineas.length === 0 && compartido ? (
+          <Vacio titulo="Todavía no te han compartido nada">
+            Cuando alguien del equipo te dé acceso a una línea o a unas
+            conversaciones, aparecerán aquí.
+          </Vacio>
+        ) : lineas.length === 0 ? (
           <Vacio
             titulo="Todavía no hay ninguna línea"
             accion={
@@ -106,7 +114,7 @@ export default async function Lineas() {
                     </span>
                   </span>
                 </Link>
-                <MenuLinea linea={l} />
+                {!compartido && <MenuLinea linea={l} />}
               </li>
             ))}
           </ul>

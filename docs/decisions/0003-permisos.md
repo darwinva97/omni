@@ -43,3 +43,36 @@ de los dígitos confundiría a dos personas distintas. `555000111@lid` y
 
 Línea (→ **401**) antes que permiso (→ 403) antes que chat (→ 403). El 401 de
 línea es deliberado: un 403 confirmaría que esa línea existe.
+
+## Personas (2026-11-14)
+
+Las personas del equipo tienen los MISMOS dos ejes, en `org_member` (y en
+`invitation`, para que quien entra por invitación entre ya acotado). El
+guardián no distingue: una persona acotada choca con las mismas paredes que
+una clave igual de acotada, y la prueba de propiedad lo comprueba también
+para ella.
+
+Tres reglas propias de las personas:
+
+- **Solo `agent` o `viewer`** admiten alcance. `agent` lee y escribe en sus
+  chats; `viewer` solo los lee. Gestionar algo exige verlo entero, así que dar
+  `manager` u `owner` a alguien acotado se rechaza (409) hasta quitarle el
+  límite.
+- **Unos chats exigen sus líneas.** Los chats se nombran por dirección; sin
+  líneas, la persona vería la lista de todas las líneas de la organización.
+- **Cambiar el acceso cierra sus sockets.** El billete fija el alcance al
+  abrir el WebSocket; el cambio se avisa por el bus (`acceso:<org>`) para que
+  todas las réplicas cierren las conexiones de esa persona, y el panel
+  reconecta con el alcance nuevo. Vale también al cambiar el rol y al quitarla.
+
+Con esto salieron fugas que ya tenían las claves acotadas y que se cerraron:
+la bandeja (`GET /v1/conversations`) no filtraba por chats ni, sin `lineId`,
+por líneas; los estados, los stickers y los listados de las capas de
+compatibilidad tampoco filtraban; y `line.status` devolvía el QR de enlace a
+quien solo tenía un chat, que podía escanearlo con su teléfono y quedarse la
+línea. Ahora una credencial acotada que no puede enlazar no recibe el QR, ni
+por HTTP ni por el socket.
+
+`line.list` pasa a ser `chatSafe`: es un listado que se filtra, y negarlo
+dejaba a quien tiene una línea sin forma de saber cuál es. Es la única ruta de
+organización marcada así; hay una prueba que lo vigila.

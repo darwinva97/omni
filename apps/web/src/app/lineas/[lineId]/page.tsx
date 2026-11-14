@@ -1,5 +1,5 @@
 import { revalidatePath } from "next/cache";
-import { apiFetch, apiFetchAuth, type Linea } from "@/lib/api";
+import { acotado, apiFetch, apiFetchAuth, leerYo, type Linea } from "@/lib/api";
 import { Qr } from "@/componentes/qr";
 import { Aviso, Estado } from "@/componentes/piezas";
 import { IconoPersona } from "@/componentes/iconos";
@@ -15,10 +15,14 @@ import { IconoPersona } from "@/componentes/iconos";
 export default async function Linea({ params }: { params: Promise<{ lineId: string }> }) {
   const { lineId } = await params;
 
-  const [lineas, estado] = await Promise.all([
+  const [lineas, estado, yo] = await Promise.all([
     apiFetchAuth<Linea[]>("/v1/lines"),
     apiFetchAuth<{ state: string; qr?: string; self?: string }>(`/v1/lines/${lineId}/status`),
+    leerYo(),
   ]);
+  // Conectarla no es cosa de quien solo tiene unos chats compartidos: la API se
+  // lo niega, y el botón acabaría en una pantalla de error.
+  const compartido = acotado(yo);
   const linea = (lineas as Linea[]).find((l) => l.id === lineId);
 
   async function conectar(): Promise<void> {
@@ -64,7 +68,14 @@ export default async function Linea({ params }: { params: Promise<{ lineId: stri
             </div>
           )}
 
-          {estado.state !== "connected" && estado.state !== "awaiting-link" && (
+          {compartido && estado.state !== "connected" && (
+            <p className="mt-5 text-sm text-(--color-tenue)">
+              La línea no está conectada. Mientras tanto no llegan ni salen
+              mensajes; avisa a quien la administra para que la vuelva a enlazar.
+            </p>
+          )}
+
+          {!compartido && estado.state !== "connected" && estado.state !== "awaiting-link" && (
             <form action={conectar} className="mt-5">
               <button className="w-full rounded-lg bg-(--color-acento) px-4 py-2.5 text-sm font-medium text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90">
                 Conectar la línea

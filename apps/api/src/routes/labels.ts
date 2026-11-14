@@ -1,6 +1,6 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, parseAddress } from "@omni/shared";
-import { authorize, route as routeOf } from "@omni/core";
+import { authorize, filterChats, route as routeOf } from "@omni/core";
 import { labelAssignmentTable, labelTable } from "@omni/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Container } from "../container.js";
@@ -238,9 +238,7 @@ export function registerLabelRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
         .where(and(eq(labelAssignmentTable.lineId, lineId), eq(labelAssignmentTable.labelId, labelId)));
 
       // Una credencial acotada a chats ve solo los suyos: se filtra, no se rechaza.
-      const visibles = principal.kind === "api-key" && principal.allowedChats.length > 0
-        ? filas.filter((f) => principal.allowedChats.includes(f.target))
-        : filas;
+      const visibles = [...filterChats(principal, filas, (f) => f.target)];
       return c.json({ data: visibles }, 200);
     },
   );

@@ -76,7 +76,9 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
    * el servidor la apaga sola a los 90 s sin renovar. Cerrar o esconder el
    * panel devuelve los avisos al teléfono enseguida.
    *
-   * Un transporte que no sabe hacerlo contesta 422, y se deja de pedir.
+   * Un transporte que no sabe hacerlo contesta 422, y se deja de pedir. Una
+   * sesión que no puede hacerlo —acceso compartido a unos chats: ponerse en
+   * línea afecta a toda la cuenta— contesta 403, y también se deja.
    */
   useEffect(() => {
     let sinSoporte = false;
@@ -87,7 +89,7 @@ export function ListaChats({ linea, iniciales }: { linea: Linea; iniciales: Chat
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat: abierto }),
       }).catch(() => null);
-      if (r?.status === 422) sinSoporte = true;
+      if (r?.status === 422 || r?.status === 403) sinSoporte = true;
     };
     void renovar();
     const reloj = setInterval(() => void renovar(), 30_000);

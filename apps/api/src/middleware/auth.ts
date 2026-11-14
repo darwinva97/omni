@@ -85,9 +85,9 @@ export function ipInCidr(ip: string, cidr: string): boolean {
 /**
  * Autenticación por cookie de sesión.
  *
- * Devuelve el `Principal` de una persona, con su rol en la organización y sus
- * roles por línea ya cargados: el guardián los necesita y consultarlos en cada
- * ruta sería repetir el trabajo.
+ * Devuelve el `Principal` de una persona, con su rol en la organización, sus
+ * roles por línea y su alcance ya cargados: el guardián los necesita y
+ * consultarlos en cada ruta sería repetir el trabajo.
  */
 export async function authenticateSession(
   db: Database,
@@ -125,7 +125,11 @@ export async function authenticateSession(
   if (!orgId) return null;
 
   const pertenencia = await db
-    .select({ role: orgMemberTable.role })
+    .select({
+      role: orgMemberTable.role,
+      allowedLines: orgMemberTable.allowedLines,
+      allowedChats: orgMemberTable.allowedChats,
+    })
     .from(orgMemberTable)
     .where(and(eq(orgMemberTable.orgId, orgId), eq(orgMemberTable.userId, sesion.userId)))
     .limit(1);
@@ -142,5 +146,8 @@ export async function authenticateSession(
     orgId,
     orgRole: pertenencia[0].role,
     lineRoles: new Map(porLinea.map((l) => [l.lineId, l.role])),
+    // Se leen en cada petición, como el rol: acotar a alguien vale desde ya.
+    allowedLines: pertenencia[0].allowedLines,
+    allowedChats: pertenencia[0].allowedChats,
   };
 }

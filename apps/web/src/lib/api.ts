@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { API_URL, SESSION_COOKIE } from "./config";
@@ -45,15 +46,30 @@ export async function apiFetch<T>(
   return ((cuerpo as { data?: T }).data ?? cuerpo) as T;
 }
 
-/** Como `apiFetch`, pero manda a la pantalla de entrada si no hay sesión. */
+/**
+ * Como `apiFetch`, pero manda a la pantalla de entrada si no hay sesión, y a
+ * «sin acceso» si la hay pero no alcanza.
+ *
+ * Distinguirlos importa: a quien solo tiene unos chats compartidos, mandarlo a
+ * entrar cuando abre algo que no le toca parece que se le cerró la sesión, y
+ * vuelve a entrar para chocar otra vez con lo mismo.
+ */
 export async function apiFetchAuth<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     return await apiFetch<T>(path, init);
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) redirect("/entrar");
+    if (err instanceof ApiError && err.status === 401) redirect("/entrar");
+    if (err instanceof ApiError && err.status === 403) redirect("/sin-acceso");
     throw err;
   }
 }
+
+/**
+ * Quién soy, una vez por petición: el raíl y la página lo piden los dos, y
+ * `cache` hace que sea una sola llamada. Null sin sesión: quien lo use para
+ * decidir qué enseñar no debe romper la página por eso.
+ */
+export const leerYo = cache(async (): Promise<Yo | null> => apiFetch<Yo>("/v1/auth/me").catch(() => null));
 
 export interface Linea {
   id: string; name: string; slug: string; channelKind: string;
@@ -249,7 +265,18 @@ export interface Cita {
 
 export interface Yo {
   id: string; email: string; name: string; orgId: string | null; role: string | null;
+  /** Vacío = todas. */
+  allowedLines: string[];
+  /** Vacío = todos los chats de sus líneas. */
+  allowedChats: string[];
 }
+
+/**
+ * Si le han compartido solo unas líneas o unos chats. Entonces el panel le
+ * enseña solo las conversaciones: el resto lo negaría la API de todas formas.
+ */
+export const acotado = (yo: Pick<Yo, "allowedLines" | "allowedChats"> | null): boolean =>
+  !!yo && (yo.allowedLines.length > 0 || yo.allowedChats.length > 0);
 
 /** Una nota interna: la ve el equipo dentro del chat, nunca el cliente. */
 export interface Nota {

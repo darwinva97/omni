@@ -80,7 +80,8 @@ export function registerWebSocketRoute(
 
     return {
       onOpen: (_evt, ws) => {
-        void gateway.añadir(id, payload, (texto) => ws.send(texto));
+        // 4001: el acceso de esta persona cambió; el panel reconecta con billete nuevo.
+        void gateway.añadir(id, payload, (texto) => ws.send(texto), () => ws.close(4001, "acceso cambiado"));
         ws.send(JSON.stringify({ type: "ready", orgId: payload.orgId }));
       },
       onMessage: (evt, ws) => {
