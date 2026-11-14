@@ -141,16 +141,11 @@ export default async function Equipo({
             este acceso. Caduca en siete días y solo se puede usar una vez.
           </p>
           <form action={invitar} className="mt-3 space-y-4">
-            <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-              <Campo nombre="correo" etiqueta="Correo" tipo="email" requerido />
-              <Campo
-                nombre="rol" etiqueta="Rol" valor="agent"
-                opciones={otorgables.map((r) => ({ valor: r, texto: r }))}
-              />
-            </div>
+            <Campo nombre="correo" etiqueta="Correo" tipo="email" requerido />
             {/* Se fija al invitar y no después: así entra ya acotada, sin un
-                rato viéndolo todo hasta que alguien lo ajuste. */}
-            <EditorAlcance lineas={elegibles} />
+                rato viéndolo todo hasta que alguien lo ajuste. El rol va dentro
+                del editor porque se condicionan el uno al otro. */}
+            <EditorAlcance lineas={elegibles} roles={otorgables} />
             <Boton>Invitar</Boton>
           </form>
         </section>
@@ -204,7 +199,13 @@ export default async function Equipo({
                     name="rol" defaultValue={m.role} aria-label={`Rol de ${m.name}`}
                     className="rounded-lg border border-(--color-borde) bg-(--color-panel) px-2 py-1.5 text-sm"
                   >
-                    {otorgables.map((r) => <option key={r} value={r}>{r}</option>)}
+                    {/* A quien tiene el acceso limitado no se le ofrece un rol
+                        que no lo admite: la API lo rechazaría. */}
+                    {otorgables.map((r) => (
+                      <option key={r} value={r} disabled={m.restricted && !ACOTABLES.has(r)}>
+                        {r}{m.restricted && !ACOTABLES.has(r) ? " — quita antes el límite" : ""}
+                      </option>
+                    ))}
                   </select>
                   <Boton tipo="sobrio">Cambiar</Boton>
                 </form>,
