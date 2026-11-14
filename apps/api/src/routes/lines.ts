@@ -1,10 +1,11 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, channelKinds } from "@omni/shared";
-import { authorize, filterLines, route as routeOf } from "@omni/core";
-import { apiKeyTable, auditEventTable, lineTable, orgTable } from "@omni/db";
+import { authorize, filterLines, roleHas, route as routeOf } from "@omni/core";
+import { apiKeyTable, auditEventTable, lineMemberTable, lineTable, orgTable } from "@omni/db";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Container } from "../container.js";
 import { mintApiKey } from "../keys.js";
+import { avisarCambioDeAcceso } from "../alcance.js";
 import type { ApiEnv } from "./shared.js";
 import { errors, json, body } from "./shared.js";
 
@@ -101,6 +102,19 @@ export function registerLineAdminRoutes(app: OpenAPIHono<ApiEnv>, container: Con
 
       if (rows.length === 0) {
         throw new OmniError("conflict", `ya existe una línea con el identificador "${input.slug}"`);
+      }
+      /*
+       * Quien la da de alta sin poder ver todas —limitada, o con un rol que no
+       * crea líneas pero con permiso para crear las suyas— se queda con ella
+       * ENTERA: un rol de owner en esa línea. Sin esto crearía una línea que
+       * no puede ni ver.
+       */
+      if (principal.kind === "user" && (principal.restricted || !roleHas(principal.orgRole, "line.create"))) {
+        await container.dbh.db.insert(lineMemberTable)
+          .values({ lineId: id, userId: principal.userId, role: "owner" })
+          .onConflictDoNothing();
+        // Su socket abierto no sabe de esta línea: que reconecte con ella.
+        await avisarCambioDeAcceso(container.bus, principal.orgId, principal.userId);
       }
       await audit(c, "line.create", "line", id, { channelKind: input.channelKind });
       return c.json({ data: toLine(rows[0]!) }, 201);

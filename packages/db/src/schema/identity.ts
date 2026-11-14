@@ -38,6 +38,10 @@ export const orgMemberTable = pgTable(
      */
     allowedLines: jsonb("allowed_lines").$type<string[]>().notNull().default([]),
     allowedChats: jsonb("allowed_chats").$type<string[]>().notNull().default([]),
+    /** Limitada: con las listas vacías no ve NINGUNA línea ajena, no todas. */
+    restricted: boolean("restricted").notNull().default(false),
+    /** Puede dar de alta líneas, que serán suyas y enteras, aunque su rol no lo permita. */
+    canCreateLines: boolean("can_create_lines").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [primaryKey({ columns: [t.orgId, t.userId] }), index("org_member_user_idx").on(t.userId)],
@@ -74,6 +78,8 @@ export const invitationTable = pgTable(
     /** El alcance con el que entrará; se copia a `org_member` al aceptar. */
     allowedLines: jsonb("allowed_lines").$type<string[]>().notNull().default([]),
     allowedChats: jsonb("allowed_chats").$type<string[]>().notNull().default([]),
+    restricted: boolean("restricted").notNull().default(false),
+    canCreateLines: boolean("can_create_lines").notNull().default(false),
     tokenHash: text("token_hash").notNull(),
     invitedBy: text("invited_by").references(() => userTable.id, { onDelete: "set null" }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

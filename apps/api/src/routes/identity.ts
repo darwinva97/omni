@@ -279,8 +279,11 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
         200: json(z.object({ data: z.object({
           id: z.string(), email: z.string(), name: z.string(),
           orgId: z.string().nullable(), role: z.string().nullable(),
-          allowedLines: z.array(z.string()).describe("Vacío = todas"),
+          restricted: z.boolean().describe("Limitada: solo ve `allowedLines` (que incluye las suyas)"),
+          allowedLines: z.array(z.string()).describe("Limitada: las líneas que ve, sumadas las suyas"),
           allowedChats: z.array(z.string()).describe("Vacío = todos los de sus líneas"),
+          ownLines: z.array(z.string()).describe("Las que tiene enteras: las dio de alta ella"),
+          canCreateLines: z.boolean(),
         }) }), "ok"),
         ...errors,
       },
@@ -298,7 +301,10 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
           id: user.id, email: user.email, name: user.name,
           orgId: principal.orgId, role: principal.orgRole,
           // El panel lo usa para no ofrecer lo que el guardián va a negar.
+          restricted: principal.restricted,
           allowedLines: [...principal.allowedLines], allowedChats: [...principal.allowedChats],
+          ownLines: [...principal.lineRoles.keys()],
+          canCreateLines: principal.canCreateLines,
         },
       }, 200);
     },
@@ -312,7 +318,8 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       responses: {
         200: json(z.object({ data: z.array(z.object({
           userId: z.string(), email: z.string(), name: z.string(), role: z.string(),
-          allowedLines: z.array(z.string()), allowedChats: z.array(z.string()),
+          restricted: z.boolean(), allowedLines: z.array(z.string()), allowedChats: z.array(z.string()),
+          canCreateLines: z.boolean(),
         })) }), "ok"),
         ...errors,
       },
@@ -324,7 +331,9 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
         .select({
           userId: userTable.id, email: userTable.email,
           name: userTable.name, role: orgMemberTable.role,
+          restricted: orgMemberTable.restricted,
           allowedLines: orgMemberTable.allowedLines, allowedChats: orgMemberTable.allowedChats,
+          canCreateLines: orgMemberTable.canCreateLines,
         })
         .from(orgMemberTable)
         .innerJoin(userTable, eq(userTable.id, orgMemberTable.userId))
@@ -341,11 +350,11 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
   const miembroGestionable = async (
     principal: { kind: string; orgId: string; orgRole?: Role },
     userId: string,
-  ): Promise<{ role: Role; propio: Role; allowedLines: string[]; allowedChats: string[] }> => {
+  ): Promise<{ role: Role; propio: Role; restricted: boolean }> => {
     const propio: Role = principal.kind === "user" && principal.orgRole ? principal.orgRole : "owner";
     const filas = await db.select({
       role: orgMemberTable.role,
-      allowedLines: orgMemberTable.allowedLines, allowedChats: orgMemberTable.allowedChats,
+      restricted: orgMemberTable.restricted,
     }).from(orgMemberTable)
       .where(and(eq(orgMemberTable.orgId, principal.orgId), eq(orgMemberTable.userId, userId))).limit(1);
     const actual = filas[0];
@@ -407,7 +416,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
   app.openapi(
     createRoute({
       method: "put", path: "/v1/members/{userId}/scope", tags: ["identidad"],
-      summary: "Limitar a alguien a unas líneas o unos chats",
+      summary: "Limitar a alguien a unas líneas o unos chats, y dejarle dar de alta las suyas",
       description:
         "Lo mismo que el alcance de una clave de API, y con las mismas reglas: vacío es todo; " +
         "acotada a chats, la persona solo alcanza las rutas seguras para chats y dentro de los " +
@@ -418,7 +427,8 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       request: { params: miembroParam, ...body(AlcanceSchema) },
       responses: {
         200: json(z.object({ data: z.object({
-          userId: z.string(), allowedLines: z.array(z.string()), allowedChats: z.array(z.string()),
+          userId: z.string(), restricted: z.boolean(),
+          allowedLines: z.array(z.string()), allowedChats: z.array(z.string()), canCreateLines: z.boolean(),
         }) }), "cambiado"),
         ...errors,
       },
@@ -489,7 +499,8 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       responses: {
         201: json(z.object({ data: z.object({
           id: z.string(), email: z.string(), role: z.string(),
-          allowedLines: z.array(z.string()), allowedChats: z.array(z.string()),
+          restricted: z.boolean(), allowedLines: z.array(z.string()), allowedChats: z.array(z.string()),
+          canCreateLines: z.boolean(),
           token: z.string().describe("Sólo se muestra aquí"),
           expiresAt: z.string(),
         }) }), "creada"),
@@ -500,10 +511,10 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       const principal = c.get("principal");
       await authorize(principal, routeOf("org.members.update"));
 
-      const { email, role, allowedLines, allowedChats } = c.req.valid("json");
+      const { email, role, ...pedido } = c.req.valid("json");
       // Se valida ANTES de crear nada: una invitación con un alcance que no
       // vale no puede quedar a medias, abierta a todo.
-      const alcance = await normalizarAlcance(db, principal.orgId, role, { allowedLines, allowedChats });
+      const alcance = await normalizarAlcance(db, principal.orgId, role, pedido);
       // Nadie otorga un rol por encima del suyo.
       const propio: Role = principal.kind === "user" ? principal.orgRole : "owner";
       if (!canGrantRole(propio, role)) {
@@ -566,6 +577,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       await db.insert(orgMemberTable)
         .values({
           orgId: inv.orgId, userId, role: inv.role,
+          restricted: inv.restricted, canCreateLines: inv.canCreateLines,
           allowedLines: inv.allowedLines, allowedChats: inv.allowedChats,
         })
         .onConflictDoNothing();
@@ -698,6 +710,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
       }
       await tx.insert(orgMemberTable).values({
         orgId: inv.orgId, userId, role: inv.role,
+        restricted: inv.restricted, canCreateLines: inv.canCreateLines,
         allowedLines: inv.allowedLines, allowedChats: inv.allowedChats,
       }).onConflictDoNothing();
       return inv.orgId;

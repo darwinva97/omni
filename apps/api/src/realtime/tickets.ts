@@ -1,5 +1,5 @@
 import { OmniError } from "@omni/shared";
-import type { Principal } from "@omni/core";
+import { fullLinesOf, isLineScoped, type Principal } from "@omni/core";
 import type { Kv } from "@omni/platform";
 import { ocultaEnlace } from "../alcance.js";
 
@@ -27,6 +27,13 @@ export interface TicketPayload {
   readonly allowedChats: readonly string[];
   /** No recibe el QR de enlace: ver `ocultaEnlace`. */
   readonly sinEnlace?: boolean;
+  /**
+   * Limitada por líneas aunque `allowedLines` esté vacía: una persona limitada
+   * a ninguna línea ajena no ve ninguna, no todas.
+   */
+  readonly lineScoped?: boolean;
+  /** Líneas que tiene enteras (las suyas): ni el límite por chats ni el del QR cuentan en ellas. */
+  readonly fullLines?: readonly string[];
 }
 
 export async function issueTicket(kv: Kv, principal: Principal): Promise<{ ticket: string; expiresIn: number }> {
@@ -40,6 +47,8 @@ export async function issueTicket(kv: Kv, principal: Principal): Promise<{ ticke
     allowedLines: principal.allowedLines,
     allowedChats: principal.allowedChats,
     sinEnlace: ocultaEnlace(principal),
+    lineScoped: isLineScoped(principal),
+    fullLines: fullLinesOf(principal),
   };
   await kv.set(PREFIJO + ticket, JSON.stringify(payload), TTL_SEGUNDOS);
   return { ticket, expiresIn: TTL_SEGUNDOS };

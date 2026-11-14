@@ -1,5 +1,5 @@
 import { revalidatePath } from "next/cache";
-import { acotado, apiFetch, apiFetchAuth, leerYo, type Linea } from "@/lib/api";
+import { apiFetch, apiFetchAuth, gestionaLinea, leerYo, type Linea } from "@/lib/api";
 import { Qr } from "@/componentes/qr";
 import { Aviso, Estado } from "@/componentes/piezas";
 import { IconoPersona } from "@/componentes/iconos";
@@ -21,8 +21,8 @@ export default async function Linea({ params }: { params: Promise<{ lineId: stri
     leerYo(),
   ]);
   // Conectarla no es cosa de quien solo tiene unos chats compartidos: la API se
-  // lo niega, y el botón acabaría en una pantalla de error.
-  const compartido = acotado(yo);
+  // lo niega, y el botón acabaría en una pantalla de error. La suya, sí.
+  const compartido = !gestionaLinea(yo, lineId);
   const linea = (lineas as Linea[]).find((l) => l.id === lineId);
 
   async function conectar(): Promise<void> {

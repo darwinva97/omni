@@ -1,6 +1,6 @@
 import { OmniError } from "@omni/shared";
 import type { Address } from "@omni/shared";
-import { isChatScoped, isLineScoped, type Principal } from "./principal.js";
+import { chatScopeOf, fullLinesOf, isChatScoped, isLineScoped, type Principal } from "./principal.js";
 import { keyRoleHas, roleHas, type Role } from "./rbac.js";
 import type { RouteDescriptor } from "./routes.js";
 
@@ -44,6 +44,13 @@ export async function authorize(
   target: AuthorizeTarget = {},
   opts: AuthorizeOptions = {},
 ): Promise<void> {
+  /*
+   * 0 ── crear lo propio. Dar de alta una línea no abre nada ajeno: lo creado
+   * pasa a ser de quien lo crea. Por eso a una persona a la que se le permite
+   * no la frena ni su rol ni su límite.
+   */
+  if (descriptor.ownCreate === true && principal.kind === "user" && principal.canCreateLines) return;
+
   // 1 ── línea. Igual para una persona que para una clave.
   if (isLineScoped(principal)) {
     if (target.lineId && !principal.allowedLines.includes(target.lineId)) {
@@ -74,6 +81,8 @@ export async function authorize(
 
   // 3 ── chat, con denegación por defecto. Igual para una persona que para una clave.
   if (!isChatScoped(principal)) return;
+  // En una línea que tiene ENTERA (la dio de alta ella) el límite por chats no cuenta.
+  if (target.lineId && fullLinesOf(principal).includes(target.lineId)) return;
 
   if (descriptor.chatSafe !== true) {
     throw new OmniError(
@@ -100,14 +109,20 @@ export async function authorize(
   });
 }
 
-/** Filtra una lista de chats a los que la credencial alcanza. Para rutas de listado. */
+/**
+ * Filtra una lista de chats DE UNA LÍNEA a los que la credencial alcanza. Para
+ * rutas de listado. La línea es obligatoria: en una que la persona tiene
+ * entera no se filtra nada.
+ */
 export function filterChats<T>(
   principal: Principal,
+  lineId: string,
   items: readonly T[],
   addressOf: (item: T) => string,
 ): readonly T[] {
-  if (!isChatScoped(principal)) return items;
-  const allowed = new Set(principal.allowedChats);
+  const chats = chatScopeOf(principal, lineId);
+  if (!chats) return items;
+  const allowed = new Set(chats);
   return items.filter((i) => allowed.has(addressOf(i)));
 }
 

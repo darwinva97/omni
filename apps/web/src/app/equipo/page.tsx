@@ -16,16 +16,18 @@ const ACOTABLES = new Set(["agent", "viewer"]);
 function leerAlcance(formData: FormData): Alcance {
   const crudo = String(formData.get("alcance") ?? "");
   if (!crudo) {
-    throw new ApiError(422, "falta por marcar: al menos una línea y, si limitas a chats, al menos un chat");
+    throw new ApiError(422, "falta por marcar: si limitas a unos chats, su línea y al menos un chat");
   }
   return JSON.parse(crudo) as Alcance;
 }
 
 function resumirAlcance(a: Alcance, nombreDeLinea: (id: string) => string): string {
-  if (a.allowedLines.length === 0 && a.allowedChats.length === 0) return "Todo";
+  const crea = a.canCreateLines ? " · crea líneas" : "";
+  if (!a.restricted) return `Todo${crea}`;
   const lineas = a.allowedLines.map(nombreDeLinea).join(", ");
-  if (a.allowedChats.length === 0) return lineas;
-  return `${a.allowedChats.length} chat${a.allowedChats.length === 1 ? "" : "s"} de ${lineas}`;
+  if (a.allowedLines.length === 0) return a.canCreateLines ? "Solo las líneas que cree" : "Nada";
+  if (a.allowedChats.length === 0) return `${lineas}${crea}`;
+  return `${a.allowedChats.length} chat${a.allowedChats.length === 1 ? "" : "s"} de ${lineas}${crea}`;
 }
 
 const ROLES = ["viewer", "agent", "manager", "owner"] as const;
@@ -170,7 +172,10 @@ export default async function Equipo({
               <input type="hidden" name="usuario" value={editando.userId} />
               <EditorAlcance
                 lineas={elegibles}
-                inicial={{ allowedLines: editando.allowedLines, allowedChats: editando.allowedChats }}
+                inicial={{
+                  restricted: editando.restricted, allowedLines: editando.allowedLines,
+                  allowedChats: editando.allowedChats, canCreateLines: editando.canCreateLines,
+                }}
               />
               <Boton>Guardar acceso</Boton>
             </form>

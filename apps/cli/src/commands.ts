@@ -51,6 +51,28 @@ const flag = (a: Args, n: string): string | undefined => {
   return typeof v === "string" ? v : undefined;
 };
 
+/** Una bandera de sí o no: `--x` a secas o `--x=true` es sí; ausente, `fallback`. */
+const siNo = (a: Args, n: string, fallback?: boolean): boolean | undefined => {
+  const v = a.flags[n];
+  if (v === undefined) return fallback;
+  return v === true || v === "true" || v === "si" || v === "sí";
+};
+
+/** El alcance de una persona, a partir de las banderas comunes a invitar y a `miembro:acceso`. */
+const alcanceDe = (a: Args) => ({
+  allowedLines: flag(a, "lineas")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+  allowedChats: flag(a, "chats")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+  ...(siNo(a, "limitada") !== undefined ? { restricted: siNo(a, "limitada") } : {}),
+  canCreateLines: siNo(a, "crea-lineas", false),
+});
+
+const FLAGS_ALCANCE = [
+  { name: "lineas", description: "Lista separada por comas de líneas que ve" },
+  { name: "chats", description: "Lista separada por comas, dentro de esas líneas; vacío = todos" },
+  { name: "limitada", description: "Limitada aunque no haya listas: no ve ninguna línea ajena" },
+  { name: "crea-lineas", description: "Puede dar de alta líneas, que serán suyas y enteras" },
+] as const;
+
 export const COMMANDS: readonly Command[] = [
   {
     name: "salud",
@@ -309,33 +331,22 @@ export const COMMANDS: readonly Command[] = [
   },
   {
     name: "miembro:acceso",
-    summary: "Limitar a alguien a unas líneas o unos chats (sin listas, lo ve todo)",
+    summary: "Limitar a alguien a unas líneas o unos chats, y dejarle dar de alta las suyas",
     operation: "PUT /v1/members/{userId}/scope",
     args: [{ name: "usuario", required: true, description: "Identificador de la persona (ver `omni equipo`)" }],
-    flags: [
-      { name: "lineas", description: "Lista separada por comas; vacío = todas" },
-      { name: "chats", description: "Lista separada por comas, dentro de esas líneas; vacío = todos" },
-    ],
-    run: (c, a) => c.request("PUT", `/v1/members/${req(a, 0, "usuario")}/scope`, {
-      allowedLines: flag(a, "lineas")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
-      allowedChats: flag(a, "chats")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
-    }),
+    flags: FLAGS_ALCANCE,
+    run: (c, a) => c.request("PUT", `/v1/members/${req(a, 0, "usuario")}/scope`, alcanceDe(a)),
   },
   {
     name: "invitar",
     summary: "Invitar a alguien a la organización",
     operation: "POST /v1/invitations",
     args: [{ name: "correo", required: true, description: "A quién se invita" }],
-    flags: [
-      { name: "rol", description: "owner, manager, agent o viewer" },
-      { name: "lineas", description: "Entra limitada a estas líneas (comas); vacío = todas" },
-      { name: "chats", description: "Entra limitada a estos chats (comas); vacío = todos" },
-    ],
+    flags: [{ name: "rol", description: "owner, manager, agent o viewer" }, ...FLAGS_ALCANCE],
     run: (c, a) => c.request("POST", "/v1/invitations", {
       email: req(a, 0, "correo"),
       role: flag(a, "rol") ?? "agent",
-      allowedLines: flag(a, "lineas")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
-      allowedChats: flag(a, "chats")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+      ...alcanceDe(a),
     }),
   },
   {

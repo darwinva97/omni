@@ -30,6 +30,7 @@ const DUENO = "u-alcance-dueno";
 const ACOTADA = "u-alcance-acotada";
 const LECTORA = "u-alcance-lectora";
 const LIBRE = "u-alcance-libre";
+const CREADORA = "u-alcance-creadora";
 const A = "51911100011@s.whatsapp.net";
 const B = "51922200022@s.whatsapp.net";
 const C = "51933300033@s.whatsapp.net";
@@ -84,8 +85,8 @@ beforeAll(async () => {
   await dbh.sql`DELETE FROM line WHERE org_id = ${ORG}`;
   await dbh.sql`DELETE FROM invitation WHERE org_id = ${ORG}`;
   await dbh.sql`DELETE FROM org WHERE id = ${ORG}`;
-  await dbh.sql`DELETE FROM app_user WHERE id IN (${DUENO}, ${ACOTADA}, ${LECTORA}, ${LIBRE})`;
-  await dbh.sql`DELETE FROM app_user WHERE email = 'invitada-alcance@ejemplo.com'`;
+  await dbh.sql`DELETE FROM app_user WHERE id IN (${DUENO}, ${ACOTADA}, ${LECTORA}, ${LIBRE}, ${CREADORA})`;
+  await dbh.sql`DELETE FROM app_user WHERE email IN ('invitada-alcance@ejemplo.com', 'crea-alcance@ejemplo.com')`;
 
   await dbh.db.insert(orgTable).values({ id: ORG, name: "Alcance", slug: "alcance" });
   await dbh.db.insert(userTable).values([
@@ -93,12 +94,15 @@ beforeAll(async () => {
     { id: ACOTADA, email: "acotada-alcance@ejemplo.com", name: "Acotada", emailVerified: true },
     { id: LECTORA, email: "lectora-alcance@ejemplo.com", name: "Lectora", emailVerified: true },
     { id: LIBRE, email: "libre-alcance@ejemplo.com", name: "Libre", emailVerified: true },
+    { id: CREADORA, email: "creadora-alcance@ejemplo.com", name: "Creadora", emailVerified: true },
   ]);
   await dbh.db.insert(orgMemberTable).values([
     { orgId: ORG, userId: DUENO, role: "owner" },
-    { orgId: ORG, userId: ACOTADA, role: "agent", allowedLines: [L1], allowedChats: [A] },
-    { orgId: ORG, userId: LECTORA, role: "viewer", allowedLines: [L1], allowedChats: [A] },
+    { orgId: ORG, userId: ACOTADA, role: "agent", restricted: true, allowedLines: [L1], allowedChats: [A] },
+    { orgId: ORG, userId: LECTORA, role: "viewer", restricted: true, allowedLines: [L1], allowedChats: [A] },
     { orgId: ORG, userId: LIBRE, role: "agent" },
+    // Ninguna línea tuya, pero puede dar de alta las suyas.
+    { orgId: ORG, userId: CREADORA, role: "agent", restricted: true, canCreateLines: true },
   ]);
   await dbh.db.insert(lineTable).values([
     { id: L1, orgId: ORG, channelKind: "sandbox", name: "Uno", slug: "uno", address: "51900000001@s.whatsapp.net", sendRatePerMinute: 6000 },
@@ -109,7 +113,7 @@ beforeAll(async () => {
   await dbh.db.insert(apiKeyTable).values({
     id: "k-alcance", orgId: ORG, name: "admin", prefix: k.prefix, secretHash: k.secretHash, role: "admin",
   });
-  for (const u of [DUENO, ACOTADA, LECTORA, LIBRE]) cookies[u] = await sesion(u);
+  for (const u of [DUENO, ACOTADA, LECTORA, LIBRE, CREADORA]) cookies[u] = await sesion(u);
 
   container = await buildContainer(
     loadConfig({
@@ -143,7 +147,7 @@ run("una persona acotada a unos chats", () => {
     const { data } = await j<{ data: { role: string; allowedLines: string[]; allowedChats: string[] } }>(
       await como(ACOTADA, "/v1/auth/me"),
     );
-    expect(data).toMatchObject({ role: "agent", allowedLines: [L1], allowedChats: [A] });
+    expect(data).toMatchObject({ role: "agent", restricted: true, allowedLines: [L1], allowedChats: [A] });
   });
 
   it("ve solo su línea y solo su chat", async () => {
@@ -355,3 +359,93 @@ run("el enlace de la línea", () => {
     expect(data.pairingCode).toBeUndefined();
   });
 });
+
+run("una persona que da de alta sus propias líneas", () => {
+  let mia = "";
+
+  it("limitada a ninguna línea tuya no ve ninguna, no todas", async () => {
+    const { data } = await j<{ data: { id: string }[] }>(await como(CREADORA, "/v1/lines"));
+    expect(data).toEqual([]);
+    expect((await como(CREADORA, `/v1/lines/${L1}/chats`)).status).toBe(401);
+    expect((await como(CREADORA, "/v1/conversations")).status).toBe(200);
+    expect((await j<{ data: unknown[] }>(await como(CREADORA, "/v1/conversations"))).data).toEqual([]);
+  });
+
+  it("da de alta una línea aunque sea agent, y la ve", async () => {
+    const res = await como(CREADORA, "/v1/lines", {
+      method: "POST", body: JSON.stringify({ name: "La mía", slug: "la-mia-alcance", channelKind: "sandbox" }),
+    });
+    expect(res.status).toBe(201);
+    mia = (await j<{ data: { id: string } }>(res)).data.id;
+    const { data } = await j<{ data: { id: string }[] }>(await como(CREADORA, "/v1/lines"));
+    expect(data.map((l) => l.id)).toEqual([mia]);
+    const yo = await j<{ data: { ownLines: string[]; canCreateLines: boolean } }>(await como(CREADORA, "/v1/auth/me"));
+    expect(yo.data).toMatchObject({ ownLines: [mia], canCreateLines: true });
+  });
+
+  it("la enlaza ella: ve su QR y lo conecta", async () => {
+    const conectar = await como(CREADORA, `/v1/lines/${mia}/connect`, { method: "POST" });
+    expect(conectar.status).toBe(200);
+    const { data } = await j<{ data: { state: string; qr?: string } }>(await como(CREADORA, `/v1/lines/${mia}/status`));
+    expect(data.state).toBe("awaiting-link");
+    expect(data.qr).toBeTruthy();
+    await conClave(`/v1/sandbox/lines/${mia}/scan`, { method: "POST", body: JSON.stringify({ phone: "51955500055" }) });
+    await conClave(`/v1/sandbox/lines/${mia}/inbound`, {
+      method: "POST", body: JSON.stringify({ from: "51966600066", text: "hola a la nueva" }),
+    });
+    await esperar(async () => {
+      const r = await j<{ data: unknown[] }>(await como(CREADORA, `/v1/lines/${mia}/chats`));
+      return r.data.length === 1;
+    }, "le llegó el chat a su línea");
+  });
+
+  it("la configura, pero tu línea sigue cerrada para ella", async () => {
+    const ajustar = await como(CREADORA, `/v1/lines/${mia}`, { method: "PATCH", body: JSON.stringify({ name: "Mía" }) });
+    expect(ajustar.status).toBe(200);
+    expect((await como(CREADORA, `/v1/lines/${L1}/status`)).status).toBe(401);
+    expect((await como(CREADORA, `/v1/lines/${L1}/connect`, { method: "POST" })).status).toBe(401);
+  });
+
+  it("y la dueña la ve también, como todas las de la organización", async () => {
+    const { data } = await j<{ data: { id: string }[] }>(await como(DUENO, "/v1/lines"));
+    expect(data.map((l) => l.id)).toContain(mia);
+  });
+
+  it("con chats sueltos tuyos además, en la suya los ve todos", async () => {
+    await como(DUENO, `/v1/members/${CREADORA}/scope`, {
+      method: "PUT",
+      body: JSON.stringify({ restricted: true, allowedLines: [L1], allowedChats: [A], canCreateLines: true }),
+    });
+    const tuyos = await j<{ data: { address: string }[] }>(await como(CREADORA, `/v1/lines/${L1}/chats`));
+    expect(tuyos.data.map((c) => c.address)).toEqual([A]);
+    const suyos = await j<{ data: unknown[] }>(await como(CREADORA, `/v1/lines/${mia}/chats`));
+    expect(suyos.data).toHaveLength(1);
+    const bandeja = await j<{ data: { lineId: string; chatId: string }[] }>(await como(CREADORA, "/v1/conversations"));
+    expect(bandeja.data.map((c) => c.lineId).sort()).toEqual([L1, mia].sort());
+  });
+
+  it("sin el permiso de crear, una limitada no da de alta líneas", async () => {
+    const res = await como(ACOTADA, "/v1/lines", {
+      method: "POST", body: JSON.stringify({ name: "No", slug: "no-alcance", channelKind: "sandbox" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("se puede invitar ya así: sin ninguna línea tuya y creando las suyas", async () => {
+    const inv = await como(DUENO, "/v1/invitations", {
+      method: "POST",
+      body: JSON.stringify({ email: "crea-alcance@ejemplo.com", role: "agent", restricted: true, canCreateLines: true }),
+    });
+    expect(inv.status).toBe(201);
+    const { data } = await j<{ data: { token: string; restricted: boolean; canCreateLines: boolean } }>(inv);
+    expect(data).toMatchObject({ restricted: true, canCreateLines: true });
+    const aceptada = await app.request("/v1/invitations/accept", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: data.token, name: "Crea", password: "una contraseña larga" }),
+    });
+    const cookie = (aceptada.headers.get("set-cookie") ?? "").split(";")[0]!;
+    const lineas = await j<{ data: unknown[] }>(await app.request("/v1/lines", { headers: { cookie } }));
+    expect(lineas.data).toEqual([]);
+  });
+});
+

@@ -265,18 +265,33 @@ export interface Cita {
 
 export interface Yo {
   id: string; email: string; name: string; orgId: string | null; role: string | null;
-  /** Vacío = todas. */
+  /** Limitada: solo ve `allowedLines`, que ya incluye las suyas. */
+  restricted: boolean;
   allowedLines: string[];
   /** Vacío = todos los chats de sus líneas. */
   allowedChats: string[];
+  /** Las que tiene enteras: las dio de alta ella. */
+  ownLines: string[];
+  /** Puede dar de alta líneas, que serán suyas. */
+  canCreateLines: boolean;
 }
 
 /**
  * Si le han compartido solo unas líneas o unos chats. Entonces el panel le
  * enseña solo las conversaciones: el resto lo negaría la API de todas formas.
  */
-export const acotado = (yo: Pick<Yo, "allowedLines" | "allowedChats"> | null): boolean =>
-  !!yo && (yo.allowedLines.length > 0 || yo.allowedChats.length > 0);
+export const acotado = (yo: Pick<Yo, "restricted"> | null): boolean => !!yo?.restricted;
+
+/**
+ * Si puede gestionar esa línea: enlazarla, configurarla, borrarla. Sin límite
+ * lo decide su rol, como siempre; limitada, solo en las suyas.
+ */
+export const gestionaLinea = (yo: Pick<Yo, "restricted" | "ownLines"> | null, lineId: string): boolean =>
+  !yo?.restricted || yo.ownLines.includes(lineId);
+
+/** Si se le ofrece «Nueva línea». */
+export const puedeCrearLineas = (yo: Pick<Yo, "restricted" | "canCreateLines"> | null): boolean =>
+  !yo?.restricted || yo.canCreateLines;
 
 /** Una nota interna: la ve el equipo dentro del chat, nunca el cliente. */
 export interface Nota {
