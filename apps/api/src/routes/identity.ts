@@ -320,6 +320,7 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
           userId: z.string(), email: z.string(), name: z.string(), role: z.string(),
           restricted: z.boolean(), allowedLines: z.array(z.string()), allowedChats: z.array(z.string()),
           canCreateLines: z.boolean(),
+          ownLines: z.array(z.string()).describe("Las que tiene enteras: las dio de alta ella"),
         })) }), "ok"),
         ...errors,
       },
@@ -338,7 +339,16 @@ export function registerIdentityRoutes(app: OpenAPIHono<ApiEnv>, container: Cont
         .from(orgMemberTable)
         .innerJoin(userTable, eq(userTable.id, orgMemberTable.userId))
         .where(eq(orgMemberTable.orgId, principal.orgId));
-      return c.json({ data: filas }, 200);
+      // Las líneas propias de cada uno, para que quien edita su acceso sepa que
+      // esas las conserva: no dependen de las que le marque.
+      const propias = await db
+        .select({ userId: lineMemberTable.userId, lineId: lineMemberTable.lineId })
+        .from(lineMemberTable)
+        .innerJoin(lineTable, eq(lineTable.id, lineMemberTable.lineId))
+        .where(and(eq(lineTable.orgId, principal.orgId), isNull(lineTable.deletedAt)));
+      const porPersona = new Map<string, string[]>();
+      for (const p of propias) porPersona.set(p.userId, [...(porPersona.get(p.userId) ?? []), p.lineId]);
+      return c.json({ data: filas.map((f) => ({ ...f, ownLines: porPersona.get(f.userId) ?? [] })) }, 200);
     },
   );
 

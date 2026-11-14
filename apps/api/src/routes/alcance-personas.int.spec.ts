@@ -381,6 +381,9 @@ run("una persona que da de alta sus propias líneas", () => {
     expect(data.map((l) => l.id)).toEqual([mia]);
     const yo = await j<{ data: { ownLines: string[]; canCreateLines: boolean } }>(await como(CREADORA, "/v1/auth/me"));
     expect(yo.data).toMatchObject({ ownLines: [mia], canCreateLines: true });
+    // Y quien gestiona el equipo ve que esa línea es suya.
+    const equipo = await j<{ data: { userId: string; ownLines: string[] }[] }>(await como(DUENO, "/v1/members"));
+    expect(equipo.data.find((m) => m.userId === CREADORA)?.ownLines).toEqual([mia]);
   });
 
   it("la enlaza ella: ve su QR y lo conecta", async () => {

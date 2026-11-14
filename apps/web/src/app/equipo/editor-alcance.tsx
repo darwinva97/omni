@@ -42,7 +42,7 @@ const LIMITABLES = new Set(["agent", "viewer"]);
 
 export function EditorAlcance({
   lineas, inicial = { restricted: false, allowedLines: [], allowedChats: [], canCreateLines: false },
-  roles, rolInicial = "agent",
+  roles, rolInicial = "agent", propias = [],
 }: {
   lineas: readonly LineaElegible[];
   inicial?: Alcance;
@@ -53,6 +53,12 @@ export function EditorAlcance({
    */
   roles?: readonly string[];
   rolInicial?: string;
+  /**
+   * Las líneas que la persona dio de alta. Son suyas y enteras pase lo que pase
+   * aquí: se enseñan marcadas y bloqueadas para que no parezca que, por no
+   * marcarlas, se le quitan.
+   */
+  propias?: readonly string[];
 }) {
   const [modo, setModo] = useState<Modo>(modoDe(inicial));
   const [rol, setRol] = useState(rolInicial);
@@ -202,7 +208,16 @@ export function EditorAlcance({
         <div>
           <p className="text-xs font-medium text-(--color-tenue)">Líneas</p>
           <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
-            {lineas.map((l) => (
+            {lineas.map((l) => propias.includes(l.id) ? (
+              <label
+                key={l.id} className="flex items-center gap-2 text-sm text-(--color-tenue)"
+                title="La dio de alta ella: la conserva entera, la marques o no"
+              >
+                <input type="checkbox" checked disabled className="accent-(--color-acento)" />
+                {l.name}
+                <span className="rounded-full bg-(--color-hundido) px-1.5 py-0.5 text-[11px]">suya</span>
+              </label>
+            ) : (
               <label key={l.id} className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox" checked={lineasSel.has(l.id)}
