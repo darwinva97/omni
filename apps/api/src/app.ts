@@ -3,7 +3,10 @@ import {
   OmniError, SendMessageInput, capabilities, conNombres, contactosDe, nombreVisible, parseAddress,
   tokensDeMencion,
 } from "@omni/shared";
-import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
+import {
+  authorize, chatScopeOf, filterChats, filterLines, route as routeOf, type Principal,
+} from "@omni/core";
+import { ocultaEnlace } from "./alcance.js";
 import { apiKeyTable, chatTable, contactTable, conversationTable, identityMapTable, labelAssignmentTable, lineTable, messageTable, contactosDeLinea, fichasDe, fotosDe, nombresDe, nombresDeMenciones, pollTable, pollVoteTable, reactionTable, webhookDeliveryTable, webhookEndpointTable } from "@omni/db";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import type { LineStatus } from "@omni/channels";
@@ -897,7 +900,13 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       // Marcada segura para claves limitadas a chats: una integración necesita
       // saber si su línea está viva aunque no pueda ver ninguna conversación.
       await authorize(principal, routeOf("line.status"), { lineId });
-      return c.json({ data: linkState(await container.runtime.status(lineId)) }, 200);
+      const estado = linkState(await container.runtime.status(lineId));
+      // Saber que está viva, sí; el QR para quedarse con ella, no.
+      if (ocultaEnlace(principal)) {
+        const { qr: _qr, pairingCode: _codigo, ...sinEnlace } = estado;
+        return c.json({ data: sinEnlace }, 200);
+      }
+      return c.json({ data: estado }, 200);
     },
   );
 
@@ -1014,9 +1023,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .where(and(eq(chatTable.lineId, lineId), ne(chatTable.address, "status@broadcast")))
         .orderBy(desc(chatTable.lastMessageAt)).limit(limit);
 
-      const visible = principal.kind === "api-key" && principal.allowedChats.length > 0
-        ? rows.filter((r) => principal.allowedChats.includes(r.address))
-        : rows;
+      const visible = filterChats(principal, rows, (r) => r.address);
 
       const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
       const listas = await listasDe(container, lineId, visible.map((r) => r.address));
@@ -1065,10 +1072,15 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
        * veces en un grupo activo, y una rejilla con veinte copias del mismo
        * dibujo no es una biblioteca.
        */
-      const filas = await container.dbh.sql<{ media_key: string; usados: number }[]>`
+      // Acotada a chats, solo los stickers que pasaron por SUS chats: los de
+      // los demás son ficheros de conversaciones que no puede abrir.
+      const acotada = chatScopeOf(principal);
+      const pg = container.dbh.sql;
+      const filas = await pg<{ media_key: string; usados: number }[]>`
         SELECT media_key, count(*)::int AS usados
         FROM message
         WHERE line_id = ${lineId} AND kind = 'sticker' AND media_key IS NOT NULL
+          ${acotada ? pg`AND chat_id IN ${pg([...acotada])}` : pg``}
         GROUP BY media_key
         ORDER BY max(timestamp) DESC
         LIMIT ${limit}`;
@@ -1126,7 +1138,9 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
           isNull(messageTable.deletedAt),
         ))
         .orderBy(desc(messageTable.timestamp))
-        .limit(500);
+        .limit(500)
+        // Acotada a chats, solo los estados de la gente de SUS chats.
+        .then((todas) => filterChats(principal, todas, (f) => f.senderAddress ?? ""));
 
       const autores = [...new Set(filas.map((f) => f.senderAddress).filter(Boolean))] as string[];
       // Con la regla única: antes aquí iba `+` delante de cualquier dirección,
@@ -1649,8 +1663,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       const normal = (col: unknown) => sql`translate(lower(coalesce(${col}, '')), ${CON_TILDE}, ${SIN_TILDE})`;
       // Una clave acotada a chats busca solo en los suyos, como ve solo esos
       // en la lista: la búsqueda no puede ser una puerta lateral.
-      const acotada = principal.kind === "api-key" && principal.allowedChats.length > 0
-        ? principal.allowedChats : null;
+      const acotada = chatScopeOf(principal);
 
       /*
        * Recorre la línea de lo más nuevo a lo más viejo y para en cuanto junta

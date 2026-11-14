@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { OmniError, parseAddress, SendMessageInput } from "@omni/shared";
-import { authorize, filterLines, route as routeOf, type Principal } from "@omni/core";
+import { authorize, filterChats, filterLines, route as routeOf, type Principal } from "@omni/core";
 import { chatTable, lineTable, messageTable } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
@@ -83,9 +83,7 @@ export const TOOLS: readonly ToolDef[] = [
         .where(eq(chatTable.lineId, lineId))
         .orderBy(desc(chatTable.lastMessageAt))
         .limit(Number(args["limit"] ?? 30));
-      const visible = principal.kind === "api-key" && principal.allowedChats.length > 0
-        ? rows.filter((r) => principal.allowedChats.includes(r.address))
-        : rows;
+      const visible = filterChats(principal, rows, (r) => r.address);
       return visible.map((r) => ({
         chat: r.address, tipo: r.kind, titulo: r.title,
         sinLeer: r.unreadCount, ultimo: r.lastMessageAt?.toISOString() ?? null,

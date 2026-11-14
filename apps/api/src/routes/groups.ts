@@ -1,7 +1,7 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, parseAddress, type LineId } from "@omni/shared";
 import { assertCapability, type ChannelDriver, type GroupMetadata } from "@omni/channels";
-import { authorize, route as routeOf } from "@omni/core";
+import { authorize, filterChats, route as routeOf } from "@omni/core";
 import { fichasDe, groupInfoTable, groupParticipantTable, lineTable, nombresDe } from "@omni/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { Container } from "../container.js";
@@ -84,9 +84,7 @@ export function registerGroupRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
       assertCapability(driver, "group.read");
       const grupos = await driver.listGroups!(lineId as LineId);
       // Una clave acotada ve sólo los grupos que le tocan: se filtra, no se rechaza.
-      const visibles = principal.kind === "api-key" && principal.allowedChats.length > 0
-        ? grupos.filter((g) => principal.allowedChats.includes(g.address.value))
-        : grupos;
+      const visibles = filterChats(principal, grupos, (g) => g.address.value);
       return c.json({ data: visibles.map(present) }, 200);
     },
   );

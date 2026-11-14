@@ -3,8 +3,9 @@ import type { Permission } from "./rbac.js";
 /**
  * Descriptor de ruta.
  *
- * `chatSafe` es la pieza central del modelo: una clave limitada a chats solo
- * puede llamar rutas marcadas como seguras para ella. Todo lo demás —incluidas
+ * `chatSafe` es la pieza central del modelo: una credencial limitada a chats
+ * —una clave de API o una persona del equipo— solo puede llamar rutas marcadas
+ * como seguras para ella. Todo lo demás —incluidas
  * las rutas que se añadan en versiones futuras— se rechaza. La negativa es el
  * DEFECTO, no una lista negra que alguien tiene que acordarse de mantener.
  */
@@ -13,7 +14,8 @@ export interface RouteDescriptor {
   readonly permission: Permission;
   /** Qué ámbito toca: decide si hay que comprobar línea y chat. */
   readonly scope: "org" | "line" | "chat";
-  /** Alcanzable por una clave limitada a chats, dentro de los suyos. */
+  /** Alcanzable por una credencial limitada a chats, dentro de los suyos; si es de
+   *  organización, la ruta filtra su salida por el alcance. */
   readonly chatSafe?: boolean;
 }
 
@@ -40,7 +42,9 @@ export const ROUTES = {
   "plugin.manage": { id: "plugin.manage", permission: "plugin.manage", scope: "org" },
 
   // --- líneas
-  "line.list": { id: "line.list", permission: "line.read", scope: "org" },
+  // Se FILTRA por el alcance en vez de negarse: quien tiene una línea, o unos
+  // chats de ella, necesita poder ver cuál es para entrar.
+  "line.list": { id: "line.list", permission: "line.read", scope: "org", chatSafe: true },
   "line.create": { id: "line.create", permission: "line.create", scope: "org" },
   "line.delete": { id: "line.delete", permission: "line.delete", scope: "line" },
   "line.connect": { id: "line.connect", permission: "line.connect", scope: "line" },

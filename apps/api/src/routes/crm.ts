@@ -1,10 +1,10 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, RuleInput, RulePatch, parseAddress } from "@omni/shared";
-import { authorize, route as routeOf } from "@omni/core";
+import { authorize, chatScopeOf, lineScopeOf, route as routeOf } from "@omni/core";
 import {
   automationRuleTable, automationRunTable, conversationTable, lineTable, orgMemberTable,
 } from "@omni/db";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Container } from "../container.js";
 import { presentarConversacion } from "../crm/conversaciones.js";
 import type { ApiEnv } from "./shared.js";
@@ -62,11 +62,20 @@ export function registerCrmRoutes(app: OpenAPIHono<ApiEnv>, container: Container
       const { status, lineId, limit } = c.req.valid("query");
       await authorize(principal, routeOf("conversation.list"), lineId ? { lineId } : {});
 
+      /*
+       * Sin `lineId` la bandeja es de toda la organización, así que el alcance
+       * se aplica aquí: una credencial acotada ve las conversaciones de SUS
+       * líneas y SUS chats, no las de todo el equipo.
+       */
+      const lineas = lineScopeOf(principal);
+      const chats = chatScopeOf(principal);
       const filas = await db.select().from(conversationTable)
         .where(and(
           eq(conversationTable.orgId, principal.orgId),
           ...(status ? [eq(conversationTable.status, status)] : []),
           ...(lineId ? [eq(conversationTable.lineId, lineId)] : []),
+          ...(lineas ? [inArray(conversationTable.lineId, [...lineas])] : []),
+          ...(chats ? [inArray(conversationTable.chatId, [...chats])] : []),
         ))
         .orderBy(desc(conversationTable.lastMessageAt))
         .limit(limit);

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { acotado, leerYo } from "@/lib/api";
 import { FranjaDeLineas } from "./franja-lineas";
 import {
   IconoBitacora, IconoEntregas, IconoGrupo, IconoLineas, IconoLlave, IconoRayo, IconoRespuestas,
@@ -32,7 +33,14 @@ function esActual(href: string, actual: string): boolean {
   return href === "/" ? actual === "/" || actual.startsWith("/lineas") : actual.startsWith(href);
 }
 
-export function Rail({ actual }: { actual: string }) {
+export async function Rail({ actual }: { actual: string }) {
+  /*
+   * A quien le han compartido unos chats o unas líneas solo se le ofrecen las
+   * conversaciones: equipo, claves, respuestas o la bitácora le contestarían
+   * «no» igualmente, y un menú lleno de puertas cerradas confunde más que uno
+   * corto.
+   */
+  const destinos = acotado(await leerYo()) ? DESTINOS.filter((d) => d.href === "/") : DESTINOS;
   return (
     /*
      * Lateral en escritorio, abajo en móvil.
@@ -55,7 +63,7 @@ export function Rail({ actual }: { actual: string }) {
         o
       </Link>
 
-      {DESTINOS.map(({ href, texto, Icono }) => {
+      {destinos.map(({ href, texto, Icono }) => {
         const activo = esActual(href, actual);
         return (
           <Link

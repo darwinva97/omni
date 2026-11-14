@@ -308,14 +308,34 @@ export const COMMANDS: readonly Command[] = [
     run: (c, a) => c.request("DELETE", `/v1/members/${req(a, 0, "usuario")}`),
   },
   {
+    name: "miembro:acceso",
+    summary: "Limitar a alguien a unas líneas o unos chats (sin listas, lo ve todo)",
+    operation: "PUT /v1/members/{userId}/scope",
+    args: [{ name: "usuario", required: true, description: "Identificador de la persona (ver `omni equipo`)" }],
+    flags: [
+      { name: "lineas", description: "Lista separada por comas; vacío = todas" },
+      { name: "chats", description: "Lista separada por comas, dentro de esas líneas; vacío = todos" },
+    ],
+    run: (c, a) => c.request("PUT", `/v1/members/${req(a, 0, "usuario")}/scope`, {
+      allowedLines: flag(a, "lineas")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+      allowedChats: flag(a, "chats")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+    }),
+  },
+  {
     name: "invitar",
     summary: "Invitar a alguien a la organización",
     operation: "POST /v1/invitations",
     args: [{ name: "correo", required: true, description: "A quién se invita" }],
-    flags: [{ name: "rol", description: "owner, manager, agent o viewer" }],
+    flags: [
+      { name: "rol", description: "owner, manager, agent o viewer" },
+      { name: "lineas", description: "Entra limitada a estas líneas (comas); vacío = todas" },
+      { name: "chats", description: "Entra limitada a estos chats (comas); vacío = todos" },
+    ],
     run: (c, a) => c.request("POST", "/v1/invitations", {
       email: req(a, 0, "correo"),
       role: flag(a, "rol") ?? "agent",
+      allowedLines: flag(a, "lineas")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+      allowedChats: flag(a, "chats")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
     }),
   },
   {

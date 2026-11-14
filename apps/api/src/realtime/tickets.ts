@@ -1,6 +1,7 @@
 import { OmniError } from "@omni/shared";
 import type { Principal } from "@omni/core";
 import type { Kv } from "@omni/platform";
+import { ocultaEnlace } from "../alcance.js";
 
 /**
  * Billetes de conexión para el WebSocket.
@@ -24,6 +25,8 @@ export interface TicketPayload {
   readonly apiKeyId?: string;
   readonly allowedLines: readonly string[];
   readonly allowedChats: readonly string[];
+  /** No recibe el QR de enlace: ver `ocultaEnlace`. */
+  readonly sinEnlace?: boolean;
 }
 
 export async function issueTicket(kv: Kv, principal: Principal): Promise<{ ticket: string; expiresIn: number }> {
@@ -32,8 +35,11 @@ export async function issueTicket(kv: Kv, principal: Principal): Promise<{ ticke
     orgId: principal.orgId,
     kind: principal.kind,
     ...(principal.kind === "user" ? { userId: principal.userId } : { apiKeyId: principal.apiKeyId }),
-    allowedLines: principal.kind === "api-key" ? principal.allowedLines : [],
-    allowedChats: principal.kind === "api-key" ? principal.allowedChats : [],
+    // Una persona acotada lleva su alcance al socket igual que una clave: si
+    // no, vería por aquí los eventos de chats que por HTTP no puede abrir.
+    allowedLines: principal.allowedLines,
+    allowedChats: principal.allowedChats,
+    sinEnlace: ocultaEnlace(principal),
   };
   await kv.set(PREFIJO + ticket, JSON.stringify(payload), TTL_SEGUNDOS);
   return { ticket, expiresIn: TTL_SEGUNDOS };

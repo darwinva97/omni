@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, index, uniqueIndex, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, index, uniqueIndex, primaryKey, jsonb } from "drizzle-orm/pg-core";
 
 /** Roles. El MISMO triplete sirve para la organización y para cada línea. */
 export type Role = "owner" | "manager" | "agent" | "viewer";
@@ -31,6 +31,13 @@ export const orgMemberTable = pgTable(
     orgId: text("org_id").notNull().references(() => orgTable.id, { onDelete: "cascade" }),
     userId: text("user_id").notNull().references(() => userTable.id, { onDelete: "cascade" }),
     role: text("role").$type<Role>().notNull().default("agent"),
+    /*
+     * El mismo alcance que una clave de API, con el mismo significado: vacío es
+     * TODO. Sirve para compartir unos chats con alguien sin abrirle el resto.
+     * Solo se admite con `agent` o `viewer`: gestionar algo exige verlo entero.
+     */
+    allowedLines: jsonb("allowed_lines").$type<string[]>().notNull().default([]),
+    allowedChats: jsonb("allowed_chats").$type<string[]>().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [primaryKey({ columns: [t.orgId, t.userId] }), index("org_member_user_idx").on(t.userId)],
@@ -64,6 +71,9 @@ export const invitationTable = pgTable(
     orgId: text("org_id").notNull().references(() => orgTable.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
     role: text("role").$type<Role>().notNull().default("agent"),
+    /** El alcance con el que entrará; se copia a `org_member` al aceptar. */
+    allowedLines: jsonb("allowed_lines").$type<string[]>().notNull().default([]),
+    allowedChats: jsonb("allowed_chats").$type<string[]>().notNull().default([]),
     tokenHash: text("token_hash").notNull(),
     invitedBy: text("invited_by").references(() => userTable.id, { onDelete: "set null" }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),

@@ -122,7 +122,7 @@ describe("ejecución", () => {
     const c = captura();
     const code = await run(["lineas"], {
       env: ENV, ...c.deps,
-      fetchImpl: fakeFetch({ status: 403, detail: "el chat está fuera del alcance de la clave" }, 403),
+      fetchImpl: fakeFetch({ status: 403, detail: "el chat está fuera del alcance de la credencial" }, 403),
     });
     expect(code).toBe(EXIT.servicio);
     expect(c.err.join()).toContain("fuera del alcance");

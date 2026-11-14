@@ -13,6 +13,8 @@ import type { TicketPayload } from "./tickets.js";
 export function visibleFor(t: TicketPayload, e: EventEnvelope): boolean {
   if (e.orgId !== t.orgId) return false;
   if (t.allowedLines.length > 0 && !t.allowedLines.includes(e.lineId)) return false;
+  // El QR de enlace no sale hacia quien no puede enlazar: quien lo escanea se queda la línea.
+  if (t.sinEnlace && e.event === "session.qr") return false;
 
   if (t.allowedChats.length > 0) {
     // Las notas internas son lo que el equipo dice DEL cliente: una clave
@@ -52,6 +54,21 @@ export interface Suscripcion {
 
 export const SUSCRIPCION_TODO: Suscripcion = { events: [], lines: [] };
 
+/**
+ * Tema del bus por el que se avisa de que el acceso de una persona cambió: se
+ * le acotó, cambió de rol o se la quitó del equipo.
+ *
+ * El billete fija el alcance al ABRIR el socket, así que sin este aviso una
+ * persona a la que acabas de quitarle un chat seguiría recibiendo sus mensajes
+ * por el socket que ya tenía abierto. Va por el bus y no por memoria porque la
+ * API puede correr en varias réplicas y el socket puede estar en otra.
+ */
+export const temaDeAcceso = (orgId: string): string => `acceso:${orgId}`;
+
+export interface CambioDeAcceso {
+  readonly userId: string;
+}
+
 export function pasaSuscripcion(s: Suscripcion, e: EventEnvelope): boolean {
   if (s.lines.length > 0 && !s.lines.includes(e.lineId)) return false;
   return matchesAny(e.event, s.events);
@@ -70,6 +87,7 @@ export class RealtimeGateway {
     ticket: TicketPayload;
     suscripcion: Suscripcion;
     enviar: (texto: string) => void;
+    cerrar: () => void;
   }>();
   readonly #porOrg = new Map<string, { n: number; off: () => Promise<void> }>();
 
@@ -83,18 +101,49 @@ export class RealtimeGateway {
 
   async añadir(
     id: string, ticket: TicketPayload, enviar: (texto: string) => void,
+    cerrar: () => void = () => {},
   ): Promise<void> {
-    this.#conexiones.set(id, { ticket, suscripcion: SUSCRIPCION_TODO, enviar });
+    this.#conexiones.set(id, { ticket, suscripcion: SUSCRIPCION_TODO, enviar, cerrar });
 
     const existente = this.#porOrg.get(ticket.orgId);
     if (existente) {
       existente.n++;
       return;
     }
-    const off = await this.#bus.subscribe<EventEnvelope>(`org:${ticket.orgId}`, (e) => {
+    const offEventos = await this.#bus.subscribe<EventEnvelope>(`org:${ticket.orgId}`, (e) => {
       this.#repartir(e);
     });
+    const offAcceso = await this.#bus.subscribe<CambioDeAcceso>(temaDeAcceso(ticket.orgId), (c) => {
+      this.#expulsar(ticket.orgId, c.userId);
+    });
+    const off = async (): Promise<void> => {
+      await Promise.all([offEventos(), offAcceso()]);
+    };
     this.#porOrg.set(ticket.orgId, { n: 1, off });
+  }
+
+  /**
+   * Cierra los sockets de una persona. NO se le deja de mandar en silencio: se
+   * cierra, para que el panel vuelva a pedir billete y reciba, con él, el
+   * alcance de ahora —o un 401 si ya no está en el equipo—.
+   */
+  #expulsar(orgId: string, userId: string): void {
+    for (const [id, conexion] of this.#conexiones) {
+      if (conexion.ticket.orgId !== orgId || conexion.ticket.userId !== userId) continue;
+      this.#conexiones.delete(id);
+      try {
+        conexion.cerrar();
+      } catch {
+        // Ya estaba cerrado: lo que importa es que no reciba más.
+      }
+      const org = this.#porOrg.get(orgId);
+      if (org) org.n--;
+    }
+    const org = this.#porOrg.get(orgId);
+    if (org && org.n <= 0) {
+      this.#porOrg.delete(orgId);
+      void org.off().catch(() => {});
+    }
   }
 
   async quitar(id: string): Promise<void> {
