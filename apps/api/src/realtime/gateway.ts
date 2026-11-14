@@ -12,11 +12,14 @@ import type { TicketPayload } from "./tickets.js";
  */
 export function visibleFor(t: TicketPayload, e: EventEnvelope): boolean {
   if (e.orgId !== t.orgId) return false;
-  if (t.allowedLines.length > 0 && !t.allowedLines.includes(e.lineId)) return false;
+  const limitada = t.lineScoped ?? t.allowedLines.length > 0;
+  if (limitada && !t.allowedLines.includes(e.lineId)) return false;
+  // En una línea suya, ni el QR ni el límite por chats cuentan: es entera.
+  const entera = t.fullLines?.includes(e.lineId) ?? false;
   // El QR de enlace no sale hacia quien no puede enlazar: quien lo escanea se queda la línea.
-  if (t.sinEnlace && e.event === "session.qr") return false;
+  if (t.sinEnlace && !entera && e.event === "session.qr") return false;
 
-  if (t.allowedChats.length > 0) {
+  if (t.allowedChats.length > 0 && !entera) {
     // Las notas internas son lo que el equipo dice DEL cliente: una clave
     // acotada a chats no las lee por HTTP, y por aquí tampoco.
     if (e.event.startsWith("note.")) return false;

@@ -119,7 +119,7 @@ export function wasenderCompat(container: Container): Hono {
       .where(eq(groupInfoTable.lineId, lineId));
     return c.json({
       success: true,
-      data: filterChats(principal, filas, (g) => g.address)
+      data: filterChats(principal, lineId, filas, (g) => g.address)
         .map((g) => ({ jid: g.address, name: g.subject, size: g.size })),
     });
   });

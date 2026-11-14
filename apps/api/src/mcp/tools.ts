@@ -83,7 +83,7 @@ export const TOOLS: readonly ToolDef[] = [
         .where(eq(chatTable.lineId, lineId))
         .orderBy(desc(chatTable.lastMessageAt))
         .limit(Number(args["limit"] ?? 30));
-      const visible = filterChats(principal, rows, (r) => r.address);
+      const visible = filterChats(principal, lineId, rows, (r) => r.address);
       return visible.map((r) => ({
         chat: r.address, tipo: r.kind, titulo: r.title,
         sinLeer: r.unreadCount, ultimo: r.lastMessageAt?.toISOString() ?? null,

@@ -1,10 +1,10 @@
 import { createRoute, z, type OpenAPIHono } from "@hono/zod-openapi";
 import { OmniError, RuleInput, RulePatch, parseAddress } from "@omni/shared";
-import { authorize, chatScopeOf, lineScopeOf, route as routeOf } from "@omni/core";
+import { authorize, chatScopeOf, fullLinesOf, lineScopeOf, route as routeOf } from "@omni/core";
 import {
   automationRuleTable, automationRunTable, conversationTable, lineTable, orgMemberTable,
 } from "@omni/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Container } from "../container.js";
 import { presentarConversacion } from "../crm/conversaciones.js";
 import type { ApiEnv } from "./shared.js";
@@ -68,14 +68,21 @@ export function registerCrmRoutes(app: OpenAPIHono<ApiEnv>, container: Container
        * líneas y SUS chats, no las de todo el equipo.
        */
       const lineas = lineScopeOf(principal);
-      const chats = chatScopeOf(principal);
+      const chats = chatScopeOf(principal, lineId);
+      // Las líneas que tiene enteras (las que dio de alta) no se filtran por chat.
+      const enteras = fullLinesOf(principal);
       const filas = await db.select().from(conversationTable)
         .where(and(
           eq(conversationTable.orgId, principal.orgId),
           ...(status ? [eq(conversationTable.status, status)] : []),
           ...(lineId ? [eq(conversationTable.lineId, lineId)] : []),
-          ...(lineas ? [inArray(conversationTable.lineId, [...lineas])] : []),
-          ...(chats ? [inArray(conversationTable.chatId, [...chats])] : []),
+          // Limitada a NINGUNA línea es ninguna conversación, no todas.
+          ...(lineas ? [lineas.length > 0 ? inArray(conversationTable.lineId, [...lineas]) : sql`false`] : []),
+          ...(chats
+            ? [enteras.length > 0
+              ? or(inArray(conversationTable.chatId, [...chats]), inArray(conversationTable.lineId, [...enteras]))!
+              : inArray(conversationTable.chatId, [...chats])]
+            : []),
         ))
         .orderBy(desc(conversationTable.lastMessageAt))
         .limit(limit);

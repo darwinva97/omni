@@ -17,11 +17,18 @@ const key = (over: Partial<Extract<Principal, { kind: "api-key" }>> = {}): Princ
 const user = (
   role: "owner" | "manager" | "agent" | "viewer",
   lineRoles = new Map(),
-  alcance: { allowedLines?: string[]; allowedChats?: string[] } = {},
-): Principal => ({
-  kind: "user", userId: "u1", orgId: "o1", orgRole: role, lineRoles,
-  allowedLines: alcance.allowedLines ?? [], allowedChats: alcance.allowedChats ?? [],
-});
+  alcance: { allowedLines?: string[]; allowedChats?: string[]; restricted?: boolean; canCreateLines?: boolean } = {},
+): Principal => {
+  const restricted = alcance.restricted
+    ?? ((alcance.allowedLines?.length ?? 0) > 0 || (alcance.allowedChats?.length ?? 0) > 0);
+  return {
+    kind: "user", userId: "u1", orgId: "o1", orgRole: role, lineRoles, restricted,
+    canCreateLines: alcance.canCreateLines ?? false,
+    // Como lo arma la sesión: limitada, sus líneas suman las que tiene enteras.
+    allowedLines: restricted ? [...new Set([...(alcance.allowedLines ?? []), ...lineRoles.keys()])] : [],
+    allowedChats: alcance.allowedChats ?? [],
+  };
+};
 
 const ok = (p: Promise<void>) => expect(p).resolves.toBeUndefined();
 const denied = (p: Promise<void>, status: number) => expect(p).rejects.toMatchObject({ status });
@@ -154,7 +161,7 @@ describe("filtrado de listados", () => {
   it("las listas se filtran en vez de rechazarse", async () => {
     const scoped = key({ allowedChats: [CHAT_A.value] });
     const chats = [{ a: CHAT_A.value }, { a: CHAT_B.value }];
-    expect(filterChats(scoped, chats, (c) => c.a)).toEqual([{ a: CHAT_A.value }]);
+    expect(filterChats(scoped, "l1", chats, (c) => c.a)).toEqual([{ a: CHAT_A.value }]);
     // Listar chats sí está permitido: devuelve los suyos, no un error.
     await ok(authorize(scoped, route("chat.list"), { lineId: "l1" }));
   });
@@ -206,13 +213,66 @@ describe("alcance de una PERSONA", () => {
     await ok(authorize(acotada(), route("line.list")));
     const lines = [{ id: "l1" }, { id: "l2" }];
     expect(filterLines(acotada(), lines, (l) => l.id)).toEqual([{ id: "l1" }]);
-    expect(filterChats(acotada(), [{ a: CHAT_A.value }, { a: CHAT_B.value }], (c) => c.a))
+    expect(filterChats(acotada(), "l1", [{ a: CHAT_A.value }, { a: CHAT_B.value }], (c) => c.a))
       .toEqual([{ a: CHAT_A.value }]);
   });
 
   it("sin alcance, una persona sigue viéndolo todo", async () => {
     await ok(authorize(user("agent"), route("note.list"), { lineId: "l9", chat: CHAT_B }));
     expect(filterLines(user("agent"), [{ id: "l1" }, { id: "l2" }], (l) => l.id)).toHaveLength(2);
+  });
+});
+
+describe("líneas propias de una persona limitada", () => {
+  // Una persona a la que no le compartes NINGUNA línea tuya, pero que puede
+  // dar de alta las suyas.
+  const sinNada = (lineRoles = new Map<string, "owner">()) =>
+    user("agent", lineRoles, { restricted: true, canCreateLines: true });
+
+  it("limitada a ninguna línea no ve ninguna, no todas", async () => {
+    const p = user("agent", new Map(), { restricted: true });
+    expect(filterLines(p, [{ id: "l1" }, { id: "l2" }], (l) => l.id)).toEqual([]);
+    await denied(authorize(p, route("chat.list"), { lineId: "l1" }), 401);
+  });
+
+  it("puede dar de alta una línea aunque su rol no lo permita", async () => {
+    await ok(authorize(sinNada(), route("line.create")));
+    // Sin el permiso de crear lo suyo, ni limitada ni como agent.
+    await denied(authorize(user("agent", new Map(), { restricted: true }), route("line.create")), 403);
+    await denied(authorize(user("agent"), route("line.create")), 403);
+  });
+
+  it("su línea la tiene entera: la enlaza, la configura y la borra", async () => {
+    const p = sinNada(new Map([["mia", "owner" as const]]));
+    await ok(authorize(p, route("line.connect"), { lineId: "mia" }));
+    await ok(authorize(p, route("line.settings"), { lineId: "mia" }));
+    await ok(authorize(p, route("line.delete"), { lineId: "mia" }));
+    await ok(authorize(p, route("note.list"), { lineId: "mia", chat: CHAT_B }));
+    expect(filterLines(p, [{ id: "mia" }, { id: "ajena" }], (l) => l.id)).toEqual([{ id: "mia" }]);
+  });
+
+  it("y la ajena sigue cerrada", async () => {
+    const p = sinNada(new Map([["mia", "owner" as const]]));
+    await denied(authorize(p, route("line.connect"), { lineId: "ajena" }), 401);
+    await denied(authorize(p, route("message.list"), { lineId: "ajena", chat: CHAT_A }), 401);
+  });
+
+  it("con chats sueltos de otra línea, en la suya el límite por chats no cuenta", async () => {
+    const p = user("agent", new Map([["mia", "owner" as const]]), {
+      allowedLines: ["tuya"], allowedChats: [CHAT_A.value], canCreateLines: true,
+    });
+    await ok(authorize(p, route("message.send"), { lineId: "mia", chat: CHAT_B }));
+    expect(filterChats(p, "mia", [{ a: CHAT_A.value }, { a: CHAT_B.value }], (c) => c.a)).toHaveLength(2);
+    // En la tuya, solo el chat compartido.
+    await ok(authorize(p, route("message.send"), { lineId: "tuya", chat: CHAT_A }));
+    await denied(authorize(p, route("message.send"), { lineId: "tuya", chat: CHAT_B }), 403);
+    expect(filterChats(p, "tuya", [{ a: CHAT_A.value }, { a: CHAT_B.value }], (c) => c.a)).toHaveLength(1);
+  });
+
+  it("crear lo propio no abre nada de la organización", async () => {
+    const p = sinNada();
+    await denied(authorize(p, route("org.members.list")), 403);
+    await denied(authorize(p, route("apikey.create")), 403);
   });
 });
 

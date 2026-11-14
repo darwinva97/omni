@@ -238,7 +238,7 @@ export function registerLabelRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
         .where(and(eq(labelAssignmentTable.lineId, lineId), eq(labelAssignmentTable.labelId, labelId)));
 
       // Una credencial acotada a chats ve solo los suyos: se filtra, no se rechaza.
-      const visibles = [...filterChats(principal, filas, (f) => f.target)];
+      const visibles = [...filterChats(principal, lineId, filas, (f) => f.target)];
       return c.json({ data: visibles }, 200);
     },
   );

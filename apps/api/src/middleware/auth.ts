@@ -96,7 +96,7 @@ export async function authenticateSession(
   if (!token) return null;
 
   const { hashToken } = await import("@omni/core");
-  const { sessionTable, orgMemberTable, lineMemberTable, userTable } = await import("@omni/db");
+  const { sessionTable, orgMemberTable, lineMemberTable, lineTable, userTable } = await import("@omni/db");
   const hash = await hashToken(token);
 
   const filas = await db
@@ -129,25 +129,36 @@ export async function authenticateSession(
       role: orgMemberTable.role,
       allowedLines: orgMemberTable.allowedLines,
       allowedChats: orgMemberTable.allowedChats,
+      restricted: orgMemberTable.restricted,
+      canCreateLines: orgMemberTable.canCreateLines,
     })
     .from(orgMemberTable)
     .where(and(eq(orgMemberTable.orgId, orgId), eq(orgMemberTable.userId, sesion.userId)))
     .limit(1);
   if (!pertenencia[0]) return null;
 
+  // Solo las líneas de ESTA organización: un rol en una línea de otra no
+  // puede colarse como línea entera aquí.
   const porLinea = await db
     .select({ lineId: lineMemberTable.lineId, role: lineMemberTable.role })
     .from(lineMemberTable)
-    .where(eq(lineMemberTable.userId, sesion.userId));
+    .innerJoin(lineTable, eq(lineTable.id, lineMemberTable.lineId))
+    .where(and(eq(lineMemberTable.userId, sesion.userId), eq(lineTable.orgId, orgId), isNull(lineTable.deletedAt)));
+  const m = pertenencia[0];
+  const propias = porLinea.map((l) => l.lineId);
 
   return {
     kind: "user",
     userId: sesion.userId,
     orgId,
-    orgRole: pertenencia[0].role,
+    orgRole: m.role,
     lineRoles: new Map(porLinea.map((l) => [l.lineId, l.role])),
     // Se leen en cada petición, como el rol: acotar a alguien vale desde ya.
-    allowedLines: pertenencia[0].allowedLines,
-    allowedChats: pertenencia[0].allowedChats,
+    // Limitada, ve las líneas que le compartieron MÁS las suyas; sin limitar,
+    // las listas no cuentan.
+    restricted: m.restricted,
+    canCreateLines: m.canCreateLines,
+    allowedLines: m.restricted ? [...new Set([...m.allowedLines, ...propias])] : [],
+    allowedChats: m.restricted ? m.allowedChats : [],
   };
 }

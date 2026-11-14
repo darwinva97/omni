@@ -902,7 +902,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       await authorize(principal, routeOf("line.status"), { lineId });
       const estado = linkState(await container.runtime.status(lineId));
       // Saber que está viva, sí; el QR para quedarse con ella, no.
-      if (ocultaEnlace(principal)) {
+      if (ocultaEnlace(principal, lineId)) {
         const { qr: _qr, pairingCode: _codigo, ...sinEnlace } = estado;
         return c.json({ data: sinEnlace }, 200);
       }
@@ -1023,7 +1023,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .where(and(eq(chatTable.lineId, lineId), ne(chatTable.address, "status@broadcast")))
         .orderBy(desc(chatTable.lastMessageAt)).limit(limit);
 
-      const visible = filterChats(principal, rows, (r) => r.address);
+      const visible = filterChats(principal, lineId, rows, (r) => r.address);
 
       const ultimos = await ultimosMensajes(container, lineId, visible.map((r) => r.address));
       const listas = await listasDe(container, lineId, visible.map((r) => r.address));
@@ -1074,7 +1074,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
        */
       // Acotada a chats, solo los stickers que pasaron por SUS chats: los de
       // los demás son ficheros de conversaciones que no puede abrir.
-      const acotada = chatScopeOf(principal);
+      const acotada = chatScopeOf(principal, lineId);
       const pg = container.dbh.sql;
       const filas = await pg<{ media_key: string; usados: number }[]>`
         SELECT media_key, count(*)::int AS usados
@@ -1140,7 +1140,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
         .orderBy(desc(messageTable.timestamp))
         .limit(500)
         // Acotada a chats, solo los estados de la gente de SUS chats.
-        .then((todas) => filterChats(principal, todas, (f) => f.senderAddress ?? ""));
+        .then((todas) => filterChats(principal, lineId, todas, (f) => f.senderAddress ?? ""));
 
       const autores = [...new Set(filas.map((f) => f.senderAddress).filter(Boolean))] as string[];
       // Con la regla única: antes aquí iba `+` delante de cualquier dirección,
@@ -1663,7 +1663,7 @@ export function createApp(container: Container, opts: AppOptions = {}): OpenAPIH
       const normal = (col: unknown) => sql`translate(lower(coalesce(${col}, '')), ${CON_TILDE}, ${SIN_TILDE})`;
       // Una clave acotada a chats busca solo en los suyos, como ve solo esos
       // en la lista: la búsqueda no puede ser una puerta lateral.
-      const acotada = chatScopeOf(principal);
+      const acotada = chatScopeOf(principal, lineId);
 
       /*
        * Recorre la línea de lo más nuevo a lo más viejo y para en cuanto junta

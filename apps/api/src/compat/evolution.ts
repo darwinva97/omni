@@ -116,7 +116,7 @@ export function evolutionCompat(container: Container): Hono {
     const filas = await container.dbh.db.select().from(chatTable)
       .where(eq(chatTable.lineId, lineId))
       .orderBy(desc(chatTable.lastMessageAt)).limit(200);
-    return c.json(filterChats(principal, filas, (f) => f.address).map((f) => ({
+    return c.json(filterChats(principal, lineId, filas, (f) => f.address).map((f) => ({
       id: f.address, name: f.title, unreadCount: f.unreadCount,
       updatedAt: f.lastMessageAt?.toISOString() ?? null,
     })));

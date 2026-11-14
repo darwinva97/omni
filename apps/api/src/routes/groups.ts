@@ -84,7 +84,7 @@ export function registerGroupRoutes(app: OpenAPIHono<ApiEnv>, container: Contain
       assertCapability(driver, "group.read");
       const grupos = await driver.listGroups!(lineId as LineId);
       // Una clave acotada ve sólo los grupos que le tocan: se filtra, no se rechaza.
-      const visibles = filterChats(principal, grupos, (g) => g.address.value);
+      const visibles = filterChats(principal, lineId, grupos, (g) => g.address.value);
       return c.json({ data: visibles.map(present) }, 200);
     },
   );

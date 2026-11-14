@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { acotado, apiFetchAuth, type Linea, type Yo } from "@/lib/api";
+import { acotado, apiFetchAuth, gestionaLinea, puedeCrearLineas, type Linea, type Yo } from "@/lib/api";
 import { Pagina } from "@/componentes/armazon";
 import { Aviso, Avatar, Estado, Vacio } from "@/componentes/piezas";
 import { IconoCanal } from "@/componentes/iconos";
@@ -22,16 +22,17 @@ export default async function Lineas() {
     (l) => l.channelKind.startsWith("whatsapp.") && l.channelKind !== "whatsapp.cloud",
   );
   const caidas = lineas.filter((l) => l.status !== "connected" && l.enabled);
-  // A quien le compartieron unos chats no se le ofrece crear ni tocar líneas:
-  // la API se lo negaría, y la portada es su puerta a las conversaciones.
+  // A quien le compartieron unos chats no se le ofrece crear ni tocar líneas
+  // ajenas: la API se lo negaría. Las suyas, y crear si se le permite, sí.
   const compartido = acotado(yo);
+  const crea = puedeCrearLineas(yo);
 
   return (
     <Pagina
       actual="/"
       titulo="Líneas"
       descripcion={`${yo.name}${yo.role ? ` · ${yo.role}` : ""}${compartido ? " · acceso compartido" : ""}`}
-      acciones={compartido ? undefined : (
+      acciones={!crea ? undefined : (
         <Link
           href="/lineas/nueva"
           className="rounded-lg bg-(--color-acento) px-3.5 py-2 text-sm font-medium text-(--color-sobre-acento) transition-opacity duration-150 hover:opacity-90"
@@ -65,7 +66,7 @@ export default async function Lineas() {
           </Aviso>
         )}
 
-        {lineas.length === 0 && compartido ? (
+        {lineas.length === 0 && compartido && !crea ? (
           <Vacio titulo="Todavía no te han compartido nada">
             Cuando alguien del equipo te dé acceso a una línea o a unas
             conversaciones, aparecerán aquí.
@@ -114,7 +115,7 @@ export default async function Lineas() {
                     </span>
                   </span>
                 </Link>
-                {!compartido && <MenuLinea linea={l} />}
+                {gestionaLinea(yo, l.id) && <MenuLinea linea={l} />}
               </li>
             ))}
           </ul>

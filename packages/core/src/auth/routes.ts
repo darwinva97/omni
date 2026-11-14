@@ -17,6 +17,12 @@ export interface RouteDescriptor {
   /** Alcanzable por una credencial limitada a chats, dentro de los suyos; si es de
    *  organización, la ruta filtra su salida por el alcance. */
   readonly chatSafe?: boolean;
+  /**
+   * Crea algo que pasa a ser de quien lo crea (una línea). Una persona con
+   * permiso para crear lo propio puede llamarla aunque esté limitada y su rol
+   * no lo permita: no le abre nada ajeno.
+   */
+  readonly ownCreate?: boolean;
 }
 
 /**
@@ -45,7 +51,7 @@ export const ROUTES = {
   // Se FILTRA por el alcance en vez de negarse: quien tiene una línea, o unos
   // chats de ella, necesita poder ver cuál es para entrar.
   "line.list": { id: "line.list", permission: "line.read", scope: "org", chatSafe: true },
-  "line.create": { id: "line.create", permission: "line.create", scope: "org" },
+  "line.create": { id: "line.create", permission: "line.create", scope: "org", ownCreate: true },
   "line.delete": { id: "line.delete", permission: "line.delete", scope: "line" },
   "line.connect": { id: "line.connect", permission: "line.connect", scope: "line" },
   "line.settings": { id: "line.settings", permission: "line.settings", scope: "line" },

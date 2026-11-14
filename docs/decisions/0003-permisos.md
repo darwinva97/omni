@@ -76,3 +76,21 @@ por HTTP ni por el socket.
 `line.list` pasa a ser `chatSafe`: es un listado que se filtra, y negarlo
 dejaba a quien tiene una línea sin forma de saber cuál es. Es la única ruta de
 organización marcada así; hay una prueba que lo vigila.
+
+## Líneas propias (2026-11-14)
+
+Hace falta poder invitar a alguien que NO vea ninguna línea tuya pero dé de
+alta las suyas. Con «vacío = todo» no se podía expresar, así que en las
+personas el límite pasa a ser explícito (`restricted`): limitada, una lista de
+líneas vacía es NINGUNA. Las claves de API no cambian.
+
+`canCreateLines` deja a una persona dar de alta líneas aunque su rol no lo
+permita (`line.create` lleva `ownCreate`, y el guardián la deja pasar antes
+de mirar rol o límite: crear no abre nada ajeno). La línea creada queda con
+un rol `owner` para ella en `line_member`, y una línea con rol propio es
+ENTERA para esa persona: la ve aunque esté limitada, el límite por chats no
+cuenta en ella, y ve su QR. Por eso `filterChats` exige ahora la línea, y el
+billete del socket lleva sus líneas enteras.
+
+Los roles por línea se cargan solo de las líneas de la organización activa:
+hasta ahora ninguna ruta los creaba, y desde aquí sí.

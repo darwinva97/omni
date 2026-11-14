@@ -17,14 +17,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
  */
 
 export interface LineaElegible { id: string; name: string }
-export interface Alcance { allowedLines: string[]; allowedChats: string[] }
+export interface Alcance {
+  restricted: boolean;
+  allowedLines: string[];
+  allowedChats: string[];
+  canCreateLines: boolean;
+}
 
 type Modo = "todo" | "lineas" | "chats";
 
 interface ChatElegible { address: string; displayName: string }
 
 const modoDe = (a: Alcance): Modo =>
-  a.allowedChats.length > 0 ? "chats" : a.allowedLines.length > 0 ? "lineas" : "todo";
+  !a.restricted ? "todo" : a.allowedChats.length > 0 ? "chats" : "lineas";
 
 /** Lo que se enseña de una dirección sin nombre: el número, no el sufijo del protocolo. */
 const corta = (address: string): string => {
@@ -33,7 +38,7 @@ const corta = (address: string): string => {
 };
 
 export function EditorAlcance({
-  lineas, inicial = { allowedLines: [], allowedChats: [] },
+  lineas, inicial = { restricted: false, allowedLines: [], allowedChats: [], canCreateLines: false },
 }: {
   lineas: readonly LineaElegible[];
   inicial?: Alcance;
@@ -41,6 +46,7 @@ export function EditorAlcance({
   const [modo, setModo] = useState<Modo>(modoDe(inicial));
   const [lineasSel, setLineasSel] = useState<Set<string>>(new Set(inicial.allowedLines));
   const [chatsSel, setChatsSel] = useState<Set<string>>(new Set(inicial.allowedChats));
+  const [crea, setCrea] = useState(inicial.canCreateLines);
   // Sin entrada = cargando todavía.
   const [chats, setChats] = useState<Record<string, ChatElegible[] | "error">>({});
   const pedidas = useRef(new Set<string>());
@@ -74,10 +80,10 @@ export function EditorAlcance({
   }, [chats]);
 
   const alcance: Alcance = modo === "todo"
-    ? { allowedLines: [], allowedChats: [] }
+    ? { restricted: false, allowedLines: [], allowedChats: [], canCreateLines: crea }
     : modo === "lineas"
-      ? { allowedLines: [...lineasSel], allowedChats: [] }
-      : { allowedLines: [...lineasSel], allowedChats: [...chatsSel] };
+      ? { restricted: true, allowedLines: [...lineasSel], allowedChats: [], canCreateLines: crea }
+      : { restricted: true, allowedLines: [...lineasSel], allowedChats: [...chatsSel], canCreateLines: crea };
 
   const alternar = <T,>(s: Set<T>, v: T): Set<T> => {
     const n = new Set(s);
@@ -99,7 +105,9 @@ export function EditorAlcance({
   const coincide = (c: ChatElegible): boolean =>
     !q || c.displayName.toLowerCase().includes(q) || c.address.includes(q);
 
-  const sinLineas = modo !== "todo" && lineasSel.size === 0;
+  // Unas líneas pueden ser NINGUNA —solo las que ella dé de alta—; unos chats
+  // necesitan sus líneas.
+  const sinLineas = modo === "chats" && lineasSel.size === 0;
   const sinChats = modo === "chats" && chatsSel.size === 0;
 
   return (
@@ -156,7 +164,12 @@ export function EditorAlcance({
               </label>
             ))}
           </div>
-          {sinLineas && <p className="mt-1.5 text-xs text-(--color-error)">Marca al menos una línea.</p>}
+          {sinLineas && <p className="mt-1.5 text-xs text-(--color-error)">Marca la línea de esos chats.</p>}
+          {modo === "lineas" && lineasSel.size === 0 && (
+            <p className="mt-1.5 text-xs text-(--color-tenue)">
+              Sin ninguna marcada no verá ninguna línea tuya{crea ? ": solo las que dé de alta ella" : ""}.
+            </p>
+          )}
         </div>
       )}
 
@@ -245,6 +258,20 @@ export function EditorAlcance({
           {sinChats && <p className="text-xs text-(--color-error)">Marca al menos un chat.</p>}
         </div>
       )}
+
+      <label className="flex items-start gap-2 pt-1 text-sm">
+        <input
+          type="checkbox" checked={crea} onChange={(e) => setCrea(e.target.checked)}
+          className="mt-0.5 accent-(--color-acento)"
+        />
+        <span>
+          Puede dar de alta líneas
+          <span className="block text-xs text-(--color-tenue)">
+            Las que cree serán suyas y enteras: las ve, las enlaza con su teléfono, las configura y
+            las borra{modo === "todo" ? "" : ", aunque del resto solo vea lo que marcaste"}.
+          </span>
+        </span>
+      </label>
     </fieldset>
   );
 }
