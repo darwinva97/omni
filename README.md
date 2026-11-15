@@ -1,5 +1,8 @@
 # Omni
 
+> Repositorio principal: [forgejo.bezenti.com/bezenti/omni](https://forgejo.bezenti.com/bezenti/omni).
+> `github.com/darwinva97/omni` es un espejo de solo lectura: las PR van en Forgejo.
+
 Plataforma multicanal de mensajería. Un solo puerto de canal para WhatsApp
 (Baileys · Cloud API · whatsapp-web.js), Telegram, correo, Instagram/Facebook,
 SMS y chat web.

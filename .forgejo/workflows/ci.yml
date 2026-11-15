@@ -1,0 +1,175 @@
+name: CI
+
+# CI/CD de Omni en Forgejo Actions (forgejo.bezenti.com/bezenti/omni). Ver despliegue/README.md.
+#
+# Lo que esté en main con este flujo en verde se despliega solo:
+#   pruebas (node, sdk-python, sdk-go) ─▶ verde ─▶ imagen ─▶ desplegar (anota el tag en infra-contabo ─▶ ArgoCD)
+# Un rojo en las pruebas es un despliegue que no ocurre. En PR y otras ramas solo corren las pruebas.
+# Volver a desplegar lo último de main sin un commit nuevo: Actions → CI → «Run workflow».
+#
+# Corre en el runner de la organización (ci-nodo2, en el clúster): «ubuntu-latest» es una imagen parecida a
+# la del runner de GitHub, y los «services» se alcanzan en 127.0.0.1 como allí. Las acciones (actions/…)
+# vienen del espejo data.forgejo.org.
+#
+# Secretos: REGISTRY_TOKEN (org bezenti; bot bezenti-ci, write:package) y INFRA_DEPLOY_KEY (de este repo;
+# deploy key con escritura SOLO sobre darwinva97/infra-contabo). Variable REGISTRY_USER (org bezenti).
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+
+# Un push nuevo a una PR deja sin sentido la ejecución anterior. En main no se
+# cancela nada: cada commit tiene su resultado y el despliegue lo lee.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  node:
+    name: Tipos, build y pruebas
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: omni
+          POSTGRES_PASSWORD: omni
+          POSTGRES_DB: omni_test
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+
+    env:
+      OMNI_TEST_DATABASE_URL: postgres://omni:omni@127.0.0.1:5432/omni_test
+      DATABASE_URL: postgres://omni:omni@127.0.0.1:5432/omni_test
+      OMNI_MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      OMNI_FFMPEG: /usr/bin/ffmpeg
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # La versión de pnpm sale de `packageManager` en package.json.
+      - run: corepack enable
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+
+      - name: Unitarias
+        run: pnpm test
+
+      - name: Contrato
+        run: pnpm test:contract
+
+      # Las notas de voz y los stickers pasan por ffmpeg de verdad.
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg
+
+      # Incluye el recorrido completo de WhatsApp contra el sandbox: enlazar,
+      # recibir un mensaje fabricado, verificar la firma del webhook y
+      # responder. Sin teléfono, desatendido, en cada push.
+      - name: Integración
+        run: pnpm test:int
+
+  sdk-python:
+    name: SDK de Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # El SDK de Python no tiene dependencias, así que no hay nada que instalar.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - working-directory: sdks/python
+        run: python -m unittest discover -s tests -v
+
+  sdk-go:
+    name: SDK de Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # El SDK de Go solo usa net/http, así que no hay dependencias que traer.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sdks/go/go.mod
+          cache: false
+      - working-directory: sdks/go
+        run: |
+          gofmt -l . | tee /tmp/sin-formatear
+          test ! -s /tmp/sin-formatear
+          go vet ./...
+          go test ./...
+
+  imagen:
+    name: Imagen
+    needs: [node, sdk-python, sdk-go]
+    # Solo para main (push o «Run workflow»), nunca para PR.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    env:
+      # Se SUBE por dentro del clúster (HTTP, sin Cloudflare: corta peticiones de >100 MB y una capa puede
+      # pasar de eso). Es el mismo registro que los nodos descargan como forgejo.bezenti.com/bezenti/omni.
+      REGISTRO: forgejo-http.forgejo.svc.cluster.local:3000
+      IMAGEN: bezenti/omni
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: meta
+        run: echo "tag=sha-$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Las pruebas unitarias corren también dentro del build: si fallan, no hay imagen.
+      - name: Construir y subir
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY_USER: ${{ vars.REGISTRY_USER }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRO" -u "$REGISTRY_USER" --password-stdin
+          docker build --pull -t "$REGISTRO/$IMAGEN:$TAG" -t "$REGISTRO/$IMAGEN:latest" .
+          docker push "$REGISTRO/$IMAGEN:$TAG"
+          docker push "$REGISTRO/$IMAGEN:latest"
+          docker logout "$REGISTRO"
+
+  desplegar:
+    name: Desplegar
+    needs: imagen
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Anotar el tag en infra-contabo
+        env:
+          INFRA_DEPLOY_KEY: ${{ secrets.INFRA_DEPLOY_KEY }}
+          TAG: ${{ needs.imagen.outputs.tag }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$INFRA_DEPLOY_KEY" > ~/.ssh/infra && chmod 600 ~/.ssh/infra
+          # Clave publicada por GitHub (no se confía en lo que conteste la red).
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/infra -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          trap 'rm -f ~/.ssh/infra' EXIT
+          git clone -q --depth 20 git@github.com:darwinva97/infra-contabo.git infra
+          cd infra
+          f=manifiestos/omni/workloads.yaml
+          # La imagen de la API y la del panel, con el secreto para descargarla del registro de Forgejo
+          # (la segunda regla solo hizo algo la primera vez, al dejar ghcr.io; después no cambia nada).
+          sed -i -E \
+            -e "s|(image: )[^ ]+/omni:[^ ]+( # omni-image)|\1forgejo.bezenti.com/bezenti/omni:${TAG}\2|" \
+            -e "s|imagePullSecrets: \[\{ name: ghcr-pull \}\]|imagePullSecrets: [{ name: forgejo-pull }]|" \
+            "$f"
+          git diff --stat
+          # Las dos piezas (API y panel) deben quedar con la misma imagen
+          test "$(grep -c "forgejo.bezenti.com/bezenti/omni:${TAG} # omni-image" "$f")" = 2
+          git config user.name "forgejo-actions[bot]"
+          git config user.email "ci@bezenti.com"
+          git commit -qam "omni: ${TAG}" || echo "sin cambios"
+          git pull -q --rebase && git push -q

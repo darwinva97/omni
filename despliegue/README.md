@@ -3,16 +3,30 @@
 Omni corre en el clúster **k3s** de bezenti en Contabo, gestionado por **ArgoCD** desde
 `darwinva97/infra-contabo` (`manifiestos/omni`), en https://omni.bezenti.com.
 
+El repositorio principal está en **Forgejo**: https://forgejo.bezenti.com/bezenti/omni
+(privado, tras Cloudflare Access). `github.com/darwinva97/omni` es un **espejo de solo
+lectura** que Forgejo actualiza en cada push: las PR se abren en Forgejo.
+
 ```
-push a main ─▶ CI (GitHub Actions) ─▶ verde ─▶ k3s image: docker build del mismo commit
-                                   │                (pnpm test dentro) ─▶ ghcr.io/darwinva97/omni:sha-xxxxxxx
-                                   │             └▶ anota el tag en infra-contabo ─▶ ArgoCD lo despliega
+push a main ─▶ CI (Forgejo Actions, .forgejo/workflows/ci.yml) ─▶ verde ─▶ imagen: docker build del mismo commit
+                                   │                (pnpm test dentro) ─▶ forgejo.bezenti.com/bezenti/omni:sha-xxxxxxx
+                                   │             └▶ desplegar: anota el tag en infra-contabo ─▶ ArgoCD lo despliega
                                    └▶ rojo ─▶ no se construye nada, no sale nada
 ```
 
 **Solo sale lo que está en `main` con CI en verde.** No hace falta entrar en la
-máquina. Volver a desplegar lo último de main sin un commit nuevo: *Actions →
-k3s image → Run workflow*.
+máquina. Volver a desplegar lo último de main sin un commit nuevo: *Actions → CI →
+Run workflow*.
+
+El CI corre en el runner de la organización `bezenti` (`ci-nodo2`, dentro del
+clúster; ver la sección «Forgejo: repos, CI y registro» del README de infra-contabo).
+Secretos: `REGISTRY_TOKEN` (organización; sube la imagen) e `INFRA_DEPLOY_KEY` (este
+repo; escribe en infra-contabo). El clúster descarga la imagen con el Secret
+`forgejo-pull`.
+
+Clonar o subir desde fuera: `git clone https://forgejo.bezenti.com/bezenti/omni.git`
+con tu usuario y un **token de aplicación** de Forgejo como contraseña (*Configuración →
+Aplicaciones*, permiso `write:repository`): las cuentas de Keycloak no tienen contraseña.
 
 Reiniciar la API reconecta todas las líneas de WhatsApp: los cambios que tocan
 la API conviene subirlos en horas tranquilas.
