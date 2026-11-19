@@ -58,6 +58,13 @@ export type Unsubscribe = () => void;
 
 /** Operaciones opcionales. Cada una está ligada a la capacidad que la habilita. */
 export interface ChannelDriverOptional {
+  /**
+   * Guarda YA lo que el driver tenga pendiente de persistir —credenciales,
+   * sobre todo— sin cerrar las líneas. Se llama al apagar el proceso: las
+   * líneas no se desconectan (no hay que avisar a nadie de nada), pero lo que
+   * estaba esperando su turno para guardarse no puede perderse.
+   */
+  flush?(): Promise<void>;
   editMessage?(lineId: LineId, chat: Address, providerMessageId: string, text: string): Promise<void>;
   deleteMessage?(lineId: LineId, chat: Address, providerMessageId: string): Promise<void>;
   react?(lineId: LineId, chat: Address, providerMessageId: string, emoji: string): Promise<void>;

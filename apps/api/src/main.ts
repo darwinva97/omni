@@ -5,6 +5,7 @@ import { buildContainer } from "./container.js";
 import { createApp } from "./app.js";
 import { registerWebSocketRoute } from "./routes/realtime.js";
 import { RealtimeGateway } from "./realtime/gateway.js";
+import { protegerUpgrades } from "./realtime/upgrade.js";
 
 const config = loadConfig();
 const container = await buildContainer(config);
@@ -29,6 +30,13 @@ const server = serve({ fetch: app.fetch, port: config.PORT, hostname: config.HOS
   }
 });
 
+// ANTES de `injectWebSocket`: ver `protegerUpgrades`.
+protegerUpgrades(server, (error) => {
+  // Lo normal es que el cliente se haya ido; solo se avisa de lo raro.
+  if (error.code !== "EPIPE" && error.code !== "ECONNRESET") {
+    console.warn(`socket de tiempo real roto en el apretón de manos: ${error.message}`);
+  }
+});
 injectWebSocket(server);
 
 const shutdown = async (signal: string): Promise<void> => {

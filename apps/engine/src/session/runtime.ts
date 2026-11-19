@@ -2181,6 +2181,11 @@ export class EngineRuntime {
     await this.#avatarWorker?.stop();
     await this.#mediaWorker?.stop();
     await this.#outboundWorker?.stop();
+    // Antes de que se cierre la base: lo pendiente de cada driver va a ella.
+    await Promise.all([...this.#drivers.values()].map((d) =>
+      d.flush?.().catch((err: unknown) => {
+        console.error(`no se pudo vaciar el driver "${d.descriptor.kind}" al apagar`, err);
+      })));
     for (const off of this.#unsubscribes) off();
     this.#unsubscribes.length = 0;
   }

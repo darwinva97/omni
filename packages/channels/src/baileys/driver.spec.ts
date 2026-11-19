@@ -1266,3 +1266,78 @@ describe("volcado del historial", () => {
     expect([...porChat.values()].every((v) => v.length === 1)).toBe(true);
   });
 });
+
+describe("guardado de credenciales", () => {
+  /**
+   * Conecta con un socket falso y devuelve el almacén de claves que recibió
+   * Baileys, para tocarlo como lo toca él al descifrar.
+   */
+  async function conAlmacen(credsDebounceMs: number) {
+    const fake = createFakeSocket();
+    let auth: { keys: { set(d: Record<string, Record<string, unknown>>): Promise<void> } } | null = null;
+    const guardados: Uint8Array[] = [];
+    let enVuelo = 0;
+    let maxEnVuelo = 0;
+    const driver = new BaileysDriver({
+      makeSocket: (opts) => {
+        auth = opts.auth as never;
+        return fake.socket;
+      },
+      fetchVersion: (async () => ({ version: [2, 3000, 1] })) as never,
+      linkWaitMs: 0,
+      credsDebounceMs,
+    });
+    await driver.connect({
+      lineId: LINE, credentials: null, config: { orgId: "org1" },
+      saveCredentials: async (blob) => {
+        enVuelo++;
+        maxEnVuelo = Math.max(maxEnVuelo, enVuelo);
+        await new Promise((r) => setTimeout(r, 5)); // la base tarda
+        enVuelo--;
+        guardados.push(blob);
+      },
+    });
+    fake.emitConnection({ connection: "open" });
+    const leer = (b: Uint8Array) =>
+      JSON.parse(Buffer.from(b).toString("utf8")) as { keys: { session?: Record<string, unknown> } };
+    return { driver, auth: auth!, guardados, leer, maxEnVuelo: () => maxEnVuelo };
+  }
+
+  it("una ráfaga de cambios de claves NO es una escritura por cambio", async () => {
+    // Lo que pasa al descifrar de golpe los mensajes de un grupo grande: antes
+    // eran cientos de copias del almacén en vuelo y el proceso moría (OOM).
+    const { auth, guardados, leer, maxEnVuelo } = await conAlmacen(20);
+
+    for (let i = 0; i < 300; i++) {
+      await auth.keys.set({ session: { [`contacto-${i}`]: { n: i } } });
+    }
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(guardados.length).toBeGreaterThan(0);
+    expect(guardados.length).toBeLessThanOrEqual(2);
+    expect(maxEnVuelo()).toBe(1);
+    // Lo último guardado lo tiene TODO.
+    expect(Object.keys(leer(guardados.at(-1)!).keys.session ?? {})).toHaveLength(300);
+  });
+
+  it("desconectar guarda lo pendiente sin esperar al plazo", async () => {
+    const { driver, auth, guardados, leer } = await conAlmacen(60_000);
+    await auth.keys.set({ session: { ultimo: { n: 1 } } });
+    expect(guardados).toHaveLength(0);
+
+    await driver.disconnect(LINE);
+
+    expect(guardados).toHaveLength(1);
+    expect(leer(guardados[0]!).keys.session).toEqual({ ultimo: { n: 1 } });
+  });
+
+  it("flush guarda lo pendiente de todas las líneas sin desconectarlas", async () => {
+    const { driver, auth, guardados } = await conAlmacen(60_000);
+    await auth.keys.set({ session: { a: { n: 1 } } });
+
+    await driver.flush();
+
+    expect(guardados).toHaveLength(1);
+    expect(driver.status(LINE).state).not.toBe("disconnected");
+  });
+});

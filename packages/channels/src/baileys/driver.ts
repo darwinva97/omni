@@ -19,6 +19,7 @@ import {
   type LineStatus, type NewsletterMetadata, type OrderDetails, type Product, type ProductInput, type OutboundCommand, type SendReceipt,
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
+import { GuardadoAgrupado } from "./guardado.js";
 import { toBaileysContent } from "./content.js";
 import { ColaEnSerie, fundirPorClave, procesarPorLotes } from "./por-lotes.js";
 
@@ -62,6 +63,8 @@ interface LineRuntime {
   readonly orgId: string;
   readonly store: BlobAuthStore;
   readonly save: (b: Uint8Array) => Promise<void>;
+  /** Por donde pasa TODO guardado de credenciales. Ver `guardado.ts`. */
+  readonly guardado: GuardadoAgrupado;
   /** Reintentos de reconexión consumidos, para el retardo creciente. */
   attempts: number;
   closing: boolean;
@@ -139,6 +142,11 @@ export interface BaileysOptions {
   readonly reconnectBaseMs?: number;
   readonly maxReconnectAttempts?: number;
   /**
+   * Cuánto se agrupan los cambios de credenciales antes de guardarlos, en ms.
+   * Ver `guardado.ts`: guardar en cada cambio tumbaba el proceso por memoria.
+   */
+  readonly credsDebounceMs?: number;
+  /**
    * Cuánto espera `connect` a que llegue el QR antes de devolver.
    * Bajarlo a 0 hace que vuelva enseguida y haya que sondear el estado.
    */
@@ -152,6 +160,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   readonly #fetchVersion: typeof fetchLatestBaileysVersion;
   readonly #reconnectBaseMs: number;
   readonly #maxAttempts: number;
+  readonly #credsDebounceMs: number;
   readonly #linkWaitMs: number;
   readonly #logger: RegistroBaileys | null;
 
@@ -161,6 +170,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     this.#fetchVersion = opts.fetchVersion ?? fetchLatestBaileysVersion;
     this.#reconnectBaseMs = opts.reconnectBaseMs ?? 2000;
     this.#maxAttempts = opts.maxReconnectAttempts ?? 5;
+    this.#credsDebounceMs = opts.credsDebounceMs ?? 1000;
     this.#linkWaitMs = opts.linkWaitMs ?? 8000;
     this.#logger = opts.logger ?? null;
   }
@@ -172,9 +182,20 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     const existente = this.#lines.get(req.lineId);
     if (existente?.status.state === "connected") return { status: existente.status };
 
-    const store = BlobAuthStore.from(req.credentials, () => {
-      void req.saveCredentials(store.serialize());
-    });
+    /*
+     * La foto del almacén se saca AL GUARDAR, no al avisar: así un guardado
+     * pendiente siempre lleva lo último y cien avisos son una sola escritura.
+     */
+    const guardado = new GuardadoAgrupado(
+      () => req.saveCredentials(store.serialize()),
+      this.#credsDebounceMs,
+      (error) => {
+        const detalle = { lineId: req.lineId, err: (error as Error)?.message ?? String(error) };
+        if (this.#logger) this.#logger.error(detalle, "no se pudieron guardar las credenciales; se reintenta");
+        else console.error("no se pudieron guardar las credenciales; se reintenta", detalle);
+      },
+    );
+    const store = BlobAuthStore.from(req.credentials, () => guardado.marcar());
 
     const line: LineRuntime = {
       socket: null,
@@ -182,6 +203,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       orgId,
       store,
       save: req.saveCredentials,
+      guardado,
       attempts: 0,
       closing: false,
       recent: new Map(),
@@ -668,6 +690,10 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     return this.#lines.get(lineId)?.status ?? { state: "disconnected" };
   }
 
+  async flush(): Promise<void> {
+    await Promise.all([...this.#lines.values()].map((l) => l.guardado.vaciar()));
+  }
+
   async disconnect(lineId: LineId): Promise<void> {
     const line = this.#lines.get(lineId);
     if (!line) return;
@@ -677,6 +703,9 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     try {
       line.socket?.end(undefined);
     } catch { /* ya estaba cerrado */ }
+    // Lo último que cambió no puede quedarse en memoria: al reconectar se lee
+    // de la base, y una sesión de Signal vieja obliga a renegociarla.
+    await line.guardado.vaciar();
     line.status = { state: "disconnected" };
     await this.emit("session.disconnected", line.orgId, lineId, { reason: "requested" });
   }
