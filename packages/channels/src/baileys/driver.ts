@@ -20,6 +20,7 @@ import {
 } from "../port.js";
 import { BlobAuthStore } from "./auth-store.js";
 import { GuardadoAgrupado } from "./guardado.js";
+import { silenciarSecretosDeLibsignal } from "./silenciar-libsignal.js";
 import { toBaileysContent } from "./content.js";
 import { ColaEnSerie, fundirPorClave, procesarPorLotes } from "./por-lotes.js";
 
@@ -67,6 +68,10 @@ interface LineRuntime {
   readonly guardado: GuardadoAgrupado;
   /** Reintentos de reconexión consumidos, para el retardo creciente. */
   attempts: number;
+  /** El reintento programado, para poder cancelarlo al cerrar o reemplazar la línea. */
+  reintento: ReturnType<typeof setTimeout> | null;
+  /** Cuándo se abrió el socket actual: un «conectando» eterno no puede bloquear un `connect`. */
+  abiertoEn: number;
   closing: boolean;
   /**
    * Lo enviado, por identificador de mensaje.
@@ -140,6 +145,12 @@ export interface BaileysOptions {
   readonly fetchVersion?: typeof fetchLatestBaileysVersion;
   /** Retardo base entre reintentos de reconexión, en ms. */
   readonly reconnectBaseMs?: number;
+  /** Tope del retardo entre reintentos, en ms. Se reintenta SIEMPRE; esto solo acota la espera. */
+  readonly reconnectMaxMs?: number;
+  /**
+   * A partir de cuántos reintentos seguidos se avisa con `session.error`.
+   * Ya no es un límite: la línea sigue reintentando. Ver `#programarReconexion`.
+   */
   readonly maxReconnectAttempts?: number;
   /**
    * Cuánto se agrupan los cambios de credenciales antes de guardarlos, en ms.
@@ -159,16 +170,22 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   readonly #make: SocketFactory;
   readonly #fetchVersion: typeof fetchLatestBaileysVersion;
   readonly #reconnectBaseMs: number;
+  readonly #reconnectMaxMs: number;
   readonly #maxAttempts: number;
+  /** La versión de WhatsApp Web, para no pedirla por la red en cada reconexión. */
+  #version: { valor: [number, number, number]; hasta: number } | null = null;
   readonly #credsDebounceMs: number;
   readonly #linkWaitMs: number;
   readonly #logger: RegistroBaileys | null;
 
   constructor(opts: BaileysOptions = {}) {
     super();
+    // Antes de que Baileys abra nada: ver `silenciar-libsignal.ts`.
+    silenciarSecretosDeLibsignal();
     this.#make = opts.makeSocket ?? ((o) => makeWASocket(o));
     this.#fetchVersion = opts.fetchVersion ?? fetchLatestBaileysVersion;
     this.#reconnectBaseMs = opts.reconnectBaseMs ?? 2000;
+    this.#reconnectMaxMs = opts.reconnectMaxMs ?? 5 * 60_000;
     this.#maxAttempts = opts.maxReconnectAttempts ?? 5;
     this.#credsDebounceMs = opts.credsDebounceMs ?? 1000;
     this.#linkWaitMs = opts.linkWaitMs ?? 8000;
@@ -183,6 +200,34 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     if (existente?.status.state === "connected") return { status: existente.status };
 
     /*
+     * Una línea a medio conectar —o enseñando su QR— ya tiene su socket: abrir
+     * otro dejaba DOS sesiones de WhatsApp con las mismas credenciales,
+     * pisándose, y el primer socket huérfano reconectándose por su cuenta. Se
+     * devuelve la que hay. Solo si lleva demasiado «conectando» se da por
+     * colgada y se sustituye.
+     */
+    if (
+      existente && !existente.closing && existente.socket &&
+      (existente.status.state === "awaiting-link" ||
+        (existente.status.state === "connecting" && Date.now() - existente.abiertoEn < 60_000))
+    ) {
+      await this.#awaitLinkable(existente, this.#linkWaitMs);
+      return { status: existente.status };
+    }
+
+    /*
+     * Cualquier otra que quede —caída esperando su reintento, con error— se
+     * retira del todo antes de abrir la nueva. Y sus credenciales en memoria
+     * son más recientes que las de la base (puede tener un guardado
+     * pendiente), así que la nueva parte de ellas, salvo que la desvincularan.
+     */
+    let credenciales = req.credentials;
+    if (existente) {
+      await this.#retirar(existente);
+      if (existente.status.state !== "logged-out") credenciales = existente.store.serialize();
+    }
+
+    /*
      * La foto del almacén se saca AL GUARDAR, no al avisar: así un guardado
      * pendiente siempre lleva lo último y cien avisos son una sola escritura.
      */
@@ -195,7 +240,7 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         else console.error("no se pudieron guardar las credenciales; se reintenta", detalle);
       },
     );
-    const store = BlobAuthStore.from(req.credentials, () => guardado.marcar());
+    const store = BlobAuthStore.from(credenciales, () => guardado.marcar());
 
     const line: LineRuntime = {
       socket: null,
@@ -205,6 +250,8 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
       save: req.saveCredentials,
       guardado,
       attempts: 0,
+      reintento: null,
+      abiertoEn: Date.now(),
       closing: false,
       recent: new Map(),
       enviados: new Map(),
@@ -236,8 +283,27 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
     }
   }
 
+  /**
+   * La versión de WhatsApp Web que se anuncia al conectar.
+   *
+   * Se pedía a la red en CADA apertura, y WhatsApp cierra la conexión más o
+   * menos cada hora: una petición de más por reconexión, y una espera más si
+   * la red va lenta justo entonces. Vale unas horas; si falla la consulta,
+   * sirve la última conocida.
+   */
+  async #versionActual(): Promise<[number, number, number] | undefined> {
+    if (this.#version && Date.now() < this.#version.hasta) return this.#version.valor;
+    const r = await this.#fetchVersion().catch(() => null);
+    if (r?.version) {
+      this.#version = { valor: r.version as [number, number, number], hasta: Date.now() + 6 * 3600_000 };
+      return this.#version.valor;
+    }
+    return this.#version?.valor;
+  }
+
   async #open(lineId: string, line: LineRuntime, config: Readonly<Record<string, unknown>>): Promise<void> {
-    const { version } = await this.#fetchVersion().catch(() => ({ version: undefined }));
+    const version = await this.#versionActual();
+    line.abiertoEn = Date.now();
 
     const socket = this.#make({
       ...(version ? { version } : {}),
@@ -581,21 +647,59 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
         code: code ?? null, reason: update.lastDisconnect?.error?.message ?? "desconocido",
       });
 
-      if (line.attempts >= this.#maxAttempts) {
-        await this.emit("session.error", line.orgId, lineId, {
-          reason: `no se pudo reconectar tras ${line.attempts} intentos`,
-        });
-        return;
-      }
-
-      // Retardo creciente: reconectar en bucle cerrado es una señal clarísima
-      // de automatización y acelera la restricción de la cuenta.
-      const espera = this.#reconnectBaseMs * 2 ** line.attempts;
-      line.attempts++;
-      setTimeout(() => {
-        if (!line.closing) void this.#open(lineId, line, config).catch(() => {});
-      }, espera);
+      this.#programarReconexion(lineId, line, config);
     }
+  }
+
+  /**
+   * El siguiente intento de reconexión, con retardo creciente y SIN rendirse.
+   *
+   * Antes, tras cinco intentos —unos sesenta segundos— la línea se daba por
+   * perdida y se quedaba desconectada hasta que alguien la reconectara a mano:
+   * bastaba un corte de red de un minuto a las tres de la mañana para estar
+   * sin WhatsApp hasta el día siguiente. Ahora se sigue intentando, con la
+   * espera acotada (`reconnectMaxMs`) y algo de azar para no reconectar en
+   * fila con otras líneas. Al llegar a `maxReconnectAttempts` se avisa una
+   * vez con `session.error`, para que alguien se entere.
+   *
+   * Reconectar en bucle cerrado es una señal clarísima de automatización y
+   * acelera la restricción de la cuenta: por eso la espera crece.
+   */
+  #programarReconexion(lineId: string, line: LineRuntime, config: Readonly<Record<string, unknown>>): void {
+    if (line.closing) return;
+    if (line.attempts === this.#maxAttempts) {
+      void this.emit("session.error", line.orgId, lineId, {
+        reason: `no se pudo reconectar tras ${line.attempts} intentos; se sigue reintentando`,
+      });
+    }
+    const base = Math.min(this.#reconnectBaseMs * 2 ** Math.min(line.attempts, 20), this.#reconnectMaxMs);
+    const espera = Math.round(base * (0.8 + Math.random() * 0.4));
+    line.attempts++;
+    if (line.reintento) clearTimeout(line.reintento);
+    line.reintento = setTimeout(() => {
+      line.reintento = null;
+      if (line.closing) return;
+      // Si ni siquiera se puede abrir —sin red, DNS—, también se reintenta.
+      void this.#open(lineId, line, config).catch((error: unknown) => {
+        const detalle = { lineId, err: (error as Error)?.message ?? String(error) };
+        if (this.#logger) this.#logger.warn(detalle, "no se pudo abrir el socket; se reintenta");
+        else console.warn("no se pudo abrir el socket; se reintenta", detalle);
+        this.#programarReconexion(lineId, line, config);
+      });
+    }, espera);
+  }
+
+  /** Cierra una línea del todo: sin reintentos pendientes y con todo guardado. */
+  async #retirar(line: LineRuntime): Promise<void> {
+    line.closing = true;
+    if (line.reintento) clearTimeout(line.reintento);
+    line.reintento = null;
+    if (line.enLinea) clearTimeout(line.enLinea.temporizador);
+    line.enLinea = null;
+    try {
+      line.socket?.end(undefined);
+    } catch { /* ya estaba cerrado */ }
+    await line.guardado.vaciar();
   }
 
   async #onMessage(lineId: string, line: LineRuntime, m: WAMessage): Promise<void> {
@@ -697,15 +801,9 @@ export class BaileysDriver extends EventEmitterBase implements ChannelDriver {
   async disconnect(lineId: LineId): Promise<void> {
     const line = this.#lines.get(lineId);
     if (!line) return;
-    line.closing = true;
-    if (line.enLinea) clearTimeout(line.enLinea.temporizador);
-    line.enLinea = null;
-    try {
-      line.socket?.end(undefined);
-    } catch { /* ya estaba cerrado */ }
     // Lo último que cambió no puede quedarse en memoria: al reconectar se lee
     // de la base, y una sesión de Signal vieja obliga a renegociarla.
-    await line.guardado.vaciar();
+    await this.#retirar(line);
     line.status = { state: "disconnected" };
     await this.emit("session.disconnected", line.orgId, lineId, { reason: "requested" });
   }

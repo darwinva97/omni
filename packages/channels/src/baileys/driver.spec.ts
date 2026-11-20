@@ -1341,3 +1341,113 @@ describe("guardado de credenciales", () => {
     expect(driver.status(LINE).state).not.toBe("disconnected");
   });
 });
+
+describe("reconexión", () => {
+  const cierre = (statusCode: number) => ({
+    connection: "close",
+    lastDisconnect: { error: Object.assign(new Error("Stream Errored"), { output: { statusCode } }) },
+  });
+
+  /** Un socket falso NUEVO por apertura, como hace Baileys. */
+  function conSockets(opts: { maxReconnectAttempts?: number } = {}) {
+    const sockets: FakeSocketControl[] = [];
+    let versiones = 0;
+    const driver = new BaileysDriver({
+      makeSocket: () => {
+        const f = createFakeSocket();
+        sockets.push(f);
+        return f.socket;
+      },
+      fetchVersion: (async () => { versiones++; return { version: [2, 3000, 1] }; }) as never,
+      linkWaitMs: 0,
+      reconnectBaseMs: 1,
+      reconnectMaxMs: 5,
+      ...opts,
+    });
+    const eventos: EventEnvelope[] = [];
+    driver.subscribe((e) => void eventos.push(e));
+    const conectar = () => driver.connect({
+      lineId: LINE, credentials: null, saveCredentials: async () => {}, config: { orgId: "org1" },
+    });
+    return { driver, sockets, eventos, conectar, versiones: () => versiones };
+  }
+
+  const hasta = async (cond: () => boolean) => {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  };
+
+  it("no se rinde: sigue reintentando pasado el límite y avisa una sola vez", async () => {
+    // Antes, tras 5 intentos la línea se quedaba caída hasta reconectarla a mano.
+    const { sockets, eventos, conectar } = conSockets({ maxReconnectAttempts: 2 });
+    await conectar();
+
+    for (let i = 0; i < 6; i++) {
+      const n = sockets.length;
+      sockets.at(-1)!.emitConnection(cierre(503));
+      await hasta(() => sockets.length > n);
+    }
+    expect(sockets.length).toBe(7);
+    expect(eventos.filter((e) => e.event === "session.error")).toHaveLength(1);
+
+    // Y cuando vuelve, vuelve de verdad.
+    sockets.at(-1)!.emitConnection({ connection: "open" });
+    await hasta(() => eventos.some((e) => e.event === "session.connected"));
+    expect(eventos.some((e) => e.event === "session.connected")).toBe(true);
+  });
+
+  it("desvinculada no reintenta", async () => {
+    const { sockets, conectar } = conSockets();
+    await conectar();
+    sockets[0]!.emitConnection(cierre(401));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("desconectar cancela el reintento pendiente", async () => {
+    const { driver, sockets, conectar } = conSockets();
+    await conectar();
+    sockets[0]!.emitConnection(cierre(503));
+    await driver.disconnect(LINE);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(sockets).toHaveLength(1);
+  });
+
+  it("pedir conectar una línea que ya enseña su QR no abre otra sesión", async () => {
+    // Dos sockets con las mismas credenciales se pisan en WhatsApp.
+    const { sockets, conectar } = conSockets();
+    await conectar();
+    sockets[0]!.emitConnection({ qr: "QR-1" });
+    await new Promise((r) => setTimeout(r, 5));
+
+    const r = await conectar();
+
+    expect(sockets).toHaveLength(1);
+    expect(r.status.state).toBe("awaiting-link");
+  });
+
+  it("reconectar a mano una línea caída retira la anterior: sin reintentos huérfanos", async () => {
+    const { sockets, conectar } = conSockets();
+    await conectar();
+    sockets[0]!.emitConnection(cierre(503)); // queda un reintento programado
+
+    await conectar(); // la persona pulsa «reconectar»
+    const tras = sockets.length;
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Solo la nueva: el reintento de la vieja no abrió otro socket.
+    expect(tras).toBe(2);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("la versión de WhatsApp Web no se pide en cada reconexión", async () => {
+    const { sockets, conectar, versiones } = conSockets();
+    await conectar();
+    for (let i = 0; i < 3; i++) {
+      const n = sockets.length;
+      sockets.at(-1)!.emitConnection(cierre(503));
+      await hasta(() => sockets.length > n);
+    }
+    expect(sockets.length).toBe(4);
+    expect(versiones()).toBe(1);
+  });
+});
